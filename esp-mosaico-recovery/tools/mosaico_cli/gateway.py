@@ -154,7 +154,7 @@ def ensure_iris_tools(context: RunContext) -> tuple[Path, Path]:
         if result.returncode:
             raise EnvironmentError("Could not install the pinned ESP-Iris host dependencies.")
         marker.write_text(fingerprint, encoding="utf-8")
-    return python, script
+    return user_path(python), user_path(script)
 
 
 @dataclass(frozen=True)

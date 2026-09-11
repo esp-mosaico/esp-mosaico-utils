@@ -5,6 +5,7 @@
 #include <string.h>
 
 #ifdef _WIN32
+#include <direct.h>
 #include <io.h>
 #define S_ISLNK(mode) 0
 #define fsync _commit
