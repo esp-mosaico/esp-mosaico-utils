@@ -25,7 +25,7 @@ from .errors import (
 )
 from .host import state_root, virtual_environment_python
 from .runtime import RunContext
-from .workspace import WorkspaceConfig
+from .workspace import WorkspaceConfig, user_path
 
 
 LOCAL_URL = "http://127.0.0.1:8443"
@@ -99,7 +99,7 @@ def locate_iris_tools(workspace: WorkspaceConfig) -> tuple[Path, Path]:
         raise EnvironmentError(
             f"The pinned ESP-Iris host environment is unavailable: {python}"
         )
-    return python, script
+    return user_path(python), user_path(script)
 
 
 def ensure_iris_tools(context: RunContext) -> tuple[Path, Path]:

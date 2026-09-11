@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import json
 import os
 from pathlib import Path
+import sys
 from typing import Any
 
 from .errors import EnvironmentError
@@ -47,6 +48,19 @@ class WorkspaceConfig:
     @property
     def idf_constraint_manifest(self) -> Path:
         return self.recovery_project / "main" / "idf_component.yml"
+
+
+def user_path(path: Path) -> Path:
+    """Keep macOS's conventional /var spelling in returned user paths."""
+
+    if sys.platform != "darwin":
+        return path
+    try:
+        relative = path.relative_to("/private/var")
+    except ValueError:
+        return path
+    conventional = Path("/var") / relative
+    return conventional if conventional.exists() else path
 
 
 def _object(value: Any, name: str) -> dict[str, Any]:

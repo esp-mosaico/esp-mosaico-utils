@@ -4,6 +4,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef _WIN32
+#include <io.h>
+#define S_ISLNK(mode) 0
+#define fsync _commit
+#define mkdir(path, mode) _mkdir(path)
+#endif
+
 #include "../../../src/esp_iris_files.c"
 
 bool esp_iris_is_started(void)

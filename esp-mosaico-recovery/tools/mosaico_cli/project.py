@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 
 from .errors import BuildError, SelectionError
-from .workspace import WorkspaceConfig
+from .workspace import WorkspaceConfig, user_path
 
 
 PARTITION_TABLE_FLASH_BYTES = 0x1000
@@ -60,7 +60,7 @@ def resolve_project(
                 "The recovery-owned Recovery project cannot "
                 "be installed as an application."
             )
-        return path
+        return user_path(path)
 
     current = cwd.resolve()
     if current in recovery_projects:
@@ -75,7 +75,7 @@ def resolve_project(
                 "select an application project with --project PATH."
             )
         if current != repository and _is_idf_project(current):
-            return current
+            return user_path(current)
         if current == repository:
             break
         current = current.parent
@@ -87,7 +87,7 @@ def resolve_project(
             raise SelectionError(
                 "The configured default project is a Recovery-only project."
             )
-        return workspace.default_project
+        return user_path(workspace.default_project)
 
     projects_root = workspace.projects_dir
     candidates = sorted(
@@ -95,7 +95,7 @@ def resolve_project(
         if path.is_dir() and path.resolve() not in recovery_projects and _is_idf_project(path)
     ) if projects_root.is_dir() else []
     if len(candidates) == 1:
-        return candidates[0]
+        return user_path(candidates[0])
     if not candidates:
         raise SelectionError(
             "No application project was found. Specify one with --project PATH; "
