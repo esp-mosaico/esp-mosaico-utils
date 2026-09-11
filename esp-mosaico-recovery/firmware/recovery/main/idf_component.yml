@@ -1,24 +1,17 @@
 dependencies:
-  idf: ">=6.1"
+  idf: ">=6.2"
   esp_iris:
     version: "*"
     override_path: ../../../../ESP-Iris/components/esp_iris
   esp-mosaico-bsp:
     git: https://github.com/esp-mosaico/esp-mosaico-bsp
     path: components/esp-mosaico-bsp
-    version: bef99672e411101489ed19c40527cca1c1dd5bb1
+    version: 3d5c451598aaffbda6f41895a0414dba4bac3505
   espressif/mdns:
     version: "^1.11.3"
   espressif/cjson:
     version: "^1.7.19"
   joltwallet/littlefs:
     version: "^1.22.0"
-
-overrides:
-  - espressif/esp_lcd_co5300:
-      with:
-        esp_lcd_co5300:
-          git: https://github.com/esp-mosaico/esp-mosaico-bsp
-          path: components/esp_lcd_co5300
-          version: bef99672e411101489ed19c40527cca1c1dd5bb1
-      reason: Use the display driver fork shipped in the ESP-Mosaico BSP repository.
+  lvgl/lvgl:
+    version: ">=8,<10"
