@@ -5,6 +5,7 @@ import hashlib
 import json
 import struct
 import uuid
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -13,6 +14,7 @@ from aiohttp import FormData
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 
 import iris_gateway.cli as cli_module
+import iris_gateway.crashes as crashes_module
 from iris_gateway import __version__
 from iris_gateway.cli import _client_ssl, _listen_is_loopback, build_parser
 from iris_gateway.demo import DemoHub
@@ -757,6 +759,128 @@ def test_crash_report_matches_retained_elf_to_archived_candidate(tmp_path) -> No
             assert crash["decode_eligible"] is True
             assert crash["candidate_artifact_id"] == artifact["artifact_id"]
             assert crash["candidate_elf_sha256"] == artifact["elf_sha256"]
+        finally:
+            await client.close()
+            await hub.close()
+            store.close()
+
+    asyncio.run(scenario())
+
+
+def test_crash_report_matches_truncated_core_sha_via_failed_image(tmp_path) -> None:
+    async def scenario() -> None:
+        store = GatewayStore(tmp_path)
+        artifact = store.save_firmware_artifact(
+            binary=b"candidate-bin",
+            elf=b"candidate-elf",
+            map_data=b"candidate-map",
+            metadata={
+                "project_name": "candidate",
+                "version": "1.0.0",
+                "chip_id": 999,
+            },
+        )
+        service = GatewayService(store, instance_id="test", demo=True)
+        hub = DemoHub(service.on_device_event)
+        original = hub.crash_report
+
+        async def report(device_id: str) -> dict[str, object]:
+            value = await original(device_id)
+            elf_sha = str(artifact["elf_sha256"])
+            return {
+                **value,
+                "core_dump_valid": True,
+                "core_dump_elf_sha256": elf_sha[:9],
+                "core_dump_elf_sha256_complete": False,
+                "crash_failed_firmware_sha256": elf_sha,
+            }
+
+        hub.crash_report = report
+        service.attach_hub(hub)
+        await hub.start()
+        client = TestClient(TestServer(create_app(service)))
+        await client.start_server()
+        try:
+            response = await client.get(
+                "/v1/devices/demo-a1b2c3d4/crashes"
+            )
+            assert response.status == 200
+            crash = (await response.json())["reports"][0]
+            assert crash["decode_eligible"] is True
+            assert crash["candidate_artifact_id"] == artifact["artifact_id"]
+        finally:
+            await client.close()
+            await hub.close()
+            store.close()
+
+    asyncio.run(scenario())
+
+
+def test_crash_archive_preserves_and_decodes_exact_incident(
+    tmp_path, monkeypatch
+) -> None:
+    async def scenario() -> None:
+        store = GatewayStore(tmp_path)
+        artifact = store.save_firmware_artifact(
+            binary=b"candidate-bin",
+            elf=b"candidate-elf",
+            map_data=b"candidate-map",
+            metadata={
+                "project_name": "candidate",
+                "version": "1.0.0",
+                "chip_id": 999,
+            },
+        )
+        service = GatewayService(store, instance_id="test", demo=True)
+        hub = DemoHub(service.on_device_event)
+        original = hub.crash_report
+
+        async def report(device_id: str) -> dict[str, object]:
+            value = await original(device_id)
+            return {
+                **value,
+                "core_dump_elf_sha256": artifact["elf_sha256"],
+                "core_dump_elf_sha256_complete": True,
+                "crash_failed_boot_id": 77,
+            }
+
+        hub.crash_report = report
+
+        def decode(core_path, firmware_artifact, *, expected_failed_boot_id):
+            assert core_path.is_file()
+            assert firmware_artifact["artifact_id"] == artifact["artifact_id"]
+            assert expected_failed_boot_id == 77
+            return (
+                {
+                    "status": "succeeded",
+                    "source_location_confirmed": True,
+                    "incident_identity_confirmed": True,
+                },
+                b"decoded output",
+            )
+
+        monkeypatch.setattr(crashes_module, "decode_coredump", decode)
+        service.attach_hub(hub)
+        await hub.start()
+        client = TestClient(TestServer(create_app(service)))
+        await client.start_server()
+        try:
+            response = await client.post(
+                "/v1/devices/demo-e5f6a7b8/crashes/archive"
+            )
+            assert response.status == 200
+            archived = await response.json()
+            assert archived["status"] == "preserved"
+            assert archived["failed_boot_id"] == 77
+            assert archived["core_dump"]["bytes"] == 2048
+            assert archived["diagnosis"]["source_location_confirmed"] is True
+            assert archived["diagnosis"]["incident_identity_confirmed"] is True
+            assert Path(archived["decoder_output"]).read_bytes() == b"decoded output"
+
+            repeated = await client.post(
+                "/v1/devices/demo-e5f6a7b8/crashes/archive"
+            )
+            assert await repeated.json() == archived
         finally:
             await client.close()
             await hub.close()

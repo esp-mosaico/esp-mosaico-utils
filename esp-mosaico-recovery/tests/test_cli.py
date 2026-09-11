@@ -8,6 +8,7 @@ from dataclasses import replace
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -39,7 +40,9 @@ from mosaico_cli.commands import (
     _recovery_verification_status,
     configure_recovery_network,
     enter_recovery,
+    inspect_crash,
     install,
+    invoke_rpc,
     list_devices,
     monitor,
     recover,
@@ -58,6 +61,8 @@ from mosaico_cli.errors import (
 from mosaico_cli.gateway import (
     GatewaySession,
     _require_compatible_gateway,
+    _configured_local_url,
+    _is_local_session,
     acquire_endpoint_maintenance_lease,
     acquire_maintenance_lease,
     enter_recovery_and_wait,
@@ -211,6 +216,21 @@ class ParserTests(unittest.TestCase):
         self.assertFalse(value.snapshot)
         self.assertFalse(value.force_color)
         self.assertFalse(value.disable_auto_color)
+
+    def test_rpc_accepts_hex_payload(self) -> None:
+        value = self.parse(
+            "rpc", "0x6a03", "2", "--payload-hex", "0102"
+        )
+        self.assertEqual(value.service_id, "0x6a03")
+        self.assertEqual(value.method_id, "2")
+        self.assertEqual(value.payload_hex, "0102")
+
+    def test_crash_can_archive_and_save_core(self) -> None:
+        value = self.parse(
+            "crash", "--archive", "--save-core", "evidence/core.bin"
+        )
+        self.assertTrue(value.archive)
+        self.assertEqual(value.save_core, Path("evidence/core.bin"))
 
     def test_system_update_requires_valid_manifest_url(self) -> None:
         value = self.parse(
@@ -489,6 +509,78 @@ class RegistryAndSelectionTests(unittest.TestCase):
 
 
 class GatewayTests(unittest.TestCase):
+    def test_rpc_encodes_binary_payload_on_stdin(self) -> None:
+        context = mock.Mock(log_path=Path("run.log"))
+        session = GatewaySession(Path("python"), Path("iris"), (), None, False)
+        arguments = argparse.Namespace(
+            gateway_profile=None,
+            device_id=None,
+            service_id="0x6a03",
+            method_id="2",
+            payload="",
+            payload_hex="00ff",
+            deadline_ms=1000,
+        )
+        with ExitStack() as contexts:
+            contexts.enter_context(
+                mock.patch("mosaico_cli.commands.ensure_gateway", return_value=session)
+            )
+            contexts.enter_context(
+                mock.patch(
+                    "mosaico_cli.commands.connected_devices",
+                    return_value=[{"device_id": "device-a"}],
+                )
+            )
+            gateway = contexts.enter_context(
+                mock.patch(
+                    "mosaico_cli.commands.gateway_json",
+                    return_value={"payload_base64": ""},
+                )
+            )
+            result = invoke_rpc(arguments, context)
+
+        self.assertEqual(result["device_id"], "device-a")
+        call = gateway.call_args
+        self.assertIn("--payload-base64-stdin", call.args)
+        self.assertEqual(call.kwargs["stdin_text"], "AP8=")
+
+    def test_crash_archives_and_saves_raw_dump(self) -> None:
+        context = mock.Mock(log_path=Path("run.log"))
+        session = GatewaySession(Path("python"), Path("iris"), (), None, False)
+        destination = Path("evidence/core.bin")
+        arguments = argparse.Namespace(
+            gateway_profile=None,
+            device_id="device-a",
+            archive=True,
+            save_core=destination,
+        )
+        with ExitStack() as contexts:
+            contexts.enter_context(
+                mock.patch("mosaico_cli.commands.ensure_gateway", return_value=session)
+            )
+            contexts.enter_context(
+                mock.patch(
+                    "mosaico_cli.commands.connected_devices",
+                    return_value=[{"device_id": "device-a"}],
+                )
+            )
+            gateway = contexts.enter_context(
+                mock.patch(
+                    "mosaico_cli.commands.gateway_json",
+                    side_effect=[
+                        {"reports": [{"crash_count": 1}]},
+                        {"status": "preserved"},
+                        {"bytes": 128},
+                    ],
+                )
+            )
+            result = inspect_crash(arguments, context)
+
+        self.assertEqual(result["archive"]["status"], "preserved")
+        self.assertEqual(result["saved_core"]["bytes"], 128)
+        self.assertEqual(gateway.call_args_list[1].args[2], "crash-archive")
+        self.assertEqual(gateway.call_args_list[2].args[2], "coredump")
+
     def test_enter_recovery_transitions_same_device_without_installing(self) -> None:
         context = mock.Mock(log_path=Path("run.log"))
         session = GatewaySession(Path("python"), Path("iris"), (), None, False)
@@ -995,6 +1087,23 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(
             selected.name, f"py{sys.version_info.major}.{sys.version_info.minor}"
         )
+
+    def test_local_gateway_url_can_use_an_isolated_loopback_port(self) -> None:
+        with mock.patch.dict(
+            os.environ,
+            {"MOSAICO_LOCAL_GATEWAY_URL": "http://127.0.0.1:18443"},
+        ):
+            self.assertEqual(
+                _configured_local_url(), ("http://127.0.0.1:18443", 18443)
+            )
+        session = GatewaySession(
+            Path("python"),
+            Path("iris"),
+            ("--url", "http://127.0.0.1:18443"),
+            None,
+            False,
+        )
+        self.assertTrue(_is_local_session(session))
 
     def test_iris_lock_change_reinstalls_into_the_active_environment(self) -> None:
         with ExitStack() as _contexts:

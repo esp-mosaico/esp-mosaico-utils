@@ -12,6 +12,7 @@ static esp_reset_reason_t s_reason = ESP_RST_POWERON;
 static int64_t s_now_us;
 static unsigned s_boot_selections;
 static unsigned s_restarts;
+static uint64_t s_next_boot_id = 1;
 
 static esp_partition_t s_application = {
     .address = 0x120000,
@@ -160,7 +161,7 @@ esp_err_t esp_iris_platform_select_recovery_target(uint32_t *target_address)
 
 static iris_runtime_t probe(esp_reset_reason_t reason)
 {
-    iris_runtime_t runtime = {0};
+    iris_runtime_t runtime = {.boot_id = s_next_boot_id++};
     s_reason = reason;
     assert(iris_crash_recovery_probe(&runtime) == ESP_OK);
     return runtime;
@@ -178,6 +179,7 @@ int main(void)
     assert(runtime.crash_count == 1);
     assert(runtime.crash_origin_reset_reason == ESP_RST_PANIC);
     assert(runtime.crash_failed_app_address == s_application.address);
+    assert(runtime.crash_failed_boot_id == 1);
     assert(!runtime.crash_loop_triggered);
 
     runtime = probe(ESP_RST_SW);
@@ -191,6 +193,7 @@ int main(void)
 
     runtime = probe(ESP_RST_TASK_WDT);
     assert(runtime.crash_count == 2);
+    assert(runtime.crash_failed_boot_id == 4);
     assert(s_restarts == 0);
 
     runtime = probe(ESP_RST_BROWNOUT);
@@ -198,6 +201,7 @@ int main(void)
 
     runtime = probe(ESP_RST_CPU_LOCKUP);
     assert(runtime.crash_count == 3);
+    assert(runtime.crash_failed_boot_id == 6);
     assert(runtime.crash_loop_triggered);
     assert(runtime.crash_recovery_pending);
     assert(s_boot_selections == 1);

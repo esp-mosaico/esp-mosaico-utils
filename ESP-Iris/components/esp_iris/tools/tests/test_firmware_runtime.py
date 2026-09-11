@@ -41,3 +41,37 @@ def test_firmware_runtime(tmp_path: Path, multi_transport: bool, service_profile
     assert build.returncode == 0, build.stdout + build.stderr
     run = subprocess.run([str(output)], capture_output=True, text=True, timeout=30, check=False)
     assert run.returncode == 0, run.stdout + run.stderr
+
+
+def test_crash_recovery_runtime(tmp_path: Path) -> None:
+    compiler = shutil.which("cc")
+    if compiler is None:
+        pytest.skip("C compiler required for crash recovery regression tests")
+    output = tmp_path / ("crash-recovery.exe" if os.name == "nt" else "crash-recovery")
+    command = [
+        compiler,
+        "-std=c11",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
+        "-Wno-unused-parameter",
+        "-include",
+        str(HOST / "sdkconfig.h"),
+        "-I",
+        str(HOST),
+        "-I",
+        str(COMPONENT / "include"),
+        "-I",
+        str(COMPONENT / "src"),
+        str(HOST / "crash_recovery_test.c"),
+        "-o",
+        str(output),
+    ]
+    build = subprocess.run(
+        command, capture_output=True, text=True, timeout=60, check=False
+    )
+    assert build.returncode == 0, build.stdout + build.stderr
+    run = subprocess.run(
+        [str(output)], capture_output=True, text=True, timeout=30, check=False
+    )
+    assert run.returncode == 0, run.stdout + run.stderr

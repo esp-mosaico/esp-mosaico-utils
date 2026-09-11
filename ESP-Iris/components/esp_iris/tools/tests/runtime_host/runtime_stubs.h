@@ -20,6 +20,7 @@ esp_err_t iris_log_redirect_stdio(void) { return ESP_OK; }
 esp_err_t iris_log_restore_stdio(void) { return ESP_OK; }
 bool iris_log_pop(iris_runtime_t *r, size_t n, iris_log_record_t *o) { return false; }
 void iris_crash_probe(iris_runtime_t *r) { }
+void iris_crash_context_prepare(iris_runtime_t *r) { }
 esp_err_t iris_crash_recovery_probe(iris_runtime_t *r) {
     r->crash_loop_initialized = true; r->crash_limit = 3; return ESP_OK;
 }

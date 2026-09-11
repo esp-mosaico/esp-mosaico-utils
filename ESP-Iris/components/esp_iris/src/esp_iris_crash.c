@@ -3,11 +3,46 @@
 #include <limits.h>
 #include <string.h>
 
+#include "esp_app_desc.h"
 #include "esp_system.h"
 
-#if CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH
+#if CONFIG_ESP_COREDUMP_ENABLE
 #include "esp_core_dump.h"
 #endif
+
+#define IRIS_CRASH_CONTEXT_MAGIC UINT32_C(0x58435249) /* "IRCX" */
+#define IRIS_CRASH_CONTEXT_VERSION 1U
+
+typedef struct {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t size;
+    uint64_t boot_id;
+    uint8_t firmware_sha256[32];
+} iris_crash_context_t;
+
+#if CONFIG_ESP_COREDUMP_ENABLE
+COREDUMP_DRAM_ATTR
+#endif
+__attribute__((used, aligned(8))) volatile iris_crash_context_t
+    g_iris_crash_context;
+
+void iris_crash_context_prepare(iris_runtime_t *runtime)
+{
+    if (runtime == NULL) {
+        return;
+    }
+    const esp_app_desc_t *app = esp_app_get_description();
+    g_iris_crash_context.magic = IRIS_CRASH_CONTEXT_MAGIC;
+    g_iris_crash_context.version = IRIS_CRASH_CONTEXT_VERSION;
+    g_iris_crash_context.size = sizeof(g_iris_crash_context);
+    g_iris_crash_context.boot_id = runtime->boot_id;
+    if (app != NULL) {
+        memcpy((void *)g_iris_crash_context.firmware_sha256,
+               app->app_elf_sha256,
+               sizeof(g_iris_crash_context.firmware_sha256));
+    }
+}
 
 typedef struct {
     uint8_t *data;
@@ -184,6 +219,9 @@ esp_err_t iris_crash_build_metadata(iris_runtime_t *runtime, uint8_t *out,
             !crash_tlv_put_u32(&writer,
                                ESP_IRIS_TLV_CRASH_FAILED_APP_ADDRESS,
                                runtime->crash_failed_app_address) ||
+            !crash_tlv_put_u64(&writer,
+                               ESP_IRIS_TLV_CRASH_FAILED_BOOT_ID,
+                               runtime->crash_failed_boot_id) ||
             !crash_tlv_put(&writer,
                            ESP_IRIS_TLV_CRASH_FAILED_FIRMWARE_SHA256,
                            runtime->crash_failed_firmware_sha256,

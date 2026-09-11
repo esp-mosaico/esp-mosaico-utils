@@ -497,6 +497,10 @@ async def _ctl(args: argparse.Namespace) -> int:
                 url = base + f"/v1/devices/{args.device}/crashes"
                 async with session.get(url, ssl=ssl_value) as response:
                     _output(await _response_json(response), args.json)
+            elif command == "crash-archive":
+                url = base + f"/v1/devices/{args.device}/crashes/archive"
+                async with session.post(url, ssl=ssl_value) as response:
+                    _output(await _response_json(response), args.json)
             elif command == "coredump":
                 url = base + f"/v1/devices/{args.device}/crashes/core-dump"
                 async with session.get(url, ssl=ssl_value) as response:
@@ -858,6 +862,8 @@ def build_parser() -> argparse.ArgumentParser:
     system_inventory.add_argument("device")
     crash = commands.add_parser("crash")
     crash.add_argument("device")
+    crash_archive = commands.add_parser("crash-archive")
+    crash_archive.add_argument("device")
     coredump = commands.add_parser("coredump")
     coredump.add_argument("device")
     coredump.add_argument("output")

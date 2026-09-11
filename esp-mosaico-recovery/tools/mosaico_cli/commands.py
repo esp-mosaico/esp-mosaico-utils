@@ -335,6 +335,80 @@ def list_devices(context: RunContext, gateway_profile: str | None) -> dict[str, 
     }
 
 
+def invoke_rpc(arguments: Any, context: RunContext) -> dict[str, Any]:
+    """Invoke a raw application RPC through the managed Gateway."""
+
+    session = ensure_gateway(context, arguments.gateway_profile)
+    device = select_device(connected_devices(context, session), arguments.device_id)
+    device_id = str(device.get("device_id"))
+    call_arguments = [
+        "rpc-raw",
+        device_id,
+        arguments.service_id,
+        arguments.method_id,
+    ]
+    stdin_text = None
+    if arguments.payload_hex is not None:
+        try:
+            payload = bytes.fromhex(arguments.payload_hex)
+        except ValueError as error:
+            raise SelectionError("--payload-hex must contain hexadecimal bytes.") from error
+        call_arguments.append("--payload-base64-stdin")
+        stdin_text = base64.b64encode(payload).decode("ascii")
+    else:
+        call_arguments.extend(("--payload", arguments.payload))
+    call_arguments.extend(("--deadline-ms", str(arguments.deadline_ms)))
+    response = gateway_json(
+        context,
+        session,
+        *call_arguments,
+        stdin_text=stdin_text,
+        timeout=max(5.0, arguments.deadline_ms / 1000 + 3),
+    )
+    return {
+        "command": "rpc",
+        "status": "succeeded",
+        "device_id": device_id,
+        "response": response,
+        "gateway_started": session.started_local,
+        "log": str(context.log_path),
+    }
+
+
+def inspect_crash(arguments: Any, context: RunContext) -> dict[str, Any]:
+    """Read, archive, and optionally save retained crash evidence."""
+
+    session = ensure_gateway(context, arguments.gateway_profile)
+    device = select_device(connected_devices(context, session), arguments.device_id)
+    device_id = str(device.get("device_id"))
+    report = gateway_json(context, session, "crash", device_id, timeout=10)
+    archive = None
+    if arguments.archive:
+        archive = gateway_json(
+            context, session, "crash-archive", device_id, timeout=120
+        )
+    saved_core = None
+    if arguments.save_core is not None:
+        saved_core = gateway_json(
+            context,
+            session,
+            "coredump",
+            device_id,
+            str(arguments.save_core.expanduser().resolve()),
+            timeout=60,
+        )
+    return {
+        "command": "crash",
+        "status": "succeeded",
+        "device_id": device_id,
+        "report": report,
+        "archive": archive,
+        "saved_core": saved_core,
+        "gateway_started": session.started_local,
+        "log": str(context.log_path),
+    }
+
+
 def enter_recovery(arguments: Any, context: RunContext) -> dict[str, Any]:
     """Enter retained Recovery without starting an installation."""
 

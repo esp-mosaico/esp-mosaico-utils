@@ -36,6 +36,15 @@ def build_openapi(auth_required: bool) -> dict[str, Any]:
         "/v1/devices/{device_id}/system-inventory": {
             "get": {"summary": "Live bootloader and partition-table inventory"}
         },
+        "/v1/devices/{device_id}/crashes": {
+            "get": {"summary": "Live crash metadata and archived diagnosis"}
+        },
+        "/v1/devices/{device_id}/crashes/core-dump": {
+            "get": {"summary": "Preserve and download the retained Core Dump"}
+        },
+        "/v1/devices/{device_id}/crashes/archive": {
+            "post": {"summary": "Archive and decode current crash evidence"}
+        },
         "/v1/mode": {
             "get": {"summary": "Get global mode"},
             "put": {"summary": "Switch develop or observe mode"},

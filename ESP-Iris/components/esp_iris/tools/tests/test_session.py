@@ -536,6 +536,7 @@ def test_event_time_fields_crash_metadata_and_chunk_download() -> None:
                 (TlvTag.CRASH_RECOVERY_PENDING, b"\x01"),
                 (TlvTag.CRASH_ORIGIN_RESET_REASON, struct.pack("<I", 9)),
                 (TlvTag.CRASH_FAILED_APP_ADDRESS, struct.pack("<I", 0x120000)),
+                (TlvTag.CRASH_FAILED_BOOT_ID, struct.pack("<Q", 123456789)),
                 (TlvTag.CRASH_FAILED_FIRMWARE_SHA256, bytes.fromhex("ab" * 32)),
             ]
         )
@@ -563,6 +564,7 @@ def test_event_time_fields_crash_metadata_and_chunk_download() -> None:
         assert report["crash_recovery_pending"] is True
         assert report["crash_origin_reset_reason"] == 9
         assert report["crash_failed_app_address"] == 0x120000
+        assert report["crash_failed_boot_id"] == 123456789
         assert report["crash_failed_firmware_sha256"] == "ab" * 32
 
         chunk_task = asyncio.create_task(session.read_core_dump_chunk(0, 1024))

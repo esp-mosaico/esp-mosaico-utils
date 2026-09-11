@@ -149,12 +149,14 @@ typedef struct iris_runtime {
     uint32_t crash_limit;
     uint32_t crash_origin_reset_reason;
     uint32_t crash_failed_app_address;
+    uint64_t crash_failed_boot_id;
     uint8_t crash_failed_firmware_sha256[32];
     esp_err_t crash_state_error;
 } iris_runtime_t;
 
 extern iris_runtime_t g_iris;
 void iris_notify_worker(iris_runtime_t *runtime);
+void iris_crash_context_prepare(iris_runtime_t *runtime);
 
 esp_err_t iris_identity_load_or_create(iris_runtime_t *runtime);
 

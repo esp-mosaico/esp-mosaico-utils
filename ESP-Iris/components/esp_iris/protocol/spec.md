@@ -208,25 +208,32 @@ the maximum chunk size. READ responses set STREAM_END on the final chunk and
 reuse the device RX frame buffer, so no media-sized or full-coredump allocation
 is required.
 
-The PC permits evidence download even when the embedded ELF SHA is incomplete,
-but sets `decode_eligible=true` only when a complete 64-character SHA matches
-the running firmware identity. Decoding against a nonmatching ELF is outside
-the protocol contract.
+The PC permits evidence download even when the embedded ELF SHA is incomplete.
+It may select an archived ELF from either a complete 64-character coredump SHA,
+or from the complete retained failed-firmware SHA when the coredump SHA is a
+matching prefix from the same failed Boot ID. Decoding against an ELF without
+one of these exact identity checks is outside the protocol contract.
 
 When `CAP_CRASH_LOOP` is present, metadata and STATUS also expose the retained
 `CRASH_COUNT`, configured `CRASH_LIMIT`, threshold/pending flags, original
-failure reset reason, failed application address and failed firmware SHA-256.
+failure reset reason, failed application address, failed Boot ID and failed
+firmware SHA-256.
 These fields survive the planned software restart into Recovery, while
 `PREVIOUS_BOOT_CRASH` deliberately continues to describe only the immediate
 reset reason. A Recovery boot can therefore report
 `previous_boot_crash=false` together with `crash_recovery_pending=true` and the
 original panic or watchdog reason.
 
+The Core Dump contains a compact `g_iris_crash_context` record with the same
+failed Boot ID and firmware SHA. A decoder uses it to reject a stale dump from
+another boot of the same image.
+
 Iris writes a single versioned `crash_loop` blob in namespace `esp_iris` at
 boot. A panic, watchdog or CPU-lockup reset is attributed to the image address
 and SHA recorded by the previous boot. Brownout and power-glitch resets are
 excluded unless explicitly configured. A normal image clears the count after
-the stable interval or `esp_iris_mark_healthy()`; Recovery does not implicitly
+the stable interval; accepting an installation with `esp_iris_mark_healthy()`
+does not clear crash history. Recovery does not implicitly
 clear another image's failure record. At the threshold a normal image selects
 Recovery with `esp_iris_platform_select_recovery_target()` (factory by default),
 commits the retained evidence, and performs a planned software restart.

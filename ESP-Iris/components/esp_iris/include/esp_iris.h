@@ -59,6 +59,7 @@ typedef struct {
     uint32_t crash_limit;
     uint32_t crash_origin_reset_reason;
     uint32_t crash_failed_app_address;
+    uint64_t crash_failed_boot_id;
     uint8_t crash_failed_firmware_sha256[32];
     esp_err_t crash_state_error;
 } esp_iris_status_t;
@@ -166,9 +167,9 @@ esp_err_t esp_iris_ota_get_status(esp_iris_ota_status_t *out_status);
  * crash-loop threshold. */
 esp_err_t esp_iris_boot_probe(void);
 
-/* Clear the retained crash-loop record explicitly. Normal applications also
- * clear their own count after the configured stable interval or when marked
- * healthy. Recovery firmware does not clear a failed application's record. */
+/* Clear the retained crash-loop record explicitly. Normal applications clear
+ * their own count after the configured stable interval. Recovery firmware does
+ * not clear a failed application's record. */
 esp_err_t esp_iris_crash_loop_reset(void);
 
 /* Optional product lifecycle marker. State is replayed to a newly connected
@@ -179,6 +180,9 @@ esp_err_t esp_iris_mark_planned_restart(void);
  * The base component returns ESP_ERR_NOT_SUPPORTED: Iris start is never
  * mistaken for product acceptance, and OTA cannot select a boot slot until
  * prepare_ota has persisted the product's recovery metadata. */
+/* Accept the installed image and publish HEALTHY without clearing crash-loop
+ * history. This keeps installation acceptance independent from the configured
+ * runtime-stability interval. */
 esp_err_t esp_iris_mark_healthy(void);
 esp_err_t esp_iris_platform_mark_healthy(void);
 esp_err_t esp_iris_platform_mark_planned_restart(void);

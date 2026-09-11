@@ -13,7 +13,9 @@ from . import __version__
 from .commands import (
     configure_recovery_network,
     enter_recovery,
+    inspect_crash,
     install,
+    invoke_rpc,
     list_devices,
     monitor,
     read_http_update_code,
@@ -321,6 +323,44 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Show endpoint, ESP-IDF version, session, and capabilities",
     )
+
+    rpc_parser = commands.add_parser(
+        "rpc",
+        help="Invoke a raw application RPC through ESP-Iris",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    rpc_parser.add_argument("service_id", help="Numeric RPC service ID")
+    rpc_parser.add_argument("method_id", help="Numeric RPC method ID")
+    rpc_parser.add_argument(
+        "--device-id", help="Target Device ID; selected automatically when only one is available"
+    )
+    rpc_parser.add_argument(
+        "--gateway-profile", help="ESP-Iris profile; use the local Gateway by default"
+    )
+    rpc_payload = rpc_parser.add_mutually_exclusive_group()
+    rpc_payload.add_argument("--payload", default="", help="UTF-8 request payload")
+    rpc_payload.add_argument("--payload-hex", help="Binary request payload as hexadecimal bytes")
+    rpc_parser.add_argument(
+        "--deadline-ms", type=int, default=3000, help="RPC deadline in milliseconds"
+    )
+
+    crash_parser = commands.add_parser(
+        "crash",
+        help="Inspect and preserve retained crash evidence",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    crash_parser.add_argument(
+        "--device-id", help="Target Device ID; selected automatically when only one is available"
+    )
+    crash_parser.add_argument(
+        "--gateway-profile", help="ESP-Iris profile; use the local Gateway by default"
+    )
+    crash_parser.add_argument(
+        "--archive", action="store_true", help="Archive and decode the retained Core Dump"
+    )
+    crash_parser.add_argument(
+        "--save-core", type=Path, help="Also save the raw Core Dump at this path"
+    )
     return parser
 
 
@@ -512,6 +552,10 @@ def main(
             result = configure_recovery_network(arguments, context)
         elif arguments.command == "http-update-code":
             result = read_http_update_code(arguments, context)
+        elif arguments.command == "rpc":
+            result = invoke_rpc(arguments, context)
+        elif arguments.command == "crash":
+            result = inspect_crash(arguments, context)
         else:
             return monitor(arguments, context, arguments.json)
     except MosaicoError as error:
