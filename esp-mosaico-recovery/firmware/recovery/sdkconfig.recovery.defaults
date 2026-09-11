@@ -1,10 +1,10 @@
 CONFIG_APP_PROJECT_VER_FROM_CONFIG=y
 CONFIG_APP_PROJECT_VER="2.8.5-recovery"
 
-# ESP-Iris owns the separate TinyUSB High-Speed device. Keep the built-in USB
-# Serial/JTAG controller as the primary blocking console so boot, update, and
-# panic output is not dropped by the non-blocking secondary-console path.
-CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+# ESP-Iris owns the separate TinyUSB High-Speed device. Keep UART as the
+# primary blocking console and avoid the built-in USB Serial/JTAG controller.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+# CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG is not set
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 
 CONFIG_ESP_IRIS_OTA=y
