@@ -1,0 +1,9 @@
+dependencies:
+  idf:
+    version: ">=5.5"
+
+  esp_iris:
+    path: ../../..
+
+  joltwallet/littlefs:
+    version: "==1.22.3"

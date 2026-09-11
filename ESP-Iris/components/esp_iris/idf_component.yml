@@ -1,0 +1,48 @@
+version: "0.1.0"
+description: Low-overhead ESP-Iris binary observability and control link
+license: Apache-2.0
+maintainers:
+  - Li Shenhang <lishenhang@espressif.com>
+tags:
+  - debugging
+  - observability
+  - usb
+  - tcp
+  - ota
+url: https://github.com/esp-mosaico/esp-mosaico-utils
+repository: https://github.com/esp-mosaico/esp-mosaico-utils.git
+repository_info:
+  path: ESP-Iris/components/esp_iris
+documentation: https://github.com/esp-mosaico/esp-mosaico-utils/tree/main/ESP-Iris/components/esp_iris
+issues: https://github.com/esp-mosaico/esp-mosaico-utils/issues
+changelog: https://github.com/esp-mosaico/esp-mosaico-utils/blob/main/ESP-Iris/components/esp_iris/CHANGELOG.md
+
+files:
+  exclude:
+    - agent/**/*
+    - test_apps/**/*
+    - tools/**/node_modules/**/*
+    - tools/**/.mypy_cache/**/*
+    - tools/**/.pytest_cache/**/*
+    - tools/**/.ruff_cache/**/*
+    - tools/**/test-results/**/*
+    - tools/**/playwright-report/**/*
+    - examples/**/build*/**/*
+    - examples/**/managed_components/**/*
+    - examples/**/dependencies.lock
+    - examples/**/sdkconfig
+    - examples/**/sdkconfig.old
+    - examples/**/sdkconfig.local.defaults
+
+dependencies:
+  idf: ">=5.5"
+
+  espressif/esp_tinyusb:
+    version: ">=2.2.1,<3.0.0"
+    require: "no"
+    rules:
+      - if: target == esp32s31
+
+  espressif/mdns:
+    version: "^1.11.3"
+    require: "no"

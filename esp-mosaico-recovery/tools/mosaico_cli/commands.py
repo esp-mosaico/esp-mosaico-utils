@@ -1,0 +1,1149 @@
+"""Implement the public ESP-Mosaico product commands."""
+
+from __future__ import annotations
+
+import base64
+import getpass
+import json
+import os
+from pathlib import Path
+from queue import Empty, Queue
+import re
+import subprocess
+import sys
+from threading import Thread
+import time
+from typing import Any, TextIO
+
+from .errors import (
+    BuildError,
+    DeviceError,
+    EnvironmentError,
+    OperationError,
+    RecoveryRequiredError,
+    SelectionError,
+)
+from .gateway import (
+    acquire_endpoint_maintenance_lease,
+    acquire_maintenance_lease,
+    connected_devices,
+    enter_recovery_and_wait,
+    ensure_gateway,
+    ensure_iris_tools,
+    finish_maintenance_lease,
+    gateway_devices,
+    gateway_json,
+    renew_maintenance_lease,
+    run_ota,
+    run_system_update_bundle,
+    select_device,
+    system_inventory,
+)
+from .project import discover_artifacts, partition_table_flash_sha256, resolve_project
+from .recovery import (
+    load_bundle,
+    provisioning_candidate,
+    read_rom_hardware_mac,
+    record_recovery_verification,
+    record_recovery_build_defaults,
+    recovery_build_defaults_are_current,
+    recovery_defaults_fingerprint,
+    recovery_verification_details,
+)
+from .recovery_port import lease_port, same_port, serial_jtag_candidate
+from .registry import select_model
+from .runtime import RunContext, build_application, resolve_idf_path, run_idf_target
+
+
+_IDF_MONITOR_LOG_PATTERN = re.compile(r"^(I|W|E) \([\d:\. -]+\)")
+_IDF_MONITOR_COLORS = {
+    "I": "\033[0;32m",
+    "W": "\033[0;33m",
+    "E": "\033[1;31m",
+}
+_ANSI_NORMAL = "\033[0m"
+
+_RECOVERY_CONTROL_SERVICE_ID = "0x1202"
+_RECOVERY_WIFI_CONNECT_METHOD = "1"
+_RECOVERY_NETWORK_STATUS_METHOD = "2"
+_RECOVERY_HTTP_CODE_METHOD = "3"
+
+
+def _device_status(value: Any) -> dict[str, Any]:
+    """Normalize Gateway status responses without bypassing host verification."""
+    if not isinstance(value, dict):
+        return {}
+    status = value.get("device", value)
+    return status if isinstance(status, dict) else {}
+
+
+def _raw_rpc_payload(value: Any) -> bytes:
+    encoded = value.get("payload_base64") if isinstance(value, dict) else None
+    if not isinstance(encoded, str):
+        raise DeviceError("ESP-Iris returned an invalid Recovery control response.")
+    try:
+        return base64.b64decode(encoded, validate=True)
+    except ValueError as error:
+        raise DeviceError("ESP-Iris returned malformed Recovery control data.") from error
+
+
+def _recovery_control_device(arguments: Any, context: RunContext) -> tuple[Any, str]:
+    session = ensure_gateway(context, getattr(arguments, "gateway_profile", None))
+    device = select_device(
+        connected_devices(context, session), getattr(arguments, "device_id", None)
+    )
+    device_id = str(device.get("device_id"))
+    status = _device_status(gateway_json(context, session, "status", device_id))
+    if (status.get("firmware_mode") or device.get("firmware_mode")) != "recovery":
+        raise RecoveryRequiredError(
+            "Recovery control requires a live Recovery service. "
+            "Run 'python mosaico.py recover' first."
+        )
+    return session, device_id
+
+
+def configure_recovery_network(arguments: Any, context: RunContext) -> dict[str, Any]:
+    session, device_id = _recovery_control_device(arguments, context)
+    ssid = arguments.ssid.encode("utf-8")
+    password_text = getpass.getpass("Wi-Fi password: ")
+    password = password_text.encode("utf-8")
+    password_text = ""
+    if not 0 < len(ssid) < 33:
+        raise DeviceError("Wi-Fi SSID must be between 1 and 32 UTF-8 bytes.")
+    password_valid = len(password) == 0 or 8 <= len(password) <= 63
+    if len(password) == 64:
+        password_valid = re.fullmatch(rb"[0-9a-fA-F]{64}", password) is not None
+    if not password_valid:
+        raise DeviceError("Wi-Fi password must be empty, 8-63 bytes, or 64 hex bytes.")
+    payload = bytes((len(ssid), len(password))) + ssid + password
+    context.status("recovery: submitting Wi-Fi credentials over the active USB session")
+    gateway_json(
+        context,
+        session,
+        "rpc-raw",
+        device_id,
+        _RECOVERY_CONTROL_SERVICE_ID,
+        _RECOVERY_WIFI_CONNECT_METHOD,
+        "--payload-base64-stdin",
+        "--deadline-ms",
+        "5000",
+        stdin_text=base64.b64encode(payload).decode("ascii"),
+        timeout=10,
+        sensitive_output=True,
+    )
+    password = b""
+    payload = b""
+
+    deadline = time.monotonic() + arguments.timeout
+    latest: dict[str, Any] = {}
+    while time.monotonic() < deadline:
+        value = gateway_json(
+            context,
+            session,
+            "rpc-raw",
+            device_id,
+            _RECOVERY_CONTROL_SERVICE_ID,
+            _RECOVERY_NETWORK_STATUS_METHOD,
+            "--deadline-ms",
+            "2000",
+            timeout=5,
+            sensitive_output=True,
+        )
+        try:
+            latest_value = json.loads(_raw_rpc_payload(value).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise DeviceError("Recovery returned invalid network status JSON.") from error
+        latest = latest_value if isinstance(latest_value, dict) else {}
+        if latest.get("connected") is True:
+            context.status("recovery: Wi-Fi connected")
+            return {
+                "command": "recovery-wifi",
+                "status": "succeeded",
+                "device_id": device_id,
+                "network": latest,
+                "gateway_started": session.started_local,
+                "log": str(context.log_path),
+            }
+        time.sleep(0.5)
+    raise OperationError(
+        "Recovery did not connect to Wi-Fi before the timeout.",
+        details={"device_id": device_id, "network": latest},
+    )
+
+
+def read_http_update_code(arguments: Any, context: RunContext) -> dict[str, Any]:
+    session, device_id = _recovery_control_device(arguments, context)
+    network_value = gateway_json(
+        context,
+        session,
+        "rpc-raw",
+        device_id,
+        _RECOVERY_CONTROL_SERVICE_ID,
+        _RECOVERY_NETWORK_STATUS_METHOD,
+        "--deadline-ms",
+        "2000",
+        timeout=5,
+        sensitive_output=True,
+    )
+    try:
+        network = json.loads(_raw_rpc_payload(network_value).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise DeviceError("Recovery returned invalid network status JSON.") from error
+    if not isinstance(network, dict) or network.get("connected") is not True:
+        raise DeviceError(
+            "Recovery must be connected to Wi-Fi before opening HTTP Update."
+        )
+    context.status("recovery: opening the physical HTTP Update screen over USB")
+    value = gateway_json(
+        context,
+        session,
+        "rpc-raw",
+        device_id,
+        _RECOVERY_CONTROL_SERVICE_ID,
+        _RECOVERY_HTTP_CODE_METHOD,
+        "--deadline-ms",
+        "5000",
+        timeout=10,
+        sensitive_output=True,
+    )
+    try:
+        code_value = json.loads(_raw_rpc_payload(value).decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise DeviceError("Recovery returned invalid HTTP Update code JSON.") from error
+    if not isinstance(code_value, dict) or re.fullmatch(
+        r"[0-9]{6}", str(code_value.get("code", ""))
+    ) is None:
+        raise DeviceError("Recovery returned an invalid HTTP Update code.")
+    return {
+        "command": "http-update-code",
+        "status": "succeeded",
+        "device_id": device_id,
+        "authorization": code_value,
+        "network": network,
+        "base_url": f"http://{network.get('ip')}:{code_value.get('http_port', 8080)}",
+        "gateway_started": session.started_local,
+        "log": str(context.log_path),
+    }
+
+
+def _recovery_verification_status(
+    device: dict[str, Any], status_value: Any
+) -> dict[str, Any]:
+    """Reconcile the two Gateway snapshots used during install preflight."""
+    status = _device_status(status_value)
+    listed_mode = device.get("firmware_mode")
+    if listed_mode == "normal":
+        # The selected-device snapshot identifies the current application
+        # boot. A second status request may briefly return an incomplete or
+        # stale Recovery-shaped payload while Gateway reconciles reconnects.
+        status = {**status, "firmware_mode": "normal"}
+    elif listed_mode == "recovery" and not status.get("firmware_mode"):
+        status = {**status, "firmware_mode": "recovery"}
+    return status
+
+
+class _MonitorTextRenderer:
+    """Reassemble ESP-Iris log records and render complete device log lines."""
+
+    def __init__(
+        self,
+        stream: TextIO,
+        *,
+        grep: str | None,
+        color_enabled: bool,
+    ) -> None:
+        self._stream = stream
+        self._grep = grep
+        self._color_enabled = color_enabled
+        self._buffer = ""
+
+    def feed(self, text: str) -> None:
+        self._buffer += text
+        while True:
+            newline = self._buffer.find("\n")
+            if newline < 0:
+                return
+            line = self._buffer[: newline + 1]
+            self._buffer = self._buffer[newline + 1 :]
+            self._emit(line)
+
+    def finish(self) -> None:
+        if self._buffer:
+            self._emit(self._buffer)
+            self._buffer = ""
+
+    def _emit(self, line: str) -> None:
+        if self._grep and self._grep not in line:
+            return
+        if line.endswith("\r\n"):
+            body, ending = line[:-2], "\r\n"
+        elif line.endswith("\n"):
+            body, ending = line[:-1], "\n"
+        else:
+            body, ending = line, ""
+
+        match = _IDF_MONITOR_LOG_PATTERN.match(body) if self._color_enabled else None
+        if match:
+            color = _IDF_MONITOR_COLORS[match.group(1)]
+            rendered = f"{color}{body}{_ANSI_NORMAL}{ending}"
+        else:
+            rendered = line
+        self._stream.write(rendered)
+        self._stream.flush()
+
+
+def _monitor_color_enabled(arguments: Any, json_output: bool) -> bool:
+    if json_output or getattr(arguments, "disable_auto_color", False):
+        return False
+    if getattr(arguments, "force_color", False):
+        return True
+    if not sys.stdout.isatty():
+        return False
+    if os.name != "nt":
+        return True
+    try:
+        import ctypes
+
+        ctypes_module: Any = ctypes
+        kernel = ctypes_module.windll.kernel32
+        handle = kernel.GetStdHandle(-11)
+        mode = ctypes.c_uint32()
+        if not kernel.GetConsoleMode(handle, ctypes.byref(mode)):
+            return False
+        return bool(kernel.SetConsoleMode(handle, mode.value | 0x0004))
+    except (AttributeError, OSError, ValueError):
+        return False
+
+
+def list_devices(context: RunContext, gateway_profile: str | None) -> dict[str, Any]:
+    """List live devices visible through the selected Gateway."""
+
+    session = ensure_gateway(context, gateway_profile)
+    devices = sorted(
+        gateway_devices(context, session),
+        key=lambda item: str(item.get("device_id") or ""),
+    )
+    for device in devices:
+        device["online"] = device.get("connected") is not False
+        device["connection"] = device.get("transport_name") or device.get("transport")
+    return {
+        "command": "list",
+        "status": "succeeded",
+        "gateway_started": session.started_local,
+        "gateway_profile": session.profile,
+        "devices": devices,
+    }
+
+
+def enter_recovery(arguments: Any, context: RunContext) -> dict[str, Any]:
+    """Enter retained Recovery without starting an installation."""
+
+    session = ensure_gateway(context, arguments.gateway_profile)
+    device = select_device(connected_devices(context, session), arguments.device_id)
+    device_id = str(device.get("device_id"))
+    status = _device_status(gateway_json(context, session, "status", device_id))
+    mode = status.get("firmware_mode") or device.get("firmware_mode")
+    before_boot_id = status.get("boot_id") or device.get("boot_id")
+    before_boot_id_text = (
+        status.get("boot_id_text")
+        or device.get("boot_id_text")
+        or (str(before_boot_id) if before_boot_id is not None else None)
+    )
+    if mode == "recovery":
+        recovery = status
+        transition = "already_recovery"
+    else:
+        if mode != "normal":
+            raise DeviceError(
+                "The device firmware mode is unknown; refusing the Recovery transition."
+            )
+        context.status("recovery: entering retained Recovery")
+        recovery = enter_recovery_and_wait(
+            context,
+            session,
+            device_id,
+            previous_boot_id=before_boot_id,
+            timeout=arguments.timeout,
+        )
+        transition = "entered_recovery"
+    return {
+        "command": "enter-recovery",
+        "status": "succeeded",
+        "transition": transition,
+        "device_id": device_id,
+        "boot_id_before": before_boot_id,
+        "boot_id_before_text": before_boot_id_text,
+        "boot_id": recovery.get("boot_id"),
+        "boot_id_text": recovery.get("boot_id_text")
+        or (
+            str(recovery.get("boot_id"))
+            if recovery.get("boot_id") is not None
+            else None
+        ),
+        "firmware_mode": recovery.get("firmware_mode"),
+        "app_version": recovery.get("app_version"),
+        "gateway_started": session.started_local,
+        "log": str(context.log_path),
+    }
+
+
+def start_system_update(arguments: Any, context: RunContext) -> dict[str, Any]:
+    """Build or select a full-system bundle and apply it through Recovery."""
+
+    manifest_url = getattr(arguments, "manifest_url", None)
+    manifest_path = getattr(arguments, "manifest_path", None)
+    bundle_argument = getattr(arguments, "bundle", None)
+    project_argument = getattr(arguments, "project", None)
+    skip_build = bool(getattr(arguments, "skip_build", False))
+    timeout = float(getattr(arguments, "timeout", 900.0))
+    external_source = manifest_url is not None or manifest_path is not None
+
+    project: Path | None = None
+    bundle: Path | None = None
+    reused_build = False
+    if external_source:
+        if project_argument or skip_build:
+            raise SelectionError(
+                "--project and --skip-build apply only to local System Update bundles."
+            )
+    elif bundle_argument is not None:
+        if project_argument or skip_build:
+            raise SelectionError(
+                "--bundle cannot be combined with --project or --skip-build."
+            )
+        bundle = Path(bundle_argument).expanduser()
+        bundle = (
+            (Path.cwd() / bundle).resolve()
+            if not bundle.is_absolute()
+            else bundle.resolve()
+        )
+        reused_build = True
+    else:
+        project = resolve_project(context.workspace, project_argument, Path.cwd())
+        context.status(f"project: {project}")
+        if not skip_build:
+            context.status("system update: building ota_0 + ui_apps + system bundle")
+            iris_python, _ = ensure_iris_tools(context)
+            run_idf_target(
+                context,
+                idf_path=resolve_idf_path(context.workspace, project),
+                project=project,
+                build_dir=project / "build",
+                target="system-update-bundle",
+                definitions={"ESP_IRIS_PYTHON": str(iris_python)},
+                timeout=3600,
+            )
+        else:
+            context.status("build: reusing existing System Update bundle (--skip-build)")
+        artifacts = discover_artifacts(project)
+        bundle = (
+            artifacts.build_dir
+            / f"{artifacts.project_name}-system-update.irisfw"
+        )
+        reused_build = skip_build
+
+    if bundle is not None:
+        if bundle.suffix != ".irisfw" or not bundle.is_file() or bundle.stat().st_size == 0:
+            raise BuildError(
+                f"A complete local System Update bundle was not found: {bundle}"
+            )
+        context.status(
+            f"bundle: {bundle} ({bundle.stat().st_size} bytes)"
+        )
+
+    context.status("gateway: connecting")
+    session = ensure_gateway(context, arguments.gateway_profile)
+    device = select_device(connected_devices(context, session), arguments.device_id)
+    device_id = str(device.get("device_id"))
+    status = _device_status(
+        gateway_json(context, session, "status", device_id)
+    )
+    firmware_mode = status.get("firmware_mode") or device.get("firmware_mode")
+    context.status(
+        f"device: {device_id} mode={firmware_mode or 'unknown'} "
+        f"boot_id={status.get('boot_id') or device.get('boot_id') or 'unknown'}"
+    )
+    if external_source and firmware_mode != "recovery":
+        raise RecoveryRequiredError(
+            "External System Update requires a live Recovery service. "
+            "Run 'python mosaico.py recover' first."
+        )
+
+    if bundle is not None:
+        context.status("system update: submitting local atomic bundle")
+        operation = run_system_update_bundle(
+            context,
+            session,
+            device_id=device_id,
+            bundle=bundle,
+            timeout=timeout,
+        )
+        context.status("validation: target firmware and system partitions are healthy")
+        return {
+            "command": "system-update",
+            "status": "succeeded",
+            "device_id": device_id,
+            "firmware_mode": firmware_mode,
+            "source": "bundle" if bundle_argument is not None else "local_build",
+            "project": str(project) if project is not None else None,
+            "bundle": str(bundle),
+            "reused_build": reused_build,
+            "gateway_started": session.started_local,
+            "operation": operation,
+            "log": str(context.log_path),
+        }
+
+    if manifest_url:
+        method_id = "1"
+        payload = manifest_url
+        source = "http"
+        action = "HTTP(S) pull"
+    else:
+        method_id = "2"
+        payload = arguments.manifest_path
+        source = "nand"
+        action = "NAND LittleFS read"
+    context.status(f"system update: requesting Recovery {action}")
+    response = gateway_json(
+        context,
+        session,
+        "rpc-raw",
+        device_id,
+        "0x1201",
+        method_id,
+        "--payload",
+        payload,
+        "--deadline-ms",
+        "5000",
+        timeout=10,
+        sensitive_output=True,
+    )
+    context.status("system update: accepted by Recovery; update is running")
+    return {
+        "command": "system-update",
+        "status": "accepted",
+        "device_id": device_id,
+        "firmware_mode": firmware_mode,
+        "source": source,
+        "gateway_started": session.started_local,
+        "response": response,
+        "log": str(context.log_path),
+    }
+
+
+def install(arguments: Any, context: RunContext) -> dict[str, Any]:
+    workspace = context.workspace
+    project = resolve_project(workspace, arguments.project, Path.cwd())
+    context.status(f"project: {project}")
+    reused = bool(arguments.skip_build)
+    if not reused:
+        build_application(context, project)
+    else:
+        context.status("build: reusing existing artifacts (--skip-build)")
+    artifacts = discover_artifacts(project)
+    context.status(
+        f"artifact: {artifacts.project_name} {artifacts.project_version} "
+        f"({artifacts.image.stat().st_size} bytes, {artifacts.target})"
+    )
+    model = select_model(workspace, None)
+    recovery_manifest = load_bundle(workspace.recovery_dir, model.target)
+    if artifacts.target != model.target:
+        raise BuildError(
+            f"The project target is {artifacts.target!r}, but the device requires "
+            f"{model.target!r}."
+        )
+    expected_layout_sha256 = partition_table_flash_sha256(
+        artifacts.partition_table
+    )
+
+    context.status("gateway: connecting")
+    session = ensure_gateway(context, arguments.gateway_profile)
+    device = select_device(connected_devices(context, session), arguments.device_id)
+    device_id = str(device.get("device_id"))
+    context.status(
+        f"device: {device_id} mode={device.get('firmware_mode', 'unknown')} "
+        f"boot_id={device.get('boot_id', 'unknown')}"
+    )
+    status = _recovery_verification_status(
+        device, gateway_json(context, session, "status", device_id)
+    )
+    recovery_version = str(recovery_manifest.get("version") or "")
+    recovery_verified, verification = recovery_verification_details(
+        device_id, status, recovery_version, workspace
+    )
+    context.note(
+        "recovery verification: "
+        + json.dumps(verification, ensure_ascii=False, sort_keys=True)
+    )
+    if not recovery_verified:
+        raise RecoveryRequiredError(
+            "The device has not completed Recovery initialization or verification. "
+            "Run 'python mosaico.py recover' first. "
+            f"Verification details: {json.dumps(verification, ensure_ascii=False)}"
+        )
+    if status.get("firmware_mode") != "recovery":
+        context.status("recovery: entering retained Recovery")
+        status = enter_recovery_and_wait(
+            context,
+            session,
+            device_id,
+            previous_boot_id=device.get("boot_id"),
+            timeout=arguments.timeout,
+        )
+        recovery_verified, verification = recovery_verification_details(
+            device_id, status, recovery_version, workspace
+        )
+        context.note(
+            "live recovery verification: "
+            + json.dumps(verification, ensure_ascii=False, sort_keys=True)
+        )
+        if not recovery_verified:
+            raise RecoveryRequiredError(
+                "The device entered Recovery, but the live Recovery service did "
+                "not match the reviewed workspace bundle. Run "
+                "'python mosaico.py recover' first. "
+                f"Verification details: {json.dumps(verification, ensure_ascii=False)}"
+            )
+    if status.get("firmware_mode") == "recovery":
+        try:
+            record_recovery_verification(
+                device_id, recovery_version, status.get("boot_id")
+            )
+        except OSError as error:
+            # Live Recovery is authoritative for this install. Do not discard
+            # that proof merely because Windows briefly blocks the state file.
+            context.note(f"warning: could not refresh Recovery verification: {error}")
+    context.status("recovery: verified retained Recovery service")
+
+    context.status("partition table: verifying device layout")
+    try:
+        inventory = system_inventory(context, session, device_id)
+    except DeviceError as error:
+        raise DeviceError(
+            "Could not verify the device partition table; refusing to start OTA. "
+            "Run 'python mosaico.py recover' on the Gateway host, or apply an "
+            "authorized system update."
+        ) from error
+    actual_layout_sha256 = inventory["partition_table_sha256"]
+    context.note(
+        "partition table verification: "
+        + json.dumps(
+            {
+                "actual_sha256": actual_layout_sha256,
+                "expected_sha256": expected_layout_sha256,
+                "partition_table": str(artifacts.partition_table),
+            },
+            sort_keys=True,
+        )
+    )
+    if actual_layout_sha256 != expected_layout_sha256:
+        raise DeviceError(
+            "The device partition table does not match this application build; "
+            "refusing to start OTA. Apply an authorized system update or run "
+            "'python mosaico.py recover' on the Gateway host.",
+            details={
+                "actual_partition_table_sha256": actual_layout_sha256,
+                "expected_partition_table_sha256": expected_layout_sha256,
+                "partition_table": str(artifacts.partition_table),
+            },
+        )
+    context.status(
+        f"partition table: verified {actual_layout_sha256[:12]}"
+    )
+
+    context.status(f"ota: starting recovery-first installation ({arguments.validation})")
+    operation = run_ota(
+        context,
+        session,
+        device_id=device_id,
+        image=artifacts.image,
+        elf=artifacts.elf,
+        map_file=artifacts.map_file,
+        validation=arguments.validation,
+        timeout=arguments.timeout,
+    )
+    context.status("validation: installed application is connected and healthy")
+    return {
+        "command": "install",
+        "status": "succeeded",
+        "project": str(project),
+        "device_id": device_id,
+        "firmware": {
+            "name": artifacts.project_name,
+            "version": artifacts.project_version,
+            "target": artifacts.target,
+        },
+        "validation": arguments.validation,
+        "reused_build": reused,
+        "gateway_started": session.started_local,
+        "operation": operation,
+        "log": str(context.log_path),
+    }
+
+
+def recover(arguments: Any, context: RunContext) -> dict[str, Any]:
+    workspace = context.workspace
+    if getattr(arguments, "gateway_profile", None):
+        raise DeviceError(
+            "Remote Recovery is not supported; run recovery on the Gateway host."
+        )
+    model = select_model(workspace, arguments.model)
+    context.status(
+        f"recovery: model={model.id} target={model.target} source={arguments.source}"
+    )
+    recovery_project = workspace.recovery_project
+    idf_path = resolve_idf_path(workspace, recovery_project)
+    context.status(f"idf: environment ready at {idf_path}")
+    bundle_dir = workspace.recovery_dir
+    manifest: dict[str, Any] | None = None
+    if arguments.source == "reviewed":
+        manifest = load_bundle(bundle_dir, model.target)
+        recovery_image = manifest.get("images", {}).get("recovery", {})
+        context.status(
+            f"bundle: verified {manifest.get('version', 'unknown')} "
+            f"({recovery_image.get('size', 'unknown')} bytes)"
+        )
+    elif not arguments.dry_run:
+        print(
+            "Warning: building an unreviewed Recovery candidate bundle from the current source.",
+            file=sys.stderr,
+        )
+        context.status("bundle: current-source Recovery candidate selected")
+
+    prior_device_id: str | None = arguments.device_id
+    selected_hardware_mac: str | None = getattr(arguments, "hardware_mac", None)
+    prior_boot_id: str | None = None
+    prior_session = None
+    context.status("gateway: checking the currently connected device")
+    try:
+        prior_session = ensure_gateway(context, None)
+        devices = connected_devices(context, prior_session)
+    except DeviceError:
+        if not arguments.dry_run:
+            raise
+        devices = []
+        context.note("warning: local Gateway was unavailable during dry-run")
+    prior_device = None
+    if arguments.device_id:
+        matches = [item for item in devices if item.get("device_id") == arguments.device_id]
+        if len(matches) == 1:
+            prior_device = matches[0]
+        else:
+            context.note("warning: requested device was not reachable through Gateway")
+    elif selected_hardware_mac:
+        matches = [
+            item for item in devices
+            if str(item.get("hardware_mac") or "").lower() == selected_hardware_mac
+        ]
+        if len(matches) == 1:
+            prior_device = matches[0]
+        elif len(matches) > 1:
+            raise SelectionError(
+                f"Multiple managed devices reported hardware MAC {selected_hardware_mac}."
+            )
+    elif len(devices) == 1:
+        prior_device = devices[0]
+    elif len(devices) > 1:
+        raise SelectionError(
+            "Multiple managed devices were found; specify the recovery target with --device-id."
+        )
+    if prior_device is not None:
+        prior_device_id = str(prior_device.get("device_id"))
+        selected_hardware_mac = str(
+            prior_device.get("hardware_mac") or selected_hardware_mac or ""
+        ) or None
+        prior_boot_id = str(prior_device.get("boot_id") or "") or None
+        context.status(
+            f"device: {prior_device_id} mode="
+            f"{prior_device.get('firmware_mode', 'unknown')} "
+            f"boot_id={prior_boot_id or 'unknown'}"
+        )
+    else:
+        context.status(
+            "gateway: managed device unavailable; checking the recovery interface"
+        )
+
+    independent_port = getattr(arguments, "recovery_port", None)
+    independent_identity = None
+    if independent_port:
+        if prior_device is None or prior_session is None:
+            raise DeviceError("--recovery-port requires a live managed Device ID before flashing.")
+        live = _device_status(gateway_json(context, prior_session, "status", prior_device_id))
+        if live.get("device_id") != prior_device_id or not live.get("boot_id"):
+            raise DeviceError("The managed device did not provide live Device ID and Boot ID evidence.")
+        prior_boot_id = str(live["boot_id"])
+        independent_identity = serial_jtag_candidate(independent_port)
+        context.status(f"device: explicit independent USB Serial/JTAG at {independent_identity['path']}")
+
+    unowned_port: str | None = None
+    if prior_device is None:
+        context.status("device: detecting an unowned ROM configuration interface")
+
+        def probe_unowned_rom_mac(port: str) -> str:
+            if prior_session is None:
+                return read_rom_hardware_mac(context, model, port, idf_path)
+            expected_probe_version = str(
+                (manifest or {}).get("version") or "current-source"
+            )
+            probe_lease = acquire_endpoint_maintenance_lease(
+                context,
+                prior_session,
+                endpoint=port,
+                expected_version=expected_probe_version,
+                timeout=min(arguments.timeout, 30),
+            )
+            try:
+                return read_rom_hardware_mac(
+                    context, model, lease_port(probe_lease), idf_path
+                )
+            finally:
+                finish_maintenance_lease(
+                    context,
+                    prior_session,
+                    probe_lease,
+                    abort=True,
+                    timeout=min(arguments.timeout, 30),
+                )
+
+        unowned_port = provisioning_candidate(
+            context,
+            model,
+            hardware_mac=selected_hardware_mac,
+            idf_path=idf_path,
+            mac_reader=probe_unowned_rom_mac,
+        )
+        if selected_hardware_mac or arguments.source == "current":
+            rom_hardware_mac = probe_unowned_rom_mac(unowned_port)
+            if selected_hardware_mac and rom_hardware_mac != selected_hardware_mac:
+                raise DeviceError("Selected ROM endpoint hardware MAC changed during probing.")
+            selected_hardware_mac = rom_hardware_mac
+            context.status(
+                f"device: recovery interface ready at {unowned_port} "
+                f"hardware_mac={selected_hardware_mac}"
+            )
+
+    build_dir = recovery_project / "build-mosaico-recovery"
+    plan = {
+        "command": "recover",
+        "status": "dry_run" if arguments.dry_run else "planned",
+        "model": model.id,
+        "source": arguments.source,
+        "device_id": prior_device_id,
+        "hardware_mac": selected_hardware_mac,
+        "target": model.target,
+        "recovery_version": manifest.get("version") if manifest else "current-source",
+        "recovery_port": independent_identity,
+        "previous_boot_id": prior_boot_id,
+        "checks": {
+            "idf": str(idf_path),
+            "bundle_verified": manifest is not None,
+            "device_unique": prior_device is not None or unowned_port is not None,
+            "gateway_local": True,
+        },
+        "log": str(context.log_path),
+    }
+    if arguments.dry_run:
+        context.status("validation: recovery preflight checks passed; no write performed")
+        return plan
+
+    if prior_session is None:
+        raise DeviceError("The local Gateway is required to verify Recovery.")
+
+    context.status("bundle: preparing all Recovery artifacts before device maintenance")
+    recovery_components = (
+        workspace.bsp_path / "components" / "esp-mosaico-bsp",
+        workspace.esp_iris_path / "components" / "esp_iris",
+    )
+    missing_components = [
+        str(path) for path in recovery_components if not (path / "CMakeLists.txt").is_file()
+    ]
+    if missing_components:
+        raise EnvironmentError(
+            "Required Recovery components are unavailable.",
+            details={"missing": missing_components},
+        )
+    recovery_definitions = {
+        "MOSAICO_RECOVERY_SOURCE": arguments.source,
+        "EXTRA_COMPONENT_DIRS": ";".join(
+            path.resolve().as_posix() for path in recovery_components
+        ),
+    }
+    defaults_fingerprint: str | None = None
+    if arguments.source == "current":
+        defaults_fingerprint = recovery_defaults_fingerprint(recovery_project)
+        if not recovery_build_defaults_are_current(
+            build_dir, defaults_fingerprint
+        ):
+            context.status(
+                "bundle: Recovery defaults changed; clearing the stale generated sdkconfig"
+            )
+            run_idf_target(
+                context,
+                idf_path=idf_path,
+                project=recovery_project,
+                build_dir=build_dir,
+                target="fullclean",
+                definitions=recovery_definitions,
+                timeout=arguments.timeout,
+            )
+    run_idf_target(
+        context,
+        idf_path=idf_path,
+        project=recovery_project,
+        build_dir=build_dir,
+        target="mosaico-recover-prepare",
+        definitions=recovery_definitions,
+        timeout=arguments.timeout,
+    )
+    if defaults_fingerprint is not None:
+        record_recovery_build_defaults(build_dir, defaults_fingerprint)
+    prepared_dir = build_dir / (
+        "recovery" if arguments.source == "reviewed" else "recovery-current"
+    )
+    prepared_manifest = load_bundle(prepared_dir, model.target)
+    expected_version = str(prepared_manifest.get("version") or "")
+
+    lease: dict[str, Any] | None = None
+    auxiliary_lease: dict[str, Any] | None = None
+    lease_finished = False
+    auxiliary_finished = False
+    try:
+        if prior_device is not None and prior_device_id:
+            context.status(f"gateway: acquiring maintenance lease for {prior_device_id}")
+            lease = acquire_maintenance_lease(
+                context, prior_session, device_id=prior_device_id,
+                expected_version=expected_version, timeout=arguments.timeout,
+            )
+        else:
+            assert unowned_port is not None
+            lease = acquire_endpoint_maintenance_lease(
+                context, prior_session, endpoint=unowned_port,
+                expected_version=expected_version, timeout=arguments.timeout,
+            )
+        port = lease_port(lease)
+        if independent_identity is not None:
+            evidence = lease.get("evidence", {})
+            before = evidence.get("device_before", {}) if isinstance(evidence, dict) else {}
+            if before.get("device_id") != prior_device_id or not before.get("boot_id"):
+                raise DeviceError("Device maintenance lease lacks matching live identity evidence.")
+            prior_boot_id = str(before["boot_id"])
+            plan["previous_boot_id"] = prior_boot_id
+            if same_port(port, independent_identity["path"]):
+                raise DeviceError("--recovery-port must be independent of the managed USB endpoint.")
+            auxiliary_lease = acquire_endpoint_maintenance_lease(
+                context, prior_session, endpoint=independent_identity["path"],
+                expected_version=expected_version, timeout=arguments.timeout,
+            )
+            if not same_port(lease_port(auxiliary_lease), independent_identity["path"]):
+                raise DeviceError("Gateway leased a different recovery endpoint.")
+            auxiliary_evidence = auxiliary_lease.get("evidence", {})
+            attached_id = auxiliary_evidence.get("expected_device_id") if isinstance(auxiliary_evidence, dict) else None
+            if attached_id and attached_id != prior_device_id:
+                raise DeviceError("Independent endpoint is owned by a different live device.")
+            port = independent_identity["path"]
+            # Re-enumerate after bundle preparation and both leases, before reset/write.
+            if serial_jtag_candidate(port) != independent_identity:
+                raise DeviceError("USB Serial/JTAG identity changed during Recovery preparation.")
+            (context.directory / "recovery-route.json").write_text(json.dumps({
+                "device_id": prior_device_id, "previous_boot_id": prior_boot_id,
+                "managed_lease_id": lease["lease_id"],
+                "independent_lease_id": auxiliary_lease["lease_id"],
+                "write_endpoint": independent_identity,
+                "association": "explicit operator selection; no MAC inference",
+            }, indent=2) + "\n", encoding="utf-8")
+        for active in (lease, auxiliary_lease):
+            if active is not None:
+                renew_maintenance_lease(context, prior_session, active,
+                                        ttl_seconds=arguments.timeout + 60)
+        if selected_hardware_mac and (
+            unowned_port is not None or independent_identity is not None
+        ):
+            current_hardware_mac = read_rom_hardware_mac(
+                context, model, port, idf_path
+            )
+            if current_hardware_mac != selected_hardware_mac:
+                raise DeviceError(
+                    "ROM endpoint hardware MAC changed before flashing; refusing to write."
+                )
+        context.status(f"flash: writing the prepared complete Recovery bundle via {port}")
+        run_idf_target(
+            context, idf_path=idf_path, project=recovery_project,
+            build_dir=build_dir, target="mosaico-recover-flash",
+            definitions=recovery_definitions, port=port, timeout=arguments.timeout,
+        )
+        context.status("gateway: verifying Recovery on the original managed Device ID")
+        completed = finish_maintenance_lease(
+            context, prior_session, lease, abort=False, timeout=arguments.timeout,
+        )
+        lease_finished = True
+        evidence = completed.get("evidence", {})
+        status = evidence.get("verification", {}) if isinstance(evidence, dict) else {}
+        if (selected_hardware_mac
+                and status.get("hardware_mac") != selected_hardware_mac):
+            raise OperationError(
+                "Recovery did not report the factory Base MAC selected in ROM mode."
+            )
+        if independent_identity is not None:
+            if (status.get("device_id") != prior_device_id
+                    or not status.get("boot_id") or str(status["boot_id"]) == prior_boot_id
+                    or status.get("firmware_mode") != "recovery"
+                    or status.get("app_version") != expected_version):
+                raise OperationError("Independent-port Recovery did not verify the same device, new boot and expected Recovery firmware.")
+            # The auxiliary endpoint is a transport reservation, not a second
+            # firmware acceptance authority. Release it only after HS-USB verifies.
+            finish_maintenance_lease(context, prior_session, auxiliary_lease,
+                                     abort=True, timeout=min(arguments.timeout, 30))
+            auxiliary_finished = True
+    except BaseException:
+        for active, finished in ((lease, lease_finished), (auxiliary_lease, auxiliary_finished)):
+            if active is not None and not finished:
+                try:
+                    finish_maintenance_lease(context, prior_session, active,
+                                             abort=True, timeout=min(arguments.timeout, 30))
+                except (DeviceError, OperationError):
+                    context.note("warning: maintenance lease remains quarantined; inspect the local Gateway")
+        raise
+
+    verified_device_id = str(status.get("device_id") or prior_device_id or "")
+    if not verified_device_id:
+        raise OperationError(
+            "Recovery is ready, but the Device ID could not be confirmed."
+        )
+    recovery_version = expected_version or str(status.get("app_version") or "current-source")
+    record_recovery_verification(
+        verified_device_id, recovery_version, status.get("boot_id")
+    )
+    context.status(
+        f"validation: Recovery {recovery_version} ready on {verified_device_id} "
+        f"boot_id={status.get('boot_id', 'unknown')}"
+    )
+    return {
+        **plan,
+        "status": "succeeded",
+        "device_id": verified_device_id,
+        "hardware_mac": status.get("hardware_mac") or selected_hardware_mac,
+        "boot_id": status.get("boot_id"),
+        "gateway_started": prior_session.started_local,
+        "maintenance_lease_id": lease.get("lease_id") if lease else None,
+        "recovery_endpoint_lease_id": auxiliary_lease.get("lease_id") if auxiliary_lease else None,
+    }
+
+
+def monitor(arguments: Any, context: RunContext, json_output: bool) -> int:
+    session = ensure_gateway(context, arguments.gateway_profile)
+    device = select_device(connected_devices(context, session), arguments.device_id)
+    device_id = str(device.get("device_id"))
+    argv = session.ctl_argv(
+        "logs", "--device", device_id, *( () if arguments.snapshot else ("--follow",) ),
+        # Always consume structured events. The ESP-Iris text formatter uses
+        # print() even though event text already carries its line ending.
+        json_output=True,
+    )
+    context.note("$ " + " ".join(argv))
+    monitor_environment = os.environ.copy()
+    # The ESP-Iris CLI writes into a pipe here, so Python would otherwise use
+    # block buffering. Force each printed log line through to this process,
+    # whose user-facing print calls already use flush=True below.
+    monitor_environment["PYTHONUNBUFFERED"] = "1"
+    process = subprocess.Popen(
+        argv,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=1,
+        env=monitor_environment,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    deadline = time.monotonic() + arguments.timeout if arguments.timeout else None
+    try:
+        stdout = process.stdout
+        assert stdout is not None
+        sentinel = object()
+        records: Queue[str | object] = Queue()
+
+        def read_records() -> None:
+            try:
+                for record in stdout:
+                    records.put(record)
+            finally:
+                records.put(sentinel)
+
+        reader = Thread(target=read_records, daemon=True)
+        reader.start()
+        invalid_child_output = False
+        stopped_by_us = False
+        renderer = _MonitorTextRenderer(
+            sys.stdout,
+            grep=arguments.grep,
+            color_enabled=_monitor_color_enabled(arguments, json_output),
+        )
+
+        def handle_record(record: str) -> None:
+            nonlocal invalid_child_output
+            context.note(record)
+            try:
+                item = json.loads(record)
+            except json.JSONDecodeError:
+                invalid_child_output = True
+                if not json_output:
+                    renderer.feed(record)
+                return
+
+            text = str(item.get("text", "")) if isinstance(item, dict) else ""
+            if json_output:
+                if not arguments.grep or arguments.grep in text:
+                    sys.stdout.write(record)
+                    sys.stdout.flush()
+                return
+            if isinstance(item, dict) and isinstance(item.get("text"), str):
+                renderer.feed(item["text"])
+            else:
+                renderer.feed(json.dumps(item, ensure_ascii=False) + "\n")
+
+        while True:
+            if deadline is not None and time.monotonic() >= deadline:
+                process.terminate()
+                stopped_by_us = True
+                break
+            wait = 0.2
+            if deadline is not None:
+                wait = max(0, min(wait, deadline - time.monotonic()))
+            try:
+                record = records.get(timeout=wait)
+            except Empty:
+                if process.poll() is not None:
+                    break
+                continue
+            if record is sentinel:
+                break
+            handle_record(str(record))
+        renderer.finish()
+        try:
+            return_code = process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            return_code = process.wait(timeout=5)
+        reader.join(timeout=1)
+        stdout.close()
+        if not stopped_by_us and return_code != 0:
+            raise DeviceError(
+                "The log connection ended unexpectedly.",
+                details={"log": str(context.log_path)},
+            )
+        if invalid_child_output:
+            raise DeviceError(
+                "ESP-Iris returned an invalid log event.",
+                details={"log": str(context.log_path)},
+            )
+    except KeyboardInterrupt:
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+        if process.stdout is not None:
+            process.stdout.close()
+        return 0
+    return 0

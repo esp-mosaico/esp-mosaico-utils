@@ -1,0 +1,168 @@
+"""Executable HTTP contract for the ESP-Iris Gateway adapter."""
+
+from __future__ import annotations
+
+from typing import Any
+
+
+def build_openapi(auth_required: bool) -> dict[str, Any]:
+    control_paths = {
+        "/v1/devices/{device_id}/rpc/raw": "Raw RPC",
+        "/v1/devices/{device_id}/restart": "Restart device",
+        "/v1/devices/{device_id}/factory-recovery": "Enter factory recovery",
+        "/v1/devices/{device_id}/ota": "Validated OTA",
+        "/v1/devices/{device_id}/system-update": "Authenticated system update",
+        "/v1/devices/{device_id}/input": "Pointer or touch gesture",
+        "/v1/devices/{device_id}/console": "Submit one console command line",
+        "/v1/devices/{device_id}/maintenance-leases": "Acquire local maintenance lease",
+        "/v1/devices/{device_id}/screenshot": "Capture screenshot",
+        "/v1/devices/{device_id}/mirror/start": "Start media mirror",
+        "/v1/devices/{device_id}/mirror/stop": "Stop media mirror",
+    }
+    paths: dict[str, Any] = {
+        "/v1/health": {"get": {"summary": "Gateway health"}},
+        "/v1/auth/login": {"post": {"summary": "Developer password login"}},
+        "/v1/devices": {"get": {"summary": "Connected and cached devices"}},
+        "/v1/maintenance-endpoints/leases": {
+            "post": {"summary": "Acquire local physical-endpoint maintenance lease"}
+        },
+        "/v1/devices/{device_id}": {
+            "get": {"summary": "Current or cached status"},
+            "delete": {
+                "summary": "Remove an offline device from inventory",
+                "description": "Preserves operations, events, logs, and audit history.",
+            },
+        },
+        "/v1/devices/{device_id}/system-inventory": {
+            "get": {"summary": "Live bootloader and partition-table inventory"}
+        },
+        "/v1/mode": {
+            "get": {"summary": "Get global mode"},
+            "put": {"summary": "Switch develop or observe mode"},
+        },
+        "/v1/events": {"get": {"summary": "Cursor-based event history"}},
+        "/v1/events/ws": {"get": {"summary": "Resumable event WebSocket"}},
+        "/v1/operations": {"get": {"summary": "Device operation records"}},
+        "/v1/operations/{operation_id}/reconcile": {
+            "post": {"summary": "Append a read-only observation of an uncertain operation; never replay writes"}
+        },
+        "/v1/operations/{operation_id}/reconciliations": {
+            "get": {"summary": "Append-only reconciliation evidence; original status is unchanged"}
+        },
+        "/v1/devices/{device_id}/files/volumes": {
+            "get": {"summary": "Registered file volumes and capabilities"}
+        },
+        "/v1/devices/{device_id}/files/stat": {
+            "get": {"summary": "File or directory metadata"}
+        },
+        "/v1/devices/{device_id}/files": {
+            "get": {"summary": "Paginated directory entries"}
+        },
+        "/v1/devices/{device_id}/file": {
+            "get": {"summary": "Stream a file with HTTP Range support"},
+            "put": {"summary": "Stream a create or atomic file replacement"},
+            "delete": {"summary": "Delete a file or empty directory"},
+        },
+        "/v1/devices/{device_id}/directories": {
+            "post": {"summary": "Create one directory"}
+        },
+        "/v1/devices/{device_id}/file-rename": {
+            "post": {"summary": "Rename within one logical volume"}
+        },
+        "/v1/firmware-artifacts": {
+            "get": {"summary": "Archived firmware bundles"},
+            "post": {"summary": "Archive BIN, ELF and map as one validated bundle"},
+        },
+        "/v1/system-audit": {"get": {"summary": "Gateway system audit"}},
+        "/v1/metrics": {"get": {"summary": "Gateway process metrics"}},
+        "/v1/maintenance-leases/{lease_id}": {
+            "get": {"summary": "Get maintenance lease state"}
+        },
+        "/v1/maintenance-leases/{lease_id}/renew": {
+            "post": {"summary": "Renew local maintenance lease"}
+        },
+        "/v1/maintenance-leases/{lease_id}/complete": {
+            "post": {"summary": "Reattach and verify maintained device"}
+        },
+        "/v1/maintenance-leases/{lease_id}/abort": {
+            "post": {"summary": "Abort maintenance and reattach device"}
+        },
+    }
+    for path, summary in control_paths.items():
+        paths[path] = {"post": {"summary": summary}}
+    compatibility_schema = {
+        "type": "object", "additionalProperties": False,
+        "description": "Explicit device expectations, checked before writes and bound to the operation ID.",
+        "properties": {
+            **{field: {"type": "string", "minLength": 1, "maxLength": 64}
+               for field in ("chip_target", "product_contract", "board_id", "layout_id")},
+            "recovery_abi": {"type": "integer", "minimum": 1, "maximum": 65535},
+        },
+    }
+    paths["/v1/devices/{device_id}/ota"]["post"]["requestBody"] = {
+        "required": True,
+        "content": {
+            "application/json": {
+                "schema": {
+                    "type": "object",
+                    "required": ["artifact_id"],
+                    "properties": {
+                        "artifact_id": {"type": "string"},
+                        "compatibility": compatibility_schema,
+                        "execution_mode": {
+                            "type": "string",
+                            "enum": ["recovery", "application"],
+                            "default": "recovery",
+                        },
+                        "validation_mode": {
+                            "type": "string",
+                            "enum": ["elf_sha256", "version"],
+                            "default": "elf_sha256",
+                        },
+                    },
+                }
+            }
+        },
+    }
+    paths["/v1/devices/{device_id}/system-update"]["post"]["requestBody"] = {
+        "required": True,
+        "content": {
+            "application/vnd.esp-iris.system-update+zip": {
+                "schema": {"type": "string", "format": "binary"}
+            }
+        },
+    }
+    paths["/v1/devices/{device_id}/system-update"]["post"]["parameters"] = [{
+        "in": "header", "name": "X-Iris-Compatibility", "required": False,
+        "content": {"application/json": {"schema": compatibility_schema}},
+    }]
+    paths["/v1/devices/{device_id}/jobs/{job_id}"] = {
+        "get": {"summary": "Query job"},
+        "delete": {"summary": "Cancel job"},
+    }
+    document = {
+        "openapi": "3.1.0",
+        "info": {
+            "title": "ESP-Iris Developer Gateway",
+            "version": "1.0.0",
+            "description": "Gateway-only device control and observation API.",
+        },
+        "servers": [{"url": "/"}],
+        "components": {
+            "securitySchemes": {
+                "cookieAuth": {
+                    "type": "apiKey",
+                    "in": "cookie",
+                    "name": "esp_iris_session",
+                },
+                "agentToken": {"type": "http", "scheme": "bearer"},
+            }
+        },
+        "paths": paths,
+    }
+    if auth_required:
+        document["security"] = [{"cookieAuth": []}, {"agentToken": []}]
+    return document
+
+
+__all__ = ["build_openapi"]

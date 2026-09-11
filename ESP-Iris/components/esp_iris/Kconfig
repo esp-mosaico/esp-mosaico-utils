@@ -1,0 +1,454 @@
+menu "ESP-Iris device link"
+
+config ESP_IRIS_ENABLE
+    bool "Enable ESP-Iris"
+    default y
+
+if ESP_IRIS_ENABLE
+
+menu "Declared firmware compatibility"
+
+config ESP_IRIS_FIRMWARE_ROLE
+    int "Firmware role (0 unknown, 1 normal application, 2 recovery)"
+    range 0 2
+    default 0
+    help
+        Products must explicitly declare each image role. Project names and
+        version strings are not used to infer this value.
+
+config ESP_IRIS_PRODUCT_CONTRACT
+    string "Product compatibility contract identifier"
+    default ""
+
+config ESP_IRIS_BOARD_ID
+    string "Board compatibility identifier"
+    default ""
+
+config ESP_IRIS_LAYOUT_ID
+    string "Partition layout contract identifier"
+    default ""
+    help
+        A declaration, not an inventory hash. Validate the actual partition
+        inventory before system updates.
+
+config ESP_IRIS_RECOVERY_ABI
+    int "Recovery ABI version (0 unspecified)"
+    range 0 65535
+    default 0
+
+config ESP_IRIS_HEALTH_TIMEOUT_MS
+    int "Product health observation timeout in milliseconds"
+    range 1000 600000
+    default 45000
+
+endmenu
+
+config ESP_IRIS_NVS_PARTITION_NAME
+    string "NVS partition used for Iris retained state"
+    default "nvs"
+    help
+        Label of the NVS partition that stores the TCP pairing token and
+        crash-loop record. Device ID is derived from the factory eFuse Base
+        MAC and does not use NVS. The partition table must contain
+        an NVS partition with this label. Keep the default for shared NVS, or
+        select a product-owned system metadata partition to isolate Iris state
+        from application data.
+
+menu "Crash-loop recovery"
+
+config ESP_IRIS_CRASH_LOOP_TRACKING
+    bool "Track consecutive unplanned crash resets"
+    default y
+    help
+        Persist the identity and reset result of the last started image in the
+        Iris NVS namespace. On the next boot, panic, watchdog and CPU-lockup
+        resets are attributed to that image. Planned software restarts are not
+        counted. The state is stored as one versioned NVS blob and survives
+        application updates and ordinary resets.
+
+config ESP_IRIS_CRASH_LOOP_RECOVERY
+    bool "Enter recovery after repeated crashes"
+    depends on ESP_IRIS_CRASH_LOOP_TRACKING
+    depends on ESP_IRIS_FIRMWARE_ROLE = 1
+    default y
+    help
+        When the configured limit is reached, select the recovery partition
+        through esp_iris_platform_select_recovery_target() and perform a
+        planned software restart. The default platform hook selects the
+        factory application partition. Products with another retained
+        recovery layout may override the hook.
+
+config ESP_IRIS_CRASH_LOOP_LIMIT
+    int "Consecutive crash limit"
+    depends on ESP_IRIS_CRASH_LOOP_TRACKING
+    range 1 100
+    default 3
+
+config ESP_IRIS_CRASH_LOOP_STABLE_MS
+    int "Stable runtime before clearing the counter (ms)"
+    depends on ESP_IRIS_CRASH_LOOP_TRACKING
+    range 1000 600000
+    default 30000
+    help
+        A normal application that remains alive for this interval clears its
+        own consecutive crash count. Products may clear it earlier by calling
+        esp_iris_mark_healthy(). Recovery firmware never clears the failed
+        normal application's record merely by remaining alive.
+
+config ESP_IRIS_CRASH_LOOP_COUNT_POWER_FAULTS
+    bool "Count brownout and power-glitch resets as crashes"
+    depends on ESP_IRIS_CRASH_LOOP_TRACKING
+    default n
+    help
+        Disabled by default because an unstable supply can otherwise cause
+        repeated NVS writes and incorrectly quarantine healthy firmware.
+
+endmenu
+
+menu "Device transports"
+
+config ESP_IRIS_TRANSPORT_USB
+    bool "USB CDC0 (ESP-Iris binary protocol only)"
+    depends on IDF_TARGET_ESP32S31
+    depends on !BSP_USB_CONSOLE
+    select TINYUSB_CDC_ENABLED
+    help
+        ESP-Iris owns TinyUSB and CDC0. stdout/stderr are carried inside the
+        binary LOG channel; CDC is not a text console and DTR/RTS never enters
+        ROM download mode.
+
+config ESP_IRIS_TRANSPORT_USB_SERIAL_JTAG
+    bool "USB Serial/JTAG serial channel (ESP-Iris binary protocol only)"
+    depends on SOC_USB_SERIAL_JTAG_SUPPORTED
+    depends on !ESP_CONSOLE_USB_SERIAL_JTAG
+    depends on !ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG
+    select USJ_ENABLE_USB_SERIAL_JTAG
+    help
+        ESP-Iris owns the fixed USB Serial/JTAG CDC serial channel. The JTAG
+        interface remains available, but the serial channel cannot also be an
+        ESP-IDF console or serial monitor. Flashing tools and ESP-Iris must not
+        open the serial endpoint concurrently.
+
+config ESP_IRIS_TRANSPORT_TCP
+    bool "Raw TCP server"
+    default y if !ESP_IRIS_TRANSPORT_USB && !ESP_IRIS_TRANSPORT_USB_SERIAL_JTAG
+    help
+        Listen on all device interfaces. ESP-Iris does not initialize Wi-Fi,
+        provision credentials, or create a network interface.
+
+comment "Select one or more transports; the first active client owns the session"
+    help
+        Enabled transports wait concurrently. A physical connection is only a
+        provisional candidate. The first candidate to return a valid and, when
+        configured, authenticated HELLO_ACK owns the session. Other transports
+        are stopped after a winner is confirmed and restarted when that session
+        disconnects.
+
+endmenu
+
+config ESP_IRIS_TRANSPORT_CLAIM_TIMEOUT_MS
+    int "Provisional transport handshake timeout (ms)"
+    range 250 10000
+    default 2000
+    help
+        Maximum time a physical connection may wait for a valid HELLO_ACK when
+        more than one transport is enabled. On timeout ESP-Iris releases that
+        candidate and gives other connected transports a chance to negotiate.
+
+config ESP_IRIS_TCP_PORT
+    int "Raw TCP listen port"
+    depends on ESP_IRIS_TRANSPORT_TCP
+    range 1024 65535
+    default 19772
+
+config ESP_IRIS_USB_SERIAL_JTAG_RX_BUFFER_BYTES
+    int "USB Serial/JTAG receive ring size"
+    depends on ESP_IRIS_TRANSPORT_USB_SERIAL_JTAG
+    range 512 8192
+    default 2048
+
+config ESP_IRIS_USB_SERIAL_JTAG_TX_BUFFER_BYTES
+    int "USB Serial/JTAG transmit ring size"
+    depends on ESP_IRIS_TRANSPORT_USB_SERIAL_JTAG
+    range 512 8192
+    default 2048
+
+config ESP_IRIS_USB_SERIAL_JTAG_DISABLE_AUTO_RESET
+    bool "Disable USB Serial/JTAG DTR/RTS reset while Iris is running"
+    depends on ESP_IRIS_TRANSPORT_USB_SERIAL_JTAG
+    default y
+    help
+        Prevent opening or closing the ESP-Iris serial endpoint from resetting
+        the chip through the USB Serial/JTAG peripheral. The previous hardware
+        setting is restored by esp_iris_stop(). Use a separate UART or manual
+        boot/reset sequence when flashing while ESP-Iris is running.
+
+config ESP_IRIS_SERVICE_STACK_SIZE
+    int "Slow service executor stack bytes"
+    range 4096 32768
+    default 6144
+    help
+        One lazy bounded worker owns RPC callbacks and OTA flash steps.
+        Its private buffers and stack are released after the configured idle
+        interval and recreated for the next slow operation.
+
+config ESP_IRIS_SERVICE_IDLE_TIMEOUT_MS
+    int "Slow service executor idle release delay (ms)"
+    range 100 60000
+    default 1000
+    help
+        Release the lazy service worker and its private frame buffers after
+        this much idle time. Active operations and responses waiting for TX
+        space are never reclaimed.
+
+config ESP_IRIS_TASK_STACK_SIZE
+    int "Worker task stack size (bytes)"
+    range 3072 8192
+    default 3328
+
+config ESP_IRIS_TASK_PRIORITY
+    int "Worker task priority"
+    range 1 20
+    default 5
+
+config ESP_IRIS_LOG_RING_BYTES
+    int "stdout/stderr log ring size"
+    range 2048 16384
+    default 8192
+    help
+        Bounds both the pending live-log queue and the recent record history
+        retained in a Core Dump memory section. Records already delivered to
+        the host remain available as crash evidence until overwritten by newer
+        records.
+
+choice ESP_IRIS_LOG_RING_STORAGE
+    prompt "stdout/stderr log ring storage"
+    default ESP_IRIS_LOG_RING_STORAGE_PSRAM if SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY
+    default ESP_IRIS_LOG_RING_STORAGE_INTERNAL
+    help
+        Select where the fixed log ring is allocated. Both choices map the
+        ring into the Core Dump so recent records are written to the coredump
+        partition after a panic when flash Core Dump support is enabled.
+
+config ESP_IRIS_LOG_RING_STORAGE_PSRAM
+    bool "External PSRAM"
+    depends on SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY
+    help
+        Preserve internal RAM by placing the ring in the external-RAM Core
+        Dump section. A crash caused by PSRAM, cache or MSPI corruption can
+        make this evidence unavailable.
+
+config ESP_IRIS_LOG_RING_STORAGE_INTERNAL
+    bool "Internal DRAM"
+    help
+        Place the ring in internal DRAM for the strongest crash-time
+        reliability at the cost of internal memory.
+
+endchoice
+
+config ESP_IRIS_CRASH_CHUNK_BYTES
+    int "Maximum coredump bytes per response"
+    range 256 2048
+    default 1024
+    help
+        Bounds each read-only crash evidence response. The implementation
+        reuses the receive frame buffer; no full coredump is allocated in RAM.
+
+config ESP_IRIS_MAX_RPC_HANDLERS
+    int "Maximum registered RPC handlers"
+    range 1 32
+    default 8
+
+config ESP_IRIS_RPC_BODY_BYTES
+    int "Maximum RPC request or response body"
+    range 128 2048
+    default 1024
+
+config ESP_IRIS_MAX_JOBS
+    int "Maximum retained jobs"
+    range 1 16
+    default 4
+
+config ESP_IRIS_MEDIA_LATEST_BYTES
+    int "Latest media chunk buffer per active channel"
+    range 256 3840
+    default 3840
+    help
+        Allocated only while mirror/IMAGE/AUDIO streaming is active. A newer
+        submission replaces an unsent one and increments the drop count.
+
+config ESP_IRIS_MAX_FILE_VOLUMES
+    int "Maximum registered logical file volumes"
+    range 1 8
+    default 2
+
+config ESP_IRIS_FILE_CHUNK_BYTES
+    int "Maximum file data bytes per transfer frame"
+    range 256 2048
+    default 1024
+    help
+        Bounds the file task work/completion buffers and each stop-and-wait
+        read or write.
+
+config ESP_IRIS_FILE_TASK_STACK_SIZE
+    int "File service task stack size (bytes)"
+    range 3072 8192
+    default 6144
+    help
+        Includes headroom for filesystem-specific directory and rename call
+        chains in addition to the bounded ESP-Iris path buffers.
+
+config ESP_IRIS_FILE_TASK_PRIORITY
+    int "File service task priority"
+    range 1 10
+    default 3
+
+config ESP_IRIS_OTA
+    bool "Enable the bounded OTA image writer"
+    default y
+    help
+        Enables the OTA channel that receives, validates and writes an image.
+        Enable it in factory recovery firmware, or in a normal application
+        that intentionally performs direct application-layer OTA. A normal
+        application using recovery-assisted OTA may disable this option; it
+        then needs only the product-specific enter-recovery control path.
+
+        OTA is exposed only when an eligible non-running OTA partition exists.
+        Factory, NVS, coredump and crash metadata partitions are never targets.
+
+config ESP_IRIS_OTA_DEFAULT_VIA_RECOVERY
+    bool "Use factory-recovery-assisted OTA for this normal application"
+    default n
+    help
+        Declares the product policy for a normal application: the Gateway asks
+        it to boot the fixed factory recovery image before transferring the
+        update. The normal application can disable ESP_IRIS_OTA to omit the
+        image writer, while still implementing RPC 0x7fff/2 to select and boot
+        recovery. The recovery image itself must enable ESP_IRIS_OTA.
+
+        The Gateway reports recovery entry, reconnect and transfer as one
+        queryable operation. Select recovery execution on the Gateway as well;
+        firmware configuration cannot silently change an explicit host request.
+
+config ESP_IRIS_OTA_ALLOW_APPLICATION_FALLBACK
+    bool "Allow fallback to application-layer OTA"
+    depends on ESP_IRIS_OTA && ESP_IRIS_OTA_DEFAULT_VIA_RECOVERY
+    default n
+    help
+        Keeps the OTA writer in a recovery-first normal application so a host
+        may explicitly retry with application execution. The Gateway never
+        falls back silently: failure to enter recovery fails that operation.
+
+config ESP_IRIS_OTA_REQUIRE_PROJECT_NAME_MATCH
+    bool "Require OTA project name to match the running firmware"
+    default n
+    help
+        Rejects an OTA image when its esp_app_desc_t project_name differs
+        from the project_name of the running firmware. The policy is
+        advertised to the Gateway so recovery-first updates can be rejected
+        before entering recovery when the normal firmware requires a match.
+
+        Leave this disabled to allow intentional project renames and
+        cross-project updates. Image integrity and the project/version
+        metadata supplied with OTA are still validated independently.
+
+config ESP_IRIS_OTA_CHUNK_BYTES
+    int "Maximum OTA payload bytes per request"
+    depends on ESP_IRIS_OTA
+    range 256 3968
+    default 1024
+    help
+        Number of image bytes in each OTA DATA request. The upper bound keeps
+        an aligned data block plus its 4-byte offset within the protocol's
+        4000-byte payload limit.
+
+config ESP_IRIS_SYSTEM_INVENTORY
+    bool "Expose read-only system Flash inventory"
+    default n
+    help
+        Enables a small, read-only provider interface for reporting hashes of
+        the actually installed bootloader and partition table plus the last
+        committed system-update result. This can be enabled in normal and
+        recovery firmware without exposing a Flash writer.
+
+config ESP_IRIS_SYSTEM_UPDATE
+    bool "Enable authenticated multi-image system update transport"
+    select ESP_IRIS_SYSTEM_INVENTORY
+    default n
+    help
+        Enables the protocol and product backend interface used to install a
+        signed update plan containing application, bootloader, partition-table
+        or product-defined data components. ESP-Iris itself never grants raw
+        Flash access: a registered product backend must authenticate the
+        manifest, authorize every descriptor and implement commit policy.
+
+        Enable this only in a retained recovery image. Normal applications
+        may enable ESP_IRIS_SYSTEM_INVENTORY for post-reboot verification and
+        should otherwise expose only the enter-recovery control path.
+
+config ESP_IRIS_SYSTEM_UPDATE_CHUNK_BYTES
+    int "Maximum system-update data bytes per request"
+    depends on ESP_IRIS_SYSTEM_UPDATE
+    range 256 2048
+    default 1024
+
+config ESP_IRIS_SYSTEM_UPDATE_MANIFEST_BYTES
+    int "Maximum authenticated system-update manifest size"
+    depends on ESP_IRIS_SYSTEM_UPDATE
+    range 256 3072
+    default 2048
+
+config ESP_IRIS_SYSTEM_UPDATE_SIGNATURE_BYTES
+    int "Maximum system-update manifest signature size"
+    depends on ESP_IRIS_SYSTEM_UPDATE
+    range 64 512
+    default 256
+
+config ESP_IRIS_SYSTEM_UPDATE_MAX_COMPONENTS
+    int "Maximum components in one system update"
+    depends on ESP_IRIS_SYSTEM_UPDATE
+    range 1 8
+    default 4
+
+config ESP_IRIS_TCP_PAIRING
+    bool "Require challenge-HMAC pairing on raw TCP"
+    depends on ESP_IRIS_TRANSPORT_TCP
+    default n
+    help
+        Generates a random token in NVS. The token never crosses the device
+        link; each session proves possession using a fresh challenge.
+
+config ESP_IRIS_AUTH_FAILURE_DELAY_MS
+    int "Minimum delay after a failed pairing proof"
+    depends on ESP_IRIS_TCP_PAIRING
+    range 100 5000
+    default 500
+
+config ESP_IRIS_USB_VID
+    hex "USB vendor ID"
+    depends on ESP_IRIS_TRANSPORT_USB
+    range 0x0001 0xFFFF
+    default 0x303A
+
+config ESP_IRIS_USB_PID
+    hex "USB product ID"
+    depends on ESP_IRIS_TRANSPORT_USB
+    range 0x0001 0xFFFF
+    default 0x4002
+    help
+        0x4002 is suitable for development and matches Espressif TinyUSB CDC
+        examples. Allocate a product PID before production distribution.
+
+config ESP_IRIS_USB_MANUFACTURER
+    string "USB manufacturer string"
+    depends on ESP_IRIS_TRANSPORT_USB
+    default "Espressif"
+
+config ESP_IRIS_USB_PRODUCT
+    string "USB product string"
+    depends on ESP_IRIS_TRANSPORT_USB
+    default "ESP-Iris"
+
+endif
+
+endmenu

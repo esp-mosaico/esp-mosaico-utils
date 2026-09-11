@@ -1,0 +1,108 @@
+# ESP-Mosaico Recovery
+
+Workspace-consumed command-line tools for ESP-Mosaico development and device
+operations. A firmware workspace pins the containing `esp-mosaico-utils`
+repository; the CLI package does not need to be installed into the user's
+Python environment.
+
+The consuming repository owns a `.mosaico.json` file. All configured relative
+paths are resolved from the directory containing that file. Recovery firmware
+source and its reviewed bundle live under `firmware/recovery` and are resolved
+from this checkout so the CLI and Recovery implementation are versioned
+together. ESP-Iris is included alongside this project in the workspace, making
+the workspace the single source of its device-side Iris implementation.
+
+From a consuming workspace, prefer its root launcher:
+
+```sh
+python3 mosaico.py doctor
+python3 mosaico.py install --project projects/app
+python3 mosaico.py system-update --project projects/app
+python3 mosaico.py enter-recovery
+```
+
+For direct source-tree testing, pass the consuming workspace explicitly:
+
+```sh
+python3 /path/to/esp-mosaico-utils/esp-mosaico-recovery/mosaico.py \
+  --workspace /path/to/firmware-workspace doctor
+```
+
+`install` updates only the application OTA partition. `system-update` builds
+and submits the workspace's atomic application, UI assets, and system-data
+bundle by default; use `--skip-build` or `--bundle PATH` to reuse artifacts.
+`enter-recovery` asks a reachable normal application to boot the retained
+Recovery image without building or installing firmware. It waits for the same
+Device ID to reconnect in Recovery with a new Boot ID; use `--device-id` when
+more than one device is connected and `--timeout` to change the 30-second
+transition limit. Both numeric Boot IDs and exact `boot_id_text` fields are
+included in JSON output so 64-bit identities remain lossless for JavaScript
+consumers.
+
+The CLI searches the current directory and its parents for `.mosaico.json`.
+Use `--workspace PATH` to select another workspace explicitly.
+
+When multiple ESP32-S31 devices are already in ROM download mode, select the
+target by its factory eFuse Base MAC. The CLI reads every registered ROM
+endpoint without writing, repeats the MAC check immediately before flashing,
+and verifies the same MAC in Recovery after re-enumeration:
+
+```sh
+python mosaico.py recover --hardware-mac 30:ed:a0:12:34:56 --source current
+```
+
+After upgrading from an older ESP-Iris release, the live Device ID changes once
+from the NVS-stored random value to the deterministic hardware-derived value.
+The Gateway retains the old ID and its operations as offline history; refresh
+saved `--device-id` values with `python mosaico.py list`. Upgrade Recovery and
+normal firmware together, since mixed versions use different identity schemes.
+The pairing token and other retained NVS state are not erased.
+
+Run the self-contained tool tests with:
+
+```sh
+python3 -m unittest discover -s tests -v
+```
+
+
+## Recovery through an independent USB Serial/JTAG connection
+
+When the same board has a separate USB Serial/JTAG cable connected, select its
+port explicitly while the primary ESP-Iris connection is still live:
+
+```sh
+python mosaico.py recover --device-id DEVICE_ID --recovery-port COM14 --source current
+```
+
+Omit `--source current` to use the reviewed bundle. `--dry-run` resolves the live
+identity and port without building, leasing, resetting or writing. This option
+requires exactly one connected Espressif `303A:1001` interface, and the named
+port must identify it. Selecting it asserts that this independently connected
+interface belongs to the chosen board. For a device already in ROM download
+mode, prefer `--hardware-mac`; its eFuse identity is read directly instead of
+inferring an association from USB topology.
+
+The command prepares the complete reviewed/current Recovery bundle before
+maintenance. It acquires the primary device lease (including crash evidence)
+and a separate physical endpoint lease, so Gateway sessions on both interfaces
+are detached and their cross-process reservations remain held during flashing.
+The serial interface is enumerated again before the write; an identity change,
+ambiguous endpoint, conflicting owner or lease failure prevents flashing. A
+Gateway that cannot reserve both interfaces fails closed. Other applications
+must release the serial port; a busy port is an error, never an invitation to
+force another session open.
+
+Only the existing `mosaico-recover-flash` target writes firmware. Its complete
+bundle writes bootloader, partition table, OTA selection data and factory
+Recovery; this option does **not** introduce whole-flash erase or a
+Recovery-partition-only mode. Preserve the normal bundle/layout contract.
+Recovery acceptance uses the original managed connection: the same Device ID,
+a new Boot ID and the prepared Recovery version must be verified before the
+independent endpoint lease is released. The auxiliary lease is released with
+an abort action because it represents only a transport reservation, not a
+second acceptance result. Failure unwinds remaining leases, with quarantine
+reported if cleanup fails.
+
+`recovery-route.json` in the operation evidence directory records both lease
+IDs, the selected USB identity and the original Device/Boot IDs, without lease
+tokens. Gateway records retain the detailed before/after and crash evidence.

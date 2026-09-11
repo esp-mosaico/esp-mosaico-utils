@@ -1,0 +1,183 @@
+menu "Iris Factory Recovery"
+
+config FACTORY_RECOVERY_FIRMWARE
+    bool
+    default y
+    select ESP_IRIS_OTA
+    help
+        Identify this project as the retained Recovery firmware and enable the
+        Recovery-only ESP-Iris OTA writer.
+
+config IRIS_FACTORY_WIFI_MAX_NETWORKS
+    int "Maximum Wi-Fi scan results shown"
+    range 4 16
+    default 8
+
+config IRIS_FACTORY_WIFI_CONNECT_TIMEOUT_MS
+    int "Wi-Fi connection timeout (milliseconds)"
+    range 5000 60000
+    default 15000
+
+config IRIS_FACTORY_MDNS_PREFIX
+    string "mDNS hostname prefix"
+    default "mosaico"
+
+config IRIS_FACTORY_SYSTEM_UPDATE_BACKEND
+    bool "Register the unsigned full-system update Flash backend"
+    default y
+    depends on ESP_IRIS_SYSTEM_UPDATE && !SECURE_FLASH_ENC_ENABLED
+    help
+        Accept unsigned manifests and allow recovery to update ota_0, the
+        bootloader, the partition table, or its own factory image.
+        Transport/session access control, manifest/component SHA-256, image
+        validation and protected-partition policy still apply, but there is no
+        release-key authentication.
+
+        System-update v1 requires the current and target partition tables to
+        contain the exact otadata, phy_init, sysmeta, factory Recovery and
+        coredump contracts. Other partitions may change. Application and data
+        images are written through descriptors derived from the validated
+        target partition table before that table is committed last.
+
+        A factory self-update is an isolated Recovery-only transaction. The
+        partition table is not a component; its SHA-256 is an explicit source
+        layout precondition, and the factory image must cover the complete
+        fixed slot. It requires XIP from PSRAM and accepts a power-loss window
+        recoverable only through ROM download mode.
+
+        This first product backend intentionally rejects flash-encrypted
+        builds. System Inventory remains available without a writer.
+
+config IRIS_FACTORY_HTTP_SYSTEM_UPDATE
+    bool "Enable recovery HTTP(S) system-update pull"
+    default n
+    depends on IRIS_FACTORY_SYSTEM_UPDATE_BACKEND
+    select MBEDTLS_CERTIFICATE_BUNDLE
+    help
+        Register RPC 0x1201/1. Its payload is a manifest.json URL. Recovery
+        downloads the manifest and each root-level component file from the
+        same directory, then feeds the existing product Flash-policy backend.
+        The update remains unsigned until a product release key is configured.
+
+config IRIS_FACTORY_HTTP_SYSTEM_UPDATE_ALLOW_PLAIN_HTTP
+    bool "Allow unencrypted HTTP update URLs"
+    default n
+    depends on IRIS_FACTORY_HTTP_SYSTEM_UPDATE
+    help
+        Development-only option for trusted isolated networks. HTTPS with
+        certificate verification remains the production default.
+
+config IRIS_FACTORY_HTTP_SYSTEM_UPDATE_TIMEOUT_MS
+    int "HTTP operation timeout (milliseconds)"
+    range 1000 120000
+    default 30000
+    depends on IRIS_FACTORY_HTTP_SYSTEM_UPDATE
+
+config IRIS_FACTORY_HTTP_SYSTEM_UPDATE_NETWORK_WAIT_MS
+    int "Maximum wait for Wi-Fi connectivity (milliseconds)"
+    range 1000 600000
+    default 60000
+    depends on IRIS_FACTORY_HTTP_SYSTEM_UPDATE
+
+config IRIS_FACTORY_HTTP_SYSTEM_UPDATE_TASK_STACK
+    int "HTTP system-update task stack size"
+    range 6144 16384
+    default 8192
+    depends on IRIS_FACTORY_HTTP_SYSTEM_UPDATE
+
+config IRIS_FACTORY_HTTP_SYSTEM_UPDATE_AUTO_START
+    bool "Automatically pull the configured manifest in Recovery"
+    default n
+    depends on IRIS_FACTORY_HTTP_SYSTEM_UPDATE
+
+config IRIS_FACTORY_HTTP_SYSTEM_UPDATE_MANIFEST_URL
+    string "Automatic system-update manifest URL"
+    default ""
+    depends on IRIS_FACTORY_HTTP_SYSTEM_UPDATE_AUTO_START
+    help
+        Absolute URL of manifest.json. Component file names in the manifest
+        are resolved relative to this URL. Leave empty to disable auto-start.
+
+config IRIS_FACTORY_HTTP_TRIGGER_SERVER
+    bool "Enable display-code HTTP System Update trigger"
+    default n
+    depends on IRIS_FACTORY_HTTP_SYSTEM_UPDATE
+    help
+        Run a bounded HTTP control server in Recovery. Clients authenticate
+        one update trigger with the six-digit code shown on the local HTTP
+        Update screen. The code is RAM-only, expires, locks globally after a
+        bounded number of failures, and is consumed before update admission.
+        Status reads use the returned random 128-bit operation ID. Firmware
+        bytes are never uploaded to this server; the request supplies a strict
+        HTTPS manifest URL for the existing System Update pull source.
+
+config IRIS_FACTORY_HTTP_TRIGGER_SERVER_PORT
+    int "HTTP trigger server port"
+    range 1024 65535
+    default 8080
+    depends on IRIS_FACTORY_HTTP_TRIGGER_SERVER
+
+config IRIS_FACTORY_HTTP_TRIGGER_SERVER_TASK_STACK
+    int "HTTP trigger server task stack size"
+    range 4096 12288
+    default 6144
+    depends on IRIS_FACTORY_HTTP_TRIGGER_SERVER
+
+config IRIS_FACTORY_HTTP_TRIGGER_CODE_TTL_MS
+    int "HTTP update code rotation interval (milliseconds)"
+    range 10000 300000
+    default 180000
+    depends on IRIS_FACTORY_HTTP_TRIGGER_SERVER
+    help
+        Rotate the six-digit authorization code after this interval while the
+        HTTP Update page remains open. The old code becomes invalid and the
+        failed-attempt counter resets for the new interval.
+
+config IRIS_FACTORY_HTTP_TRIGGER_MAX_ATTEMPTS
+    int "Maximum failed HTTP update code attempts"
+    range 1 10
+    default 3
+    depends on IRIS_FACTORY_HTTP_TRIGGER_SERVER
+
+config IRIS_FACTORY_HTTP_TRIGGER_FAILURE_DELAY_MS
+    int "Minimum delay after a failed HTTP update code"
+    range 1000 5000
+    default 1000
+    depends on IRIS_FACTORY_HTTP_TRIGGER_SERVER
+
+config IRIS_FACTORY_NAND_SYSTEM_UPDATE
+    bool "Enable recovery NAND LittleFS system-update source"
+    default n
+    depends on IRIS_FACTORY_SYSTEM_UPDATE_BACKEND
+    select NAND_FLASH_ENABLE_BDL
+    help
+        Register RPC 0x1201/2. Its payload is an absolute manifest path below
+        /nand. Recovery mounts the board SPI NAND LittleFS read-write, exposes
+        the complete /nand tree as the writable ESP-Iris volume "nand", and
+        reads the manifest plus every root-level component from its directory.
+        Mount failures never format the NAND and do not prevent Recovery USB
+        maintenance from starting.
+        The Recovery UI scans /nand/system-update/manifest.json and one level
+        of release subdirectories so an operator can select a bundle locally.
+
+config IRIS_FACTORY_NAND_SYSTEM_UPDATE_TASK_STACK
+    int "NAND system-update task stack size"
+    range 6144 16384
+    default 8192
+    depends on IRIS_FACTORY_NAND_SYSTEM_UPDATE
+
+config IRIS_FACTORY_NAND_SYSTEM_UPDATE_AUTO_START
+    bool "Automatically apply the configured NAND bundle in Recovery"
+    default n
+    depends on IRIS_FACTORY_NAND_SYSTEM_UPDATE
+
+config IRIS_FACTORY_NAND_SYSTEM_UPDATE_MANIFEST_PATH
+    string "Automatic NAND system-update manifest path"
+    default "/nand/system-update/manifest.json"
+    depends on IRIS_FACTORY_NAND_SYSTEM_UPDATE_AUTO_START
+    help
+        Absolute LittleFS path below /nand. Component file names in the
+        manifest are resolved relative to this file. Leave empty to disable
+        auto-start.
+
+endmenu

@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "protocol_version": 1,
+  "vectors": [
+    {
+      "name": "hello_ack_empty",
+      "frame": {
+        "channel": 0,
+        "type": 2,
+        "flags": 1,
+        "session_id": 16909060,
+        "request_id": 0,
+        "stream_id": 0,
+        "sequence": 7
+      },
+      "payload_hex": "",
+      "wire_hex": "0749524953012003020101010504030201010101010101010207010101010101059d44bd0200"
+    },
+    {
+      "name": "hello_ota_project_match_capability",
+      "frame": {
+        "channel": 0,
+        "type": 1,
+        "flags": 8,
+        "session_id": 16909060,
+        "request_id": 0,
+        "stream_id": 0,
+        "sequence": 1
+      },
+      "payload_hex": "0508000040000000000000",
+      "wire_hex": "07495249530120030108010105040302010101010101010102010101020b0101030508010240010101010105c373c31100"
+    },
+    {
+      "name": "ping_ascii",
+      "frame": {
+        "channel": 0,
+        "type": 3,
+        "flags": 0,
+        "session_id": 287454020,
+        "request_id": 1432778632,
+        "stream_id": 0,
+        "sequence": 1
+      },
+      "payload_hex": "69726973",
+      "wire_hex": "074952495301200203010101094433221188776655010101020101010204010109697269732121d1b600"
+    },
+    {
+      "name": "cobs_zero_and_ff",
+      "frame": {
+        "channel": 5,
+        "type": 33,
+        "flags": 28,
+        "session_id": 2309737967,
+        "request_id": 270544960,
+        "stream_id": 1348497536,
+        "sequence": 2426450112
+      },
+      "payload_hex": "00ff0069726973ff",
+      "wire_hex": "0a49524953012005211c010112efcdab894030201080706050c0b0a0900801010102ff0a69726973ff97cfdec400"
+    },
+    {
+      "name": "file_stat_relative_path",
+      "frame": {
+        "channel": 8,
+        "type": 3,
+        "flags": 0,
+        "session_id": 16909060,
+        "request_id": 270544960,
+        "stream_id": 0,
+        "sequence": 9
+      },
+      "payload_hex": "036600086170702e6a736f6e",
+      "wire_hex": "09495249530120080301010109040302014030201001010102090101020c01010303660e086170702e6a736f6e4cb14f4500"
+    },
+    {
+      "name": "file_write_open_relative_path",
+      "frame": {
+        "channel": 8,
+        "type": 15,
+        "flags": 0,
+        "session_id": 16909060,
+        "request_id": 270544960,
+        "stream_id": 0,
+        "sequence": 10
+      },
+      "payload_hex": "030008006366676170702e6a736f6e0600000000000000000000000000000000000000",
+      "wire_hex": "09495249530120080f010101090403020140302010010101020a010102230101020302080d6366676170702e6a736f6e0601010101010101010101010101010101010105515b1c3300"
+    },
+    {
+      "name": "system_update_inventory_request",
+      "frame": {
+        "channel": 9,
+        "type": 14,
+        "flags": 0,
+        "session_id": 16909060,
+        "request_id": 270544960,
+        "stream_id": 0,
+        "sequence": 1
+      },
+      "payload_hex": "",
+      "wire_hex": "09495249530120090e01010109040302014030201001010102010101010101010573f3cfbb00"
+    },
+    {
+      "name": "hello_explicit_recovery_identity",
+      "frame": {
+        "channel": 0,
+        "type": 1,
+        "flags": 1,
+        "session_id": 16909060,
+        "request_id": 0,
+        "stream_id": 0,
+        "sequence": 1
+      },
+      "payload_hex": "0110000000000000000000000000000000000004020001000e0100020f0a006d6f736169636f2d763110080065737033327333311107006d6f736169636f12020001001308000000000000000000140400c8af0000150b0072657461696e65642d7631",
+      "wire_hex": "0749524953012003010101010504030201010101010101010201010102630101030110010101010101010101010101010101010304020201030e0104020f0a0d6d6f736169636f2d763110080b657370333273333111070a6d6f736169636f12020201031308010101010101010103140403c8af0103150b1072657461696e65642d76314d1fbb9200"
+    }
+  ]
+}

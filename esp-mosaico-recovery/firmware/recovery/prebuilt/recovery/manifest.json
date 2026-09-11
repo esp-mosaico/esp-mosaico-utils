@@ -1,0 +1,58 @@
+{
+  "idf_version": "v6.2-dev-2221-g7b9cc1ac79f-dirt",
+  "images": {
+    "bootloader": {
+      "file": "bootloader.bin",
+      "offset": "0x2000",
+      "sha256": "905cf04c91148ed439b41c95e73ac1ba66d427b36718e147d96c8ccf0b1ad49d",
+      "size": 22736
+    },
+    "ota_data": {
+      "file": "ota_data_initial.bin",
+      "offset": "0x9000",
+      "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f",
+      "size": 8192
+    },
+    "partition_table": {
+      "file": "partition-table.bin",
+      "offset": "0x8000",
+      "sha256": "7f638212e0abfc152ff45cce4a3d9ff3c1312f96465a972b5be3b7eb79c8367c",
+      "size": 3072
+    },
+    "recovery": {
+      "file": "factory.bin",
+      "offset": "0x20000",
+      "sha256": "8946b8866d799c40ad5466d01e2c3fec65e34b71c66947a69b48d89f8990aef4",
+      "size": 1697392
+    }
+  },
+  "initial_boot": {
+    "expected_mode": "recovery",
+    "ota_data_image": "ota_data_initial.bin",
+    "partition": "factory"
+  },
+  "layout": {
+    "application_partition": {
+      "name": "ota_0",
+      "offset": "0x210000"
+    },
+    "recovery_partition": {
+      "name": "factory",
+      "offset": "0x20000",
+      "size": "0x1c0000"
+    }
+  },
+  "profile": "recovery",
+  "project": "factory",
+  "schema_version": 2,
+  "security": {
+    "flash_encryption": false,
+    "secure_boot": false
+  },
+  "source": {
+    "commit": "f832d3d8b6054cbcfabf5870876fd974e5644b2d",
+    "dirty": false
+  },
+  "target": "esp32s31",
+  "version": "2.8.5-recovery"
+}
