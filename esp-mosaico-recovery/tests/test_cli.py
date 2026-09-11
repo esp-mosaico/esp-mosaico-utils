@@ -984,8 +984,9 @@ class GatewayTests(unittest.TestCase):
                     workspace_for(repository)
                 )
 
-            self.assertEqual(discovered_python, python)
-            self.assertEqual(discovered, script)
+            # Temporary paths may use Windows short names or macOS aliases.
+            self.assertTrue(discovered_python.samefile(python))
+            self.assertTrue(discovered.samefile(script))
 
     def test_iris_environment_tracks_the_active_python_version(self) -> None:
         source = Path("/source/esp-iris")
@@ -1025,7 +1026,8 @@ class GatewayTests(unittest.TestCase):
             )
             selected_python, selected_script = ensure_iris_tools(context)
             marker_value = marker.read_text()
-        self.assertEqual((selected_python, selected_script), (python, script))
+            self.assertTrue(selected_python.samefile(python))
+            self.assertTrue(selected_script.samefile(script))
         install = context.run.call_args.args[0]
         self.assertEqual(install[:4], [python, "-m", "pip", "install"])
         self.assertIn(lock_hash, marker_value)
@@ -1738,14 +1740,14 @@ class ProjectTests(unittest.TestCase):
             temporary = _contexts.enter_context(tempfile.TemporaryDirectory())
             root = Path(temporary)
             expected = self._project(root, "demo")
-            self.assertEqual(resolve_project(workspace_for(root), None, root), expected)
+            self.assertTrue(resolve_project(workspace_for(root), None, root).samefile(expected))
 
     def test_user_project_named_factory_is_allowed(self) -> None:
         with ExitStack() as _contexts:
             temporary = _contexts.enter_context(tempfile.TemporaryDirectory())
             root = Path(temporary)
             factory = self._project(root, "factory")
-            self.assertEqual(resolve_project(workspace_for(root), None, root), factory)
+            self.assertTrue(resolve_project(workspace_for(root), None, root).samefile(factory))
 
     def test_tools_recovery_cannot_be_selected_explicitly(self) -> None:
         with ExitStack() as _contexts:
