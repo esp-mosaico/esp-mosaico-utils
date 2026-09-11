@@ -8,7 +8,6 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, NoReturn
-from urllib.parse import urlsplit
 
 from . import __version__
 from .commands import (
@@ -20,7 +19,7 @@ from .commands import (
     list_devices,
     monitor,
     monitor_memory,
-    read_http_update_code,
+    read_bridge_code,
     recover,
     start_system_update,
 )
@@ -84,17 +83,6 @@ def monitor_timeout(value: str) -> float:
     if result < 0:
         raise argparse.ArgumentTypeError("must not be less than 0")
     return result
-
-
-def http_manifest_url(value: str) -> str:
-    parsed = urlsplit(value)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise argparse.ArgumentTypeError("must be an absolute HTTP(S) URL")
-    if not parsed.path or parsed.path.endswith("/"):
-        raise argparse.ArgumentTypeError("must name a manifest file")
-    if len(value.encode("utf-8")) >= 512:
-        raise argparse.ArgumentTypeError("must be shorter than 512 UTF-8 bytes")
-    return value
 
 
 def nand_manifest_path(value: str) -> str:
@@ -183,11 +171,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--bundle",
         type=Path,
         help="Reuse an existing local .irisfw bundle instead of building one",
-    )
-    system_update_source.add_argument(
-        "--manifest-url",
-        type=http_manifest_url,
-        help="Absolute URL of the exploded bundle manifest.json",
     )
     system_update_source.add_argument(
         "--manifest-path",
@@ -285,8 +268,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     update_code_parser = commands.add_parser(
-        "http-update-code",
-        help="Open Recovery's HTTP Update page and read its code over USB",
+        "bridge-code",
+        help="Open Recovery's Bridge download page and wait for its pairing code over USB",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     update_code_parser.add_argument(
@@ -294,6 +277,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     update_code_parser.add_argument(
         "--gateway-profile", help="ESP-Iris profile; use the local Gateway by default"
+    )
+
+    update_code_parser.add_argument(
+        "--timeout", type=positive_timeout, default=60.0,
+        help="Maximum wait for Wi-Fi and Bridge pairing code in seconds",
     )
 
     monitor_parser = commands.add_parser(
@@ -607,14 +595,14 @@ def main(
             result = enter_recovery(arguments, context)
         elif arguments.command == "recovery-wifi":
             result = configure_recovery_network(arguments, context)
-        elif arguments.command == "http-update-code":
-            result = read_http_update_code(arguments, context)
         elif arguments.command == "rpc":
             result = invoke_rpc(arguments, context)
         elif arguments.command == "crash":
             result = inspect_crash(arguments, context)
         elif arguments.command == "memory":
             return monitor_memory(arguments, context, arguments.json)
+        elif arguments.command == "bridge-code":
+            result = read_bridge_code(arguments, context)
         else:
             return monitor(arguments, context, arguments.json)
     except MosaicoError as error:
@@ -628,14 +616,14 @@ def main(
     else:
         status = result.get("status", "succeeded")
         print(f"{arguments.command}: {status}")
-        if arguments.command == "http-update-code":
-            authorization = result.get("authorization", {})
-            print(f"HTTP update code: {authorization.get('code', '')}")
+        if arguments.command == "bridge-code":
+            authorization = result.get("bridge", {})
+            print(f"Bridge pairing code: {authorization.get('code', '')}")
             print(
                 "Expires in: "
                 f"{int(authorization.get('expires_in_ms', 0)) // 1000}s"
             )
-            print(f"HTTP endpoint: {result.get('base_url', '')}")
+            print(f"Bridge website: {result.get('server_url', '')}")
         if arguments.command == "recover" and status == "dry_run":
             print("Checks passed; no firmware was built or written.")
         if arguments.verbose:

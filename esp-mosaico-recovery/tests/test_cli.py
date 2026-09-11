@@ -47,7 +47,7 @@ from mosaico_cli.commands import (
     monitor,
     monitor_memory,
     recover,
-    read_http_update_code,
+    read_bridge_code,
     start_system_update,
 )
 from mosaico_cli.errors import (
@@ -173,7 +173,6 @@ class ParserTests(unittest.TestCase):
     def test_system_update_defaults_to_local_build(self) -> None:
         value = self.parse("system-update")
         self.assertIsNone(value.bundle)
-        self.assertIsNone(value.manifest_url)
         self.assertIsNone(value.manifest_path)
         self.assertFalse(value.skip_build)
         self.assertEqual(value.timeout, 900)
@@ -206,8 +205,8 @@ class ParserTests(unittest.TestCase):
         self.assertFalse(hasattr(value, "password"))
         self.assertEqual(value.timeout, 30)
 
-    def test_http_update_code_uses_only_device_selection(self) -> None:
-        value = self.parse("http-update-code", "--device-id", "device-a")
+    def test_bridge_code_uses_only_device_selection(self) -> None:
+        value = self.parse("bridge-code", "--device-id", "device-a")
         self.assertEqual(value.device_id, "device-a")
         self.assertFalse(hasattr(value, "code"))
 
@@ -249,19 +248,6 @@ class ParserTests(unittest.TestCase):
         self.assertTrue(value.archive)
         self.assertEqual(value.save_core, Path("evidence/core.bin"))
 
-    def test_system_update_requires_valid_manifest_url(self) -> None:
-        value = self.parse(
-            "system-update",
-            "--manifest-url",
-            "https://updates.example.test/release/manifest.json",
-        )
-        self.assertEqual(value.command, "system-update")
-        self.assertIsNone(value.device_id)
-        with ExitStack() as _contexts:
-            caught = _contexts.enter_context(self.assertRaises(SystemExit))
-            self.parse("system-update", "--manifest-url", "file:///manifest.json")
-        self.assertEqual(caught.exception.code, 2)
-
     def test_system_update_accepts_nand_manifest_path(self) -> None:
         value = self.parse(
             "system-update",
@@ -269,7 +255,6 @@ class ParserTests(unittest.TestCase):
             "/nand/system-update/manifest.json",
         )
         self.assertEqual(value.manifest_path, "/nand/system-update/manifest.json")
-        self.assertIsNone(value.manifest_url)
         with ExitStack() as _contexts:
             caught = _contexts.enter_context(self.assertRaises(SystemExit))
             self.parse(
@@ -714,50 +699,6 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(payload[1], len(b"secret123"))
         self.assertEqual(payload[2:], b"lab-networksecret123")
 
-    def test_http_update_code_is_read_from_usb_control_response(self) -> None:
-        context = mock.Mock(log_path=Path("run.log"))
-        session = GatewaySession(Path("python"), Path("iris"), (), None, False)
-        arguments = argparse.Namespace(gateway_profile=None, device_id="device-a")
-        authorization = {
-            "payload_base64": base64.b64encode(
-                b'{"code":"038271","expires_in_ms":180000,'
-                b'"remaining_attempts":3}'
-            ).decode("ascii")
-        }
-        network = {
-            "payload_base64": base64.b64encode(
-                b'{"state":4,"connected":true,"ip":"192.0.2.2",'
-                b'"hostname":"mosaico-test","error":0}'
-            ).decode("ascii")
-        }
-        with ExitStack() as contexts:
-            contexts.enter_context(
-                mock.patch("mosaico_cli.commands.ensure_gateway", return_value=session)
-            )
-            contexts.enter_context(
-                mock.patch(
-                    "mosaico_cli.commands.connected_devices",
-                    return_value=[
-                        {"device_id": "device-a", "firmware_mode": "recovery"}
-                    ],
-                )
-            )
-            contexts.enter_context(
-                mock.patch(
-                    "mosaico_cli.commands.gateway_json",
-                    side_effect=[
-                        {"device": {"firmware_mode": "recovery"}},
-                        network,
-                        authorization,
-                    ],
-                )
-            )
-            result = read_http_update_code(arguments, context)
-
-        self.assertEqual(result["authorization"]["code"], "038271")
-        self.assertEqual(result["base_url"], "http://192.0.2.2:8080")
-        self.assertNotIn("038271", " ".join(call.args[0] for call in context.status.call_args_list))
-
     def test_general_gateway_compatibility_does_not_require_inventory(self) -> None:
         health = {
             "gateway_api": {"major": 1, "minor": 1},
@@ -845,7 +786,6 @@ class GatewayTests(unittest.TestCase):
             arguments = argparse.Namespace(
                 gateway_profile=None,
                 device_id=None,
-                manifest_url=None,
                 manifest_path=None,
                 bundle=None,
                 project=str(project),
@@ -953,54 +893,12 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(result["devices"][0]["connection"], "USB Highspeed")
         self.assertFalse(result["devices"][1]["online"])
 
-    def test_http_system_update_uses_recovery_rpc_and_hides_url(self) -> None:
-        context = mock.Mock(log_path=Path("run.log"))
-        session = GatewaySession(
-            Path("python"), Path("iris"), ("--profile", "bench"), "bench", False
-        )
-        arguments = argparse.Namespace(
-            gateway_profile="bench",
-            device_id="device-a",
-            manifest_url="https://updates.example.test/release/manifest.json?token=secret",
-            manifest_path=None,
-        )
-        with ExitStack() as _contexts:
-            _contexts.enter_context(
-                mock.patch("mosaico_cli.commands.ensure_gateway", return_value=session)
-            )
-            _contexts.enter_context(
-                mock.patch(
-                    "mosaico_cli.commands.connected_devices",
-                    return_value=[
-                        {"device_id": "device-a", "firmware_mode": "recovery"}
-                    ],
-                )
-            )
-            gateway = _contexts.enter_context(
-                mock.patch(
-                    "mosaico_cli.commands.gateway_json",
-                    side_effect=[
-                        {"device": {"firmware_mode": "recovery", "boot_id": "boot-a"}},
-                        {"response": {"payload_hex": ""}},
-                    ],
-                )
-            )
-            result = start_system_update(arguments, context)
-
-        self.assertEqual(result["status"], "accepted")
-        rpc_call = gateway.call_args_list[1]
-        self.assertEqual(
-            rpc_call.args[2:7], ("rpc-raw", "device-a", "0x1201", "1", "--payload")
-        )
-        self.assertTrue(rpc_call.kwargs["sensitive_output"])
-
     def test_nand_system_update_uses_recovery_rpc_method_two(self) -> None:
         context = mock.Mock(log_path=Path("run.log"))
         session = GatewaySession(Path("python"), Path("iris"), (), None, False)
         arguments = argparse.Namespace(
             gateway_profile=None,
             device_id="device-a",
-            manifest_url=None,
             manifest_path="/nand/system-update/manifest.json",
         )
         with ExitStack() as _contexts:
@@ -1030,34 +928,6 @@ class GatewayTests(unittest.TestCase):
         rpc_call = gateway.call_args_list[1]
         self.assertEqual(rpc_call.args[5], "2")
         self.assertEqual(rpc_call.args[7], "/nand/system-update/manifest.json")
-
-    def test_http_system_update_rejects_normal_firmware(self) -> None:
-        context = mock.Mock(log_path=Path("run.log"))
-        session = GatewaySession(Path("python"), Path("iris"), (), None, False)
-        arguments = argparse.Namespace(
-            gateway_profile=None,
-            device_id="device-a",
-            manifest_url="https://updates.example.test/manifest.json",
-            manifest_path=None,
-        )
-        with ExitStack() as _contexts:
-            _contexts.enter_context(
-                mock.patch("mosaico_cli.commands.ensure_gateway", return_value=session)
-            )
-            _contexts.enter_context(
-                mock.patch(
-                    "mosaico_cli.commands.connected_devices",
-                    return_value=[{"device_id": "device-a", "firmware_mode": "normal"}],
-                )
-            )
-            _contexts.enter_context(
-                mock.patch(
-                    "mosaico_cli.commands.gateway_json",
-                    return_value={"device": {"firmware_mode": "normal"}},
-                )
-            )
-            _contexts.enter_context(self.assertRaises(RecoveryRequiredError))
-            start_system_update(arguments, context)
 
     def test_iris_tools_are_found_only_in_the_pinned_submodule(self) -> None:
         with ExitStack() as _contexts:

@@ -1,9 +1,7 @@
 idf_component_register(
     SRCS
         "main.c"
-        "factory_http_update.c"
-        "factory_http_update_authorization.c"
-        "factory_http_trigger_server.c"
+        "factory_bridge.c"
         "factory_recovery_control.c"
         "factory_nand_update.c"
         "factory_network.c"
@@ -20,8 +18,8 @@ idf_component_register(
         esp_app_format
         esp_event
         esp_http_client
-        esp_http_server
         esp_iris
+        iris_bridge
         esp-mosaico-bsp
         esp_netif
         esp_partition

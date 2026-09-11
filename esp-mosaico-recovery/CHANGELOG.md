@@ -1,3 +1,13 @@
+## Unreleased
+
+- Replace local HTTP triggers and URL downloads with the Recovery-owned HTTPS
+  Bridge client, supporting partitions, layout and factory updates.
+- Add USB `bridge-code` with bounded asynchronous pairing; remove
+  `http-update-code` and `system-update --manifest-url` without aliases.
+- Preserve complete RFC 3339 pairing expiry timestamps and report the overall
+  pairing deadline when the final USB poll times out.
+- Keep reviewed Recovery images unchanged pending release acceptance.
+
 # Changelog
 
 ## Unreleased

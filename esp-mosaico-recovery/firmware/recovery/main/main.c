@@ -4,7 +4,7 @@
 #include "esp_iris.h"
 #include "esp_log.h"
 #include "factory_network.h"
-#include "factory_http_trigger_server.h"
+#include "iris_bridge.h"
 #include "factory_recovery_control.h"
 #include "factory_system_inventory.h"
 #include "factory_system_metadata.h"
@@ -22,6 +22,11 @@ void app_main(void)
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_iris_boot_probe());
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(factory_system_metadata_init());
+    const esp_err_t resume_err = iris_bridge_resume_boot();
+    if (resume_err != ESP_OK) {
+        ESP_LOGE(TAG, "Bridge boot selection failed; staying in Recovery: %s",
+                 esp_err_to_name(resume_err));
+    }
 
     /* Make the retained USB OTA writer reachable before display and network
      * initialization. Inventory and system-update providers must be
@@ -51,29 +56,6 @@ void app_main(void)
         ESP_LOGE(TAG, "Factory network unavailable; USB recovery remains active: %s",
                  esp_err_to_name(network_err));
     }
-#if CONFIG_IRIS_FACTORY_HTTP_TRIGGER_SERVER
-    if (network_err == ESP_OK) {
-        const esp_err_t server_err = factory_http_trigger_server_start();
-        if (server_err != ESP_OK) {
-            ESP_LOGE(TAG,
-                     "HTTP update trigger unavailable; USB recovery remains active: %s",
-                     esp_err_to_name(server_err));
-        }
-    }
-#endif
-#if CONFIG_IRIS_FACTORY_HTTP_SYSTEM_UPDATE && \
-    CONFIG_IRIS_FACTORY_HTTP_SYSTEM_UPDATE_AUTO_START
-    if (network_err == ESP_OK &&
-        CONFIG_IRIS_FACTORY_HTTP_SYSTEM_UPDATE_MANIFEST_URL[0] != '\0') {
-        const esp_err_t update_err = factory_system_update_start_http(
-            CONFIG_IRIS_FACTORY_HTTP_SYSTEM_UPDATE_MANIFEST_URL);
-        if (update_err != ESP_OK) {
-            ESP_LOGE(TAG, "Could not start configured HTTP system update: %s",
-                     esp_err_to_name(update_err));
-        }
-    }
-#endif
-
     /* This is the Recovery acceptance boundary used by the host's closed-loop
      * self-update workflow.  esp_iris_mark_healthy() replays the event when a
      * USB session connects after this point. */

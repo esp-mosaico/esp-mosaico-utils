@@ -119,3 +119,7 @@ reported if cleanup fails.
 `recovery-route.json` in the operation evidence directory records both lease
 IDs, the selected USB identity and the original Device/Boot IDs, without lease
 tokens. Gateway records retain the detailed before/after and crash evidence.
+
+Recovery remote downloads now use [HTTPS Bridge](firmware/recovery/README.md).
+Configure the build Origin and board ID, then use `mosaico.py bridge-code` or
+the device download page to pair once for a partitions, layout or factory update.

@@ -6,16 +6,19 @@
 
 #include "sdkconfig.h"
 
+#include "cJSON.h"
 #include "esp_check.h"
 #include "esp_iris.h"
-#include "factory_http_update_authorization.h"
 #include "factory_network.h"
 #include "factory_ui.h"
+#include "iris_bridge.h"
 
 #define FACTORY_CONTROL_SERVICE_ID            0x1202U
 #define FACTORY_CONTROL_WIFI_CONNECT_METHOD   1U
 #define FACTORY_CONTROL_NETWORK_STATUS_METHOD 2U
-#define FACTORY_CONTROL_HTTP_CODE_METHOD      3U
+/* Method 3 belonged to the removed local HTTP authorization protocol. */
+#define FACTORY_CONTROL_BRIDGE_OPEN_METHOD 4U
+#define FACTORY_CONTROL_BRIDGE_STATUS_METHOD 5U
 
 static const char *TAG = "factory_control";
 
@@ -100,41 +103,55 @@ static esp_err_t network_status_rpc(const esp_iris_rpc_request_t *request,
     return ESP_OK;
 }
 
-#if CONFIG_IRIS_FACTORY_HTTP_TRIGGER_SERVER
-static esp_err_t http_code_rpc(const esp_iris_rpc_request_t *request,
-                               uint8_t *response, size_t response_capacity,
-                               size_t *response_size, void *user_ctx)
+static esp_err_t bridge_status_rpc(const esp_iris_rpc_request_t *request,
+                                   uint8_t *response, size_t response_capacity,
+                                   size_t *response_size, void *user_ctx)
 {
     (void)user_ctx;
-    ESP_RETURN_ON_ERROR(require_usb_session(), TAG,
-                        "HTTP Update code requires USB");
+    ESP_RETURN_ON_ERROR(require_usb_session(), TAG, "Bridge control requires USB");
     ESP_RETURN_ON_FALSE(request != NULL && request->payload_size == 0 &&
                             response != NULL && response_size != NULL,
-                        ESP_ERR_INVALID_SIZE, TAG,
-                        "invalid HTTP Update code request");
-    ESP_RETURN_ON_ERROR(factory_ui_open_http_update(), TAG,
-                        "open HTTP Update screen");
-    factory_http_update_code_snapshot_t snapshot;
-    ESP_RETURN_ON_ERROR(factory_http_update_code_get_snapshot(&snapshot), TAG,
-                        "read HTTP Update code");
-    ESP_RETURN_ON_FALSE(
-        snapshot.state == FACTORY_HTTP_UPDATE_CODE_AVAILABLE,
-        ESP_ERR_INVALID_STATE, TAG, "HTTP Update code is unavailable");
-    const int written = snprintf(
-        (char *)response, response_capacity,
-        "{\"code\":\"%s\",\"expires_in_ms\":%lu,"
-        "\"remaining_attempts\":%u,\"http_port\":%u}",
-        snapshot.code, (unsigned long)snapshot.remaining_ms,
-        snapshot.remaining_attempts,
-        CONFIG_IRIS_FACTORY_HTTP_TRIGGER_SERVER_PORT);
+                        ESP_ERR_INVALID_SIZE, TAG, "invalid Bridge status request");
+    iris_bridge_snapshot_t snapshot;
+    iris_bridge_get_snapshot(&snapshot);
+    cJSON *json = cJSON_CreateObject();
+    if (json == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    bool valid =
+        cJSON_AddStringToObject(json, "state", snapshot.state) &&
+        cJSON_AddBoolToObject(json, "running", snapshot.running) &&
+        cJSON_AddStringToObject(json, "server_url", snapshot.server_url) &&
+        cJSON_AddStringToObject(json, "code", snapshot.code) &&
+        cJSON_AddStringToObject(json, "expires_at", snapshot.expires_at) &&
+        cJSON_AddNumberToObject(json, "expires_in_ms", snapshot.expires_in_ms) &&
+        cJSON_AddNumberToObject(json, "error", snapshot.error);
+    bool written = valid && cJSON_PrintPreallocated(json, (char *)response,
+                                                    response_capacity, false);
+    cJSON_Delete(json);
     secure_clear(snapshot.code, sizeof(snapshot.code));
-    ESP_RETURN_ON_FALSE(written >= 0 && (size_t)written < response_capacity,
-                        ESP_ERR_INVALID_SIZE, TAG,
-                        "HTTP Update code response is too large");
-    *response_size = (size_t)written;
+    ESP_RETURN_ON_FALSE(written, ESP_ERR_INVALID_SIZE, TAG,
+                        "Bridge status response too large");
+    *response_size = strlen((char *)response);
     return ESP_OK;
 }
-#endif
+
+static esp_err_t bridge_open_rpc(const esp_iris_rpc_request_t *request,
+                                 uint8_t *response, size_t response_capacity,
+                                 size_t *response_size, void *user_ctx)
+{
+    ESP_RETURN_ON_ERROR(require_usb_session(), TAG, "Bridge control requires USB");
+    ESP_RETURN_ON_FALSE(request != NULL && request->payload_size == 0 &&
+                            response != NULL && response_size != NULL,
+                        ESP_ERR_INVALID_SIZE, TAG, "invalid Bridge open request");
+    /* Report configuration/worker failures in the same snapshot as UI. */
+    const esp_err_t err = factory_ui_open_bridge();
+    if (err == ESP_ERR_TIMEOUT) {
+        return err;
+    }
+    return bridge_status_rpc(request, response, response_capacity, response_size,
+                             user_ctx);
+}
 
 esp_err_t factory_recovery_control_register(void)
 {
@@ -148,12 +165,13 @@ esp_err_t factory_recovery_control_register(void)
                               FACTORY_CONTROL_NETWORK_STATUS_METHOD,
                               network_status_rpc, NULL),
         TAG, "register Recovery network status");
-#if CONFIG_IRIS_FACTORY_HTTP_TRIGGER_SERVER
-    ESP_RETURN_ON_ERROR(
-        esp_iris_rpc_register(FACTORY_CONTROL_SERVICE_ID,
-                              FACTORY_CONTROL_HTTP_CODE_METHOD,
-                              http_code_rpc, NULL),
-        TAG, "register Recovery HTTP Update code control");
-#endif
+    ESP_RETURN_ON_ERROR(esp_iris_rpc_register(FACTORY_CONTROL_SERVICE_ID,
+                                              FACTORY_CONTROL_BRIDGE_OPEN_METHOD,
+                                              bridge_open_rpc, NULL),
+                        TAG, "register Bridge open control");
+    ESP_RETURN_ON_ERROR(esp_iris_rpc_register(FACTORY_CONTROL_SERVICE_ID,
+                                              FACTORY_CONTROL_BRIDGE_STATUS_METHOD,
+                                              bridge_status_rpc, NULL),
+                        TAG, "register Bridge status control");
     return ESP_OK;
 }

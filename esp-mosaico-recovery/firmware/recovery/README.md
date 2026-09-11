@@ -61,44 +61,28 @@ operation receipt，并延迟重启；Gateway 必须观察到相同 Device ID、
 `python mosaico.py recover --source current` 恢复本分支构建，发布后则使用已评审的
 Recovery 包。不具备自更新能力的设备必须走 ROM/`recover` 路径。
 
-### Recovery 从 HTTP(S) 拉取系统更新
+### Recovery HTTPS Bridge
 
-Recovery 固件默认编译 HTTP(S) System Update source，但不会自动访问网络。
-服务器需要提供解包后的 bundle，`manifest.json` 及其 `components[].file` 必须位于
-同一目录；manifest 格式与 ESP-Iris `.irisfw` bundle 相同。通过产品 CLI 触发：
+Recovery 主动通过 HTTPS 连接 Bridge 服务，支持 `partitions`、`layout` 和
+`factory`。构建时设置 `CONFIG_IRIS_FACTORY_BRIDGE_SERVER_URL`（无末尾斜杠的
+HTTPS Origin）和 `CONFIG_IRIS_FACTORY_BRIDGE_BOARD_ID`；默认留空且不注册。
+
+用户进入 **Bridge download** 页面后，设备等待 Wi-Fi IP、注册并显示服务器
+配对码。网页配对并上传后，设备拉取任务、验证并写入；一次会话仅烧录一次。
+退出会请求异步安全停止，完成或失败后重新进入页面才能再次配对。
 
 ```sh
-python mosaico.py system-update --device-id DEVICE_ID \
-  --manifest-url 'https://updates.example.com/mosaico/release/manifest.json'
+python mosaico.py recovery-wifi --ssid SSID
+python mosaico.py bridge-code --device-id DEVICE_ID --timeout 60
 ```
 
-RPC 只启动后台任务并立即返回。Recovery 等待已配置的 Wi-Fi，下载并验证所有
-组件。v2 bundle 先暂存并验证目标 partition table，再按照目标表描述写入
-application 和 data；bootloader 同样暂存在 PSRAM，所有组件验证完成后才进入
-不可取消的 single-copy commit。
+USB 命令打开同一个页面并等待配对码；重复打开不换码。控制服务 `0x1202` 的
+方法 4 打开，方法 5 只查询状态，旧方法 3 已移除。服务地址、板型缺失时提示
+重新配置构建。两个方法均拒绝 TCP，不返回或记录设备 token。
 
-HTTPS 默认使用 ESP-IDF certificate bundle 验证服务器。明文 HTTP 仅用于隔离的
-开发网络，需显式设置
-`CONFIG_IRIS_FACTORY_HTTP_SYSTEM_UPDATE_ALLOW_PLAIN_HTTP=y`。当前 product backend
-仍是 unsigned policy；面向非受控网络发布前必须加入并启用 manifest release-key
-验证。
-
-Recovery 同时在默认端口 `8080` 提供一次性屏幕验证码授权的 HTTP trigger。用户
-主动打开独立的 **HTTP Update** 页面后，设备在 RAM 中生成六位验证码并显示 180 秒
-轮换倒计时。倒计时结束后旧码立即失效，设备自动生成新码并重置失败次数；只要页面
-保持打开就会继续轮换，离开页面或按下 Cancel 后停止。三次失败会锁定当前周期，到达
-当前周期截止时间后自动换码并解锁。正确码在解析 URL 和启动更新前原子消费，任何
-后续失败都不会恢复旧码。`POST /api/v1/system-update` 通过
-`X-Mosaico-Pairing-Code` 接受严格 JSON
-`{"manifest_url":"https://.../manifest.json"}` 并返回随机 128-bit operation ID；状态
-请求只通过 `X-Mosaico-Operation-ID` 查询对应 HTTP 操作，不会返回 USB 或 NAND 更新
-状态。完整协议和参考客户端见
-[`docs/recovery-http-trigger.md`](../../docs/recovery-http-trigger.md)。
-
-真机自动化可先运行 `python mosaico.py recovery-wifi --ssid SSID`，密码只通过隐藏
-输入读取；`python mosaico.py http-update-code` 会经当前 USB ESP-Iris session 打开
-设备上的同一个 HTTP Update 页面并读取验证码。这两个 Recovery 控制接口均拒绝
-TCP 调用。
+设备端实现位于 [iris_bridge 组件](components/iris_bridge/)。
+旧本地 HTTP server、URL 下载 RPC、`http-update-code` 和 `--manifest-url`
+已移除，USB bundle 和 NAND 更新继续使用共享写入后端。
 
 ### Recovery 从 NAND LittleFS 读取系统更新
 
@@ -135,7 +119,7 @@ python mosaico.py system-update --device-id DEVICE_ID \
   --manifest-path /nand/system-update/manifest.json
 ```
 
-Recovery 逐块读取组件并复用与 USB、HTTP(S) 相同的 manifest、SHA-256、镜像及
+Recovery 逐块读取组件并复用与 USB、Bridge 相同的 manifest、SHA-256、镜像及
 分区布局校验。v1 manifest 必须将 partition table 放在首个组件；Recovery 验证
 当前表和目标表中的五个不可变分区后，按照目标表流式写入 application 和 data。
 bootloader 暂存到 PSRAM，全部验证完成后统一提交。三种来源共用一个 Flash writer owner，不能
