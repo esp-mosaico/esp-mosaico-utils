@@ -5,6 +5,7 @@ import os
 import pathlib
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -15,7 +16,14 @@ def test_default_platform_adapter_is_safe_and_never_marks_healthy(tmp_path) -> N
     compiler = shutil.which("cc")
     if compiler is None:
         pytest.skip("a C compiler is required for platform-adapter tests")
-    output = tmp_path / ("iris_platform.dll" if os.name == "nt" else "libiris_platform.so")
+    suffix = (
+        ".dll"
+        if os.name == "nt"
+        else ".dylib"
+        if sys.platform == "darwin"
+        else ".so"
+    )
+    output = tmp_path / f"libiris_platform{suffix}"
     # MinGW cannot directly export weak symbols. Strong test-only wrappers call
     # the production defaults without changing their overridable linkage.
     wrapper = tmp_path / "platform_wrapper.c"

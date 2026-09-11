@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -38,10 +39,11 @@ def test_file_service_lifecycle(tmp_path: Path) -> None:
         str(COMPONENT / "src"),
         str(HOST / "files_lifecycle_test.c"),
         str(COMPONENT / "src" / "esp_iris_codec.c"),
-        "-Wl,--gc-sections",
         "-o",
         str(output),
     ]
+    if sys.platform != "darwin":
+        command.insert(-2, "-Wl,--gc-sections")
     build = subprocess.run(command, capture_output=True, text=True, timeout=60, check=False)
     assert build.returncode == 0, build.stdout + build.stderr
     run = subprocess.run([str(output)], capture_output=True, text=True, timeout=30, check=False)

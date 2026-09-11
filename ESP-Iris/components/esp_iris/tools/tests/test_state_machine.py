@@ -4,6 +4,7 @@ import ctypes
 import pathlib
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -64,7 +65,14 @@ def test_device_c_state_machine_has_the_same_terminal_guards(tmp_path) -> None:
     compiler = shutil.which("cc")
     if compiler is None:
         pytest.skip("a C compiler is required for device state-machine tests")
-    output = tmp_path / "libiris_state.so"
+    suffix = (
+        ".dll"
+        if sys.platform == "win32"
+        else ".dylib"
+        if sys.platform == "darwin"
+        else ".so"
+    )
+    output = tmp_path / f"libiris_state{suffix}"
     subprocess.run(
         [
             compiler,

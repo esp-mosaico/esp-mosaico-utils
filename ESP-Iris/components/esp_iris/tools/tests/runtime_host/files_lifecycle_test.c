@@ -6,6 +6,11 @@
 
 #include "../../../src/esp_iris_files.c"
 
+bool esp_iris_is_started(void)
+{
+    return false;
+}
+
 typedef struct {
     size_t size;
 } allocation_header_t;

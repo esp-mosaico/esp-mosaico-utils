@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import ctypes
 import json
+import os
 import pathlib
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -42,7 +44,14 @@ def c_codec(tmp_path_factory: pytest.TempPathFactory):
     compiler = shutil.which("cc")
     if compiler is None:
         pytest.skip("a C compiler is required for device/PC codec compatibility")
-    output = tmp_path_factory.mktemp("iris-c-codec") / "libiris_codec.so"
+    suffix = (
+        ".dll"
+        if os.name == "nt"
+        else ".dylib"
+        if sys.platform == "darwin"
+        else ".so"
+    )
+    output = tmp_path_factory.mktemp("iris-c-codec") / f"libiris_codec{suffix}"
     subprocess.run(
         [
             compiler,

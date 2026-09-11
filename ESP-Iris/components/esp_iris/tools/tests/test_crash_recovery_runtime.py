@@ -17,7 +17,9 @@ def test_crash_recovery_state_machine(tmp_path: Path) -> None:
         if os.environ.get("IRIS_REQUIRE_HOST_CC") == "1":
             pytest.fail("required C compiler is missing")
         pytest.skip("C compiler required for crash-recovery runtime test")
-    output = tmp_path / "crash_recovery_runtime"
+    output = tmp_path / (
+        "crash_recovery_runtime.exe" if os.name == "nt" else "crash_recovery_runtime"
+    )
     build = subprocess.run(
         [
             compiler,
