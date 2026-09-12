@@ -13,6 +13,7 @@ import sys
 import time
 from typing import Any
 from urllib.error import URLError
+from urllib.parse import urlsplit
 from urllib.request import urlopen
 import uuid
 
@@ -23,8 +24,13 @@ from .errors import (
     OutcomeUnknownError,
     SelectionError,
 )
-from .host import state_root, virtual_environment_python
-from .runtime import RunContext
+from .host import (
+    HostEnvironmentError,
+    prepare_idf_environment,
+    state_root,
+    virtual_environment_python,
+)
+from .runtime import RunContext, resolve_idf_path
 from .workspace import WorkspaceConfig, user_path
 
 
@@ -275,6 +281,43 @@ def _health_instance(url: str = LOCAL_URL) -> str | None:
     return str(instance) if instance else None
 
 
+def _configured_local_url() -> tuple[str, int]:
+    value = os.environ.get("MOSAICO_LOCAL_GATEWAY_URL", LOCAL_URL)
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme != "http"
+        or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise EnvironmentError(
+            "MOSAICO_LOCAL_GATEWAY_URL must be a loopback HTTP origin."
+        )
+    try:
+        port = parsed.port
+    except ValueError as error:
+        raise EnvironmentError(
+            "MOSAICO_LOCAL_GATEWAY_URL contains an invalid port."
+        ) from error
+    if port is None:
+        raise EnvironmentError("MOSAICO_LOCAL_GATEWAY_URL must include a port.")
+    return value.rstrip("/"), port
+
+
+def _is_local_session(session: GatewaySession) -> bool:
+    if session.profile is not None or len(session.connection_args) != 2:
+        return False
+    if session.connection_args[0] != "--url":
+        return False
+    parsed = urlsplit(session.connection_args[1])
+    return parsed.scheme == "http" and parsed.hostname in {
+        "127.0.0.1",
+        "localhost",
+        "::1",
+    }
+
+
 def ensure_gateway(context: RunContext, profile: str | None) -> GatewaySession:
     python, script = ensure_iris_tools(context)
     if profile:
@@ -285,7 +328,8 @@ def ensure_gateway(context: RunContext, profile: str | None) -> GatewaySession:
         return GatewaySession(python, script, connection, profile, False)
 
     expected_revision = _pinned_source_revision(context.workspace.esp_iris_path)
-    local = ("--url", LOCAL_URL)
+    local_url, local_port = _configured_local_url()
+    local = ("--url", local_url)
     if _probe(context, python, script, local):
         _require_compatible_gateway(
             _gateway_health(context, python, script, local),
@@ -296,7 +340,7 @@ def ensure_gateway(context: RunContext, profile: str | None) -> GatewaySession:
     # A reachable process is shared host infrastructure.  Never replace it
     # merely because this CLI cannot probe it: doing so would interrupt every
     # device attached to that Gateway.
-    if _health_instance() is not None:
+    if _health_instance(local_url) is not None:
         raise DeviceError(
             "A local ESP-Iris Gateway is running but could not be used; it was not stopped."
         )
@@ -317,6 +361,23 @@ def ensure_gateway(context: RunContext, profile: str | None) -> GatewaySession:
             popen_options["start_new_session"] = True
         gateway_environment = os.environ.copy()
         gateway_environment["ESP_IRIS_SOURCE_REVISION"] = expected_revision
+        try:
+            idf_environment = prepare_idf_environment(
+                resolve_idf_path(
+                    context.workspace, context.workspace.default_project
+                ),
+                base_environment=gateway_environment,
+            )
+        except (EnvironmentError, HostEnvironmentError) as error:
+            context.status(
+                "gateway: ESP-IDF crash decoder unavailable: " + str(error)
+            )
+        else:
+            gateway_environment.update(idf_environment.values)
+            gateway_environment["ESP_IRIS_IDF_PATH"] = str(idf_environment.root)
+            gateway_environment["ESP_IRIS_IDF_PYTHON"] = str(
+                idf_environment.python
+            )
         process = subprocess.Popen(
             [
                 str(python),
@@ -325,7 +386,7 @@ def ensure_gateway(context: RunContext, profile: str | None) -> GatewaySession:
                 "--listen",
                 "127.0.0.1",
                 "--port",
-                "8443",
+                str(local_port),
                 "--instance-id",
                 instance_id,
                 "--state-dir",
@@ -498,7 +559,7 @@ def acquire_maintenance_lease(
     expected_version: str,
     timeout: float,
 ) -> dict[str, Any]:
-    if session.profile is not None or session.connection_args != ("--url", LOCAL_URL):
+    if not _is_local_session(session):
         raise DeviceError("Remote Recovery is not supported; use the local Gateway.")
     health = gateway_json(context, session, "health")
     capabilities = health.get("capabilities", []) if isinstance(health, dict) else []
@@ -545,7 +606,7 @@ def acquire_endpoint_maintenance_lease(
     expected_version: str,
     timeout: float,
 ) -> dict[str, Any]:
-    if session.profile is not None or session.connection_args != ("--url", LOCAL_URL):
+    if not _is_local_session(session):
         raise DeviceError("Remote Recovery is not supported; use the local Gateway.")
     health = gateway_json(context, session, "health")
     capabilities = health.get("capabilities", []) if isinstance(health, dict) else []

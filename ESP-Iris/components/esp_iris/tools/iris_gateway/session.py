@@ -503,6 +503,9 @@ class DeviceSession:
                 "crash_failed_app_address": tlv_u32(
                     fields, TlvTag.CRASH_FAILED_APP_ADDRESS
                 ),
+                "crash_failed_boot_id": tlv_u64(
+                    fields, TlvTag.CRASH_FAILED_BOOT_ID
+                ),
                 "crash_failed_firmware_sha256": fields.get(
                     int(TlvTag.CRASH_FAILED_FIRMWARE_SHA256), b""
                 ).hex(),
@@ -690,6 +693,9 @@ class DeviceSession:
             ),
             "crash_failed_app_address": tlv_u32(
                 fields, TlvTag.CRASH_FAILED_APP_ADDRESS
+            ),
+            "crash_failed_boot_id": tlv_u64(
+                fields, TlvTag.CRASH_FAILED_BOOT_ID
             ),
             "crash_failed_firmware_sha256": fields.get(
                 int(TlvTag.CRASH_FAILED_FIRMWARE_SHA256), b""
@@ -1222,6 +1228,9 @@ class DeviceSession:
             ),
             "crash_failed_app_address": tlv_u32(
                 fields, TlvTag.CRASH_FAILED_APP_ADDRESS
+            ),
+            "crash_failed_boot_id": tlv_u64(
+                fields, TlvTag.CRASH_FAILED_BOOT_ID
             ),
             "crash_failed_firmware_sha256": fields.get(
                 int(TlvTag.CRASH_FAILED_FIRMWARE_SHA256), b""

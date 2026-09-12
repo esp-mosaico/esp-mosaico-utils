@@ -22,7 +22,7 @@
 #define IRIS_CRASH_NVS_NAMESPACE "esp_iris"
 #define IRIS_CRASH_NVS_KEY "crash_loop"
 #define IRIS_CRASH_STATE_MAGIC 0x53495249UL /* "IRIS" on little endian. */
-#define IRIS_CRASH_STATE_VERSION 1U
+#define IRIS_CRASH_STATE_VERSION 2U
 
 enum {
     IRIS_CRASH_FLAG_LAST_STARTED_VALID = 1U << 0,
@@ -42,6 +42,8 @@ typedef struct __attribute__((packed)) {
     uint32_t last_started_address;
     uint32_t planned_target_address;
     uint32_t failed_address;
+    uint64_t last_started_boot_id;
+    uint64_t failed_boot_id;
     uint8_t last_started_sha256[32];
     uint8_t failed_sha256[32];
 } iris_crash_state_t;
@@ -197,6 +199,7 @@ static void runtime_from_state(iris_runtime_t *runtime,
     runtime->crash_limit = state_limit(state);
     runtime->crash_origin_reset_reason = state->failure_reset_reason;
     runtime->crash_failed_app_address = state->failed_address;
+    runtime->crash_failed_boot_id = state->failed_boot_id;
     memcpy(runtime->crash_failed_firmware_sha256, state->failed_sha256,
            sizeof(runtime->crash_failed_firmware_sha256));
     runtime->crash_recovery_pending =
@@ -214,6 +217,7 @@ static void clear_failure(iris_crash_state_t *state)
     state->count = 0;
     state->failure_reset_reason = 0;
     state->failed_address = 0;
+    state->failed_boot_id = 0;
     memset(state->failed_sha256, 0, sizeof(state->failed_sha256));
 }
 
@@ -277,6 +281,7 @@ esp_err_t iris_crash_recovery_probe(iris_runtime_t *runtime)
             state.flags |= IRIS_CRASH_FLAG_FAILED_VALID;
             state.failure_reset_reason = (uint32_t)reason;
             state.failed_address = state.last_started_address;
+            state.failed_boot_id = state.last_started_boot_id;
             memcpy(state.failed_sha256, state.last_started_sha256,
                    sizeof(state.failed_sha256));
         }
@@ -284,6 +289,7 @@ esp_err_t iris_crash_recovery_probe(iris_runtime_t *runtime)
         if (have_running) {
             state.flags |= IRIS_CRASH_FLAG_LAST_STARTED_VALID;
             state.last_started_address = running_address;
+            state.last_started_boot_id = runtime->boot_id;
             memcpy(state.last_started_sha256, running_sha256,
                    sizeof(state.last_started_sha256));
             if (CONFIG_ESP_IRIS_FIRMWARE_ROLE != 2) {

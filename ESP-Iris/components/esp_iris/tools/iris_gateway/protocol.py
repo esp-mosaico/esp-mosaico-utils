@@ -257,6 +257,7 @@ class TlvTag(enum.IntEnum):
     JOB_RESULT = 0x44
     MEDIA_DROPPED = 0x45
     OTA_PARTITION = 0x46
+    CRASH_FAILED_BOOT_ID = 0x47
 
 
 @dataclasses.dataclass

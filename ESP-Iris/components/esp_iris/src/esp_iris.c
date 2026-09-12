@@ -1095,6 +1095,7 @@ esp_err_t esp_iris_get_status(esp_iris_status_t *out_status)
         .crash_limit = g_iris.crash_limit,
         .crash_origin_reset_reason = g_iris.crash_origin_reset_reason,
         .crash_failed_app_address = g_iris.crash_failed_app_address,
+        .crash_failed_boot_id = g_iris.crash_failed_boot_id,
         .crash_state_error = g_iris.crash_state_error,
     };
     memcpy(out_status->device_id, g_iris.device_id,
@@ -1109,6 +1110,14 @@ esp_err_t esp_iris_get_status(esp_iris_status_t *out_status)
 
 esp_err_t esp_iris_boot_probe(void)
 {
+    if (!g_iris.identity_ready) {
+        esp_err_t err = iris_identity_load_or_create(&g_iris);
+        if (err != ESP_OK) {
+            return err;
+        }
+        g_iris.identity_ready = true;
+    }
+    iris_crash_context_prepare(&g_iris);
     if (!g_iris.crash_initialized) {
         iris_crash_probe(&g_iris);
     }
@@ -1148,14 +1157,11 @@ esp_err_t esp_iris_mark_healthy(void)
     if (err != ESP_OK && err != ESP_ERR_NOT_SUPPORTED) {
         return err;
     }
-    err = iris_crash_recovery_mark_healthy(&g_iris);
-    if (err == ESP_OK) {
-        g_iris.healthy = true;
-        if (g_iris.hello_acked) {
-            schedule_event(&g_iris, ESP_IRIS_EVENT_HEALTHY);
-        }
+    g_iris.healthy = true;
+    if (g_iris.hello_acked) {
+        schedule_event(&g_iris, ESP_IRIS_EVENT_HEALTHY);
     }
-    return err;
+    return ESP_OK;
 }
 
 esp_err_t esp_iris_format_device_id(char out[33])

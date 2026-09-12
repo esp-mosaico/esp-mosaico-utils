@@ -272,6 +272,7 @@ typedef enum {
     ESP_IRIS_TLV_JOB_RESULT = 0x44,
     ESP_IRIS_TLV_MEDIA_DROPPED = 0x45,
     ESP_IRIS_TLV_OTA_PARTITION = 0x46,
+    ESP_IRIS_TLV_CRASH_FAILED_BOOT_ID = 0x47,
 } esp_iris_tlv_tag_t;
 
 typedef struct {

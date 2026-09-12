@@ -20,6 +20,13 @@ from aiohttp import BodyPartReader, WSMsgType, web
 from .boot_identity import boot_id_text
 from .compatibility import compatibility_expectation, validate_update_compatibility
 from .contracts import GatewayHub
+from .crashes import (
+    archive_evidence,
+    archive_key,
+    auto_archive,
+    matching_artifact,
+)
+from .crashes import register_routes as register_crash_routes
 from .file_routes import register_file_routes
 from .files import FileServiceError, file_error_http_status
 from .firmware import inspect_firmware_image
@@ -156,6 +163,7 @@ class GatewayService:
         store.set_setting("mode", self.mode)
         self.mode_transition = False
         self._subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
+        self._crash_archives_in_progress: set[str] = set()
         self.operations = OperationManager(store, self.on_device_event, self.metrics)
         self.host_id = str(store.get_setting("host_id") or uuid.uuid4())
         store.set_setting("host_id", self.host_id)
@@ -217,6 +225,28 @@ class GatewayService:
                 queue.put_nowait(gap)
             queue.put_nowait(persisted)
         self.metrics.gauge("events.subscribers", len(self._subscribers))
+        if (
+            device_id
+            and item.get("event_name") == "core_dump_available"
+            and device_id not in self._crash_archives_in_progress
+        ):
+            self._crash_archives_in_progress.add(str(device_id))
+            asyncio.create_task(self._auto_archive_crash(str(device_id)))
+
+    def _matching_crash_artifact(
+        self, report: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        return matching_artifact(self.store, report)
+
+    @staticmethod
+    def _crash_archive_key(device_id: str, report: dict[str, Any]) -> str:
+        return archive_key(device_id, report)
+
+    async def archive_crash_evidence(self, device_id: str) -> dict[str, Any]:
+        return await archive_evidence(self, device_id)
+
+    async def _auto_archive_crash(self, device_id: str) -> None:
+        await auto_archive(self, device_id)
 
     def subscribe(self) -> asyncio.Queue[dict[str, Any]]:
         queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=1024)
@@ -1854,48 +1884,6 @@ def create_app(service: GatewayService) -> web.Application:
             status=202,
         )
 
-    async def crash_report(request: web.Request) -> web.Response:
-        blocked = service.require_develop()
-        if blocked is not None:
-            return blocked
-        device_id = service.resolve_device(request.match_info["device_id"])
-        report = await service.device_hub.crash_report(device_id)
-        core_elf_sha = str(report.get("core_dump_elf_sha256", ""))
-        candidate = next(
-            (
-                artifact
-                for artifact in service.store.firmware_artifacts()
-                if report.get("core_dump_elf_sha256_complete")
-                and artifact.get("elf_sha256") == core_elf_sha
-            ),
-            None,
-        )
-        report = {
-            **report,
-            "candidate_artifact_id": (
-                candidate.get("artifact_id") if candidate is not None else None
-            ),
-            "candidate_elf_sha256": (
-                candidate.get("elf_sha256") if candidate is not None else None
-            ),
-            "decode_eligible": bool(
-                report.get("core_dump_valid")
-                and report.get("core_dump_elf_sha256_complete")
-                and candidate is not None
-            ),
-        }
-        return web.json_response({"reports": [report]})
-
-    async def core_dump(request: web.Request) -> web.StreamResponse:
-        blocked = service.require_develop()
-        if blocked is not None:
-            return blocked
-        device_id = service.resolve_device(request.match_info["device_id"])
-        artifact = await service.preserve_coredump(device_id)
-        if artifact is None:
-            raise KeyError("no valid retained coredump")
-        return web.FileResponse(artifact["path"], headers={"X-ESP-Iris-SHA256": artifact["sha256"]})
-
     async def tokens(request: web.Request) -> web.Response:
         if request.method == "GET":
             return web.json_response({"tokens": service.auth.list_agent_tokens()})
@@ -2028,8 +2016,7 @@ def create_app(service: GatewayService) -> web.Application:
     app.router.add_post(
         "/v1/devices/{device_id}/system-update", system_update
     )
-    app.router.add_get("/v1/devices/{device_id}/crashes", crash_report)
-    app.router.add_get("/v1/devices/{device_id}/crashes/core-dump", core_dump)
+    register_crash_routes(app, service)
     app.router.add_get("/v1/auth/tokens", tokens)
     app.router.add_post("/v1/auth/tokens", tokens)
     app.router.add_delete("/v1/auth/tokens/{token_id}", revoke_token)
