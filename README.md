@@ -13,7 +13,7 @@ history while recording the source revisions used for the migration.
 
 The release version of `esp-mosaico-recovery` describes the host toolchain.
 The embedded Recovery firmware keeps its independent version. New source
-builds and the prebuilt bundle use `0.1`, as requested for ESP-30. The bundle
+builds and the prebuilt bundle use `0.1`. The bundle
 retains its reviewed bootloader, partition table, and initial OTA data; its
 Recovery application is rebuilt from this repository and validated on device.
 Changing the checkout does not update firmware already on devices.
