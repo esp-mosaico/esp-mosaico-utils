@@ -87,6 +87,7 @@ class WorkspaceTests(unittest.TestCase):
 
             self.assertEqual(workspace.root, root.resolve())
             self.assertEqual(workspace.projects_dir, (root / "apps").resolve())
+            self.assertIsNone(workspace.init_template)
             self.assertEqual(
                 workspace.esp_iris_path, (root / "third_party" / "esp-iris").resolve()
             )
@@ -122,6 +123,25 @@ class WorkspaceTests(unittest.TestCase):
 
             with self.assertRaises(EnvironmentError):
                 load_workspace(TOOL_ROOT, explicit=str(root))
+
+    def test_optional_init_template_is_resolved_from_workspace(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            value = configuration()
+            value["workspace"]["init_template"] = "templates/reference.json"
+            (root / CONFIG_NAME).write_text(json.dumps(value), encoding="utf-8")
+            workspace = load_workspace(TOOL_ROOT, explicit=str(root))
+            self.assertEqual(workspace.init_template, (root / "templates/reference.json").resolve())
+
+    def test_invalid_init_template_configuration_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for template in (None, "", 42):
+                value = configuration()
+                value["workspace"]["init_template"] = template
+                (root / CONFIG_NAME).write_text(json.dumps(value), encoding="utf-8")
+                with self.subTest(template=template), self.assertRaises(EnvironmentError):
+                    load_workspace(TOOL_ROOT, explicit=str(root))
 
 
 if __name__ == "__main__":

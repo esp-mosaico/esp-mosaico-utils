@@ -1,7 +1,7 @@
 {
   "schema": "esp-iris-resource-budgets/v1",
   "source_lines": {
-    "components/esp_iris/src/esp_iris.c": 1200,
+    "components/esp_iris/src/esp_iris.c": 1300,
     "components/esp_iris/src/esp_iris_services.c": 2050,
     "components/esp_iris/src/esp_iris_files.c": 1750,
     "components/esp_iris/tools/iris_gateway/gateway.py": 2050,

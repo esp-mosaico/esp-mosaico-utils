@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import sys
-from typing import Any, NoReturn, Sequence
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Any, NoReturn
 from urllib.parse import urlsplit
 
 from . import __version__
@@ -18,6 +19,7 @@ from .commands import (
     invoke_rpc,
     list_devices,
     monitor,
+    monitor_memory,
     read_http_update_code,
     recover,
     start_system_update,
@@ -25,8 +27,8 @@ from .commands import (
 from .doctor import diagnose_host, print_diagnosis
 from .errors import MosaicoError
 from .runtime import RunContext
+from .scaffold import initialize_project
 from .workspace import load_workspace
-
 
 TOOL_ROOT = Path(__file__).resolve().parents[2]
 
@@ -109,7 +111,7 @@ def nand_manifest_path(value: str) -> str:
 def build_parser() -> argparse.ArgumentParser:
     parser = MosaicoArgumentParser(
         prog="mosaico.py",
-        description="Unified ESP-Mosaico device command-line tool",
+        description="Unified ESP-Mosaico project and device command-line tool",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
@@ -124,6 +126,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     commands = parser.add_subparsers(dest="command", required=True)
+
+    init_parser = commands.add_parser(
+        "init",
+        help="Create an application from the workspace's template description",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    init_parser.add_argument(
+        "name",
+        help="New project name: 1-31 letters, digits or underscores, starting with a letter",
+    )
+    init_parser.add_argument(
+        "--dry-run", action="store_true", help="Validate and list files without writing"
+    )
 
     commands.add_parser(
         "doctor",
@@ -324,6 +339,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show endpoint, ESP-IDF version, session, and capabilities",
     )
 
+    memory_parser = commands.add_parser(
+        "memory",
+        help="Read internal RAM, SPIRAM and each task's stack high-water mark",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    memory_parser.add_argument(
+        "--device-id", help="Target Device ID; selected automatically when only one is available"
+    )
+    memory_parser.add_argument(
+        "--gateway-profile", help="ESP-Iris profile; use the local Gateway by default"
+    )
+    memory_parser.add_argument(
+        "--follow", action="store_true", help="Poll until interrupted"
+    )
+    memory_parser.add_argument(
+        "--interval", type=positive_timeout, default=5.0,
+        help="Seconds between polls when --follow is set",
+    )
+
     rpc_parser = commands.add_parser(
         "rpc",
         help="Invoke a raw application RPC through ESP-Iris",
@@ -494,6 +528,29 @@ def main(
         _emit_error(error, arguments.json, arguments.verbose)
         return error.exit_code
 
+    if arguments.command == "init":
+        try:
+            result = initialize_project(
+                workspace, arguments.name, dry_run=arguments.dry_run
+            )
+        except MosaicoError as error:
+            _emit_error(error, arguments.json, arguments.verbose)
+            return error.exit_code
+        if arguments.json:
+            print(json.dumps({"ok": True, **result}, ensure_ascii=False, sort_keys=True))
+        else:
+            print(f"init: {result['status']}")
+            print(f"Project: {result['project']}")
+            if arguments.dry_run or arguments.verbose:
+                print(f"Template: {result['template']}")
+                for filename in result["files"]:
+                    print(f"  {filename}")
+            if arguments.dry_run:
+                print("Checks passed; no files were written.")
+            print(f"From workspace: {workspace.root}")
+            print(result["install_command"])
+        return 0
+
     if arguments.command == "list":
         context = RunContext(
             workspace,
@@ -556,6 +613,8 @@ def main(
             result = invoke_rpc(arguments, context)
         elif arguments.command == "crash":
             result = inspect_crash(arguments, context)
+        elif arguments.command == "memory":
+            return monitor_memory(arguments, context, arguments.json)
         else:
             return monitor(arguments, context, arguments.json)
     except MosaicoError as error:
@@ -563,7 +622,7 @@ def main(
         _emit_error(error, arguments.json, arguments.verbose)
         return error.exit_code
     except KeyboardInterrupt:
-        return 0 if arguments.command == "monitor" else 5
+        return 0 if arguments.command in {"monitor", "memory"} else 5
     if arguments.json:
         print(json.dumps({"ok": True, **result}, ensure_ascii=False, sort_keys=True))
     else:

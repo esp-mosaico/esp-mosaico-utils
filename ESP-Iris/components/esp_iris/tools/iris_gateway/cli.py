@@ -414,6 +414,9 @@ async def _ctl(args: argparse.Namespace) -> int:
             elif command == "status":
                 async with session.get(base + f"/v1/devices/{args.device}", ssl=ssl_value) as response:
                     _output(await _response_json(response), args.json)
+            elif command == "memory":
+                async with session.get(base + f"/v1/devices/{args.device}/memory", ssl=ssl_value) as response:
+                    _output(await _response_json(response), args.json)
             elif command == "system-inventory":
                 url = base + f"/v1/devices/{args.device}/system-inventory"
                 async with session.get(url, ssl=ssl_value) as response:
@@ -858,6 +861,8 @@ def build_parser() -> argparse.ArgumentParser:
     reconcile.add_argument("operation_id")
     status = commands.add_parser("status")
     status.add_argument("device")
+    memory = commands.add_parser("memory", help="read live heap and task stack watermarks")
+    memory.add_argument("device")
     system_inventory = commands.add_parser("system-inventory")
     system_inventory.add_argument("device")
     crash = commands.add_parser("crash")

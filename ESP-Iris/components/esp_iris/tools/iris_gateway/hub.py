@@ -763,6 +763,9 @@ class IrisHub:
         result["endpoint"] = session.link.endpoint
         return result
 
+    async def task_memory(self, device_id: str) -> dict[str, Any]:
+        return await self.get(device_id).task_memory()
+
     async def file_volumes(self, device_id: str) -> dict[str, Any]:
         return await self.get(device_id).files.volumes()
 

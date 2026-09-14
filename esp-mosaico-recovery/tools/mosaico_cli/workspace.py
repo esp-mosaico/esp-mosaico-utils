@@ -30,6 +30,7 @@ class WorkspaceConfig:
     esp_iris_path: Path
     build_runner: Path
     devices: tuple[dict[str, Any], ...]
+    init_template: Path | None = None
 
     def resolve(self, value: str) -> Path:
         path = Path(value).expanduser()
@@ -179,4 +180,8 @@ def load_workspace(
         ),
         build_runner=build_runner,
         devices=tuple(dict(item) for item in devices_value),
+        init_template=(
+            workspace_path(workspace["init_template"], "workspace.init_template")
+            if "init_template" in workspace else None
+        ),
     )

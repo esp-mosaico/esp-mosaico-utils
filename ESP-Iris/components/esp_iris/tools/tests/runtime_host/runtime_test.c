@@ -11,6 +11,11 @@
 #include "runtime_stubs.h"
 static int64_t now_us;
 int64_t esp_timer_get_time(void) { return now_us; }
+esp_err_t esp_iris_memory_get_heap(esp_iris_heap_memory_t *out) {
+    if (out == NULL) return ESP_ERR_INVALID_ARG;
+    *out = (esp_iris_heap_memory_t){0};
+    return ESP_OK;
+}
 void *heap_caps_calloc(size_t a, size_t b, unsigned caps) { (void)caps; return calloc(a,b); }
 void *heap_caps_malloc(size_t n, unsigned caps) { (void)caps; return malloc(n); }
 uint32_t esp_random(void) { static uint32_t id = 50; return ++id; }

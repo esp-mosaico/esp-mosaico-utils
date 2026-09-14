@@ -6,13 +6,13 @@ import base64
 import getpass
 import json
 import os
-from pathlib import Path
-from queue import Empty, Queue
 import re
 import subprocess
 import sys
-from threading import Thread
 import time
+from pathlib import Path
+from queue import Empty, Queue
+from threading import Thread
 from typing import Any, TextIO
 
 from .errors import (
@@ -27,9 +27,9 @@ from .gateway import (
     acquire_endpoint_maintenance_lease,
     acquire_maintenance_lease,
     connected_devices,
-    enter_recovery_and_wait,
     ensure_gateway,
     ensure_iris_tools,
+    enter_recovery_and_wait,
     finish_maintenance_lease,
     gateway_devices,
     gateway_json,
@@ -44,8 +44,8 @@ from .recovery import (
     load_bundle,
     provisioning_candidate,
     read_rom_hardware_mac,
-    record_recovery_verification,
     record_recovery_build_defaults,
+    record_recovery_verification,
     recovery_build_defaults_are_current,
     recovery_defaults_fingerprint,
     recovery_verification_details,
@@ -53,7 +53,6 @@ from .recovery import (
 from .recovery_port import lease_port, same_port, serial_jtag_candidate
 from .registry import select_model
 from .runtime import RunContext, build_application, resolve_idf_path, run_idf_target
-
 
 _IDF_MONITOR_LOG_PATTERN = re.compile(r"^(I|W|E) \([\d:\. -]+\)")
 _IDF_MONITOR_COLORS = {
@@ -333,6 +332,38 @@ def list_devices(context: RunContext, gateway_profile: str | None) -> dict[str, 
         "gateway_profile": session.profile,
         "devices": devices,
     }
+
+
+def monitor_memory(arguments: Any, context: RunContext, json_output: bool) -> int:
+    """Take a snapshot or poll memory without starting a device-side sampler."""
+
+    session = ensure_gateway(context, arguments.gateway_profile)
+    device = select_device(connected_devices(context, session), arguments.device_id)
+    device_id = str(device.get("device_id"))
+    while True:
+        started = time.monotonic()
+        snapshot = gateway_json(context, session, "memory", device_id)
+        if not isinstance(snapshot, dict) or snapshot.get("device_id") != device_id:
+            raise DeviceError("ESP-Iris returned a memory snapshot for another device.")
+        if json_output:
+            print(json.dumps(snapshot, ensure_ascii=False, sort_keys=True), flush=True)
+        else:
+            print(f"Device {device_id}  Boot {snapshot.get('boot_id')}")
+            for region in ("internal", "spiram"):
+                total = int(snapshot.get(f"total_{region}_bytes") or 0)
+                if total:
+                    free = int(snapshot.get(f"free_{region}_bytes") or 0)
+                    minimum = int(snapshot.get(f"min_free_{region}_bytes") or 0)
+                    print(f"{region:8} free {free:>10} B  minimum {minimum:>10} B  total {total:>10} B")
+                else:
+                    print(f"{region:8} unavailable")
+            print("Task ID    Minimum free stack")
+            for task in sorted(snapshot.get("tasks", []), key=lambda item: int(item["stack_free_min_bytes"])):
+                print(f"{int(task['task_number']):>7}    {int(task['stack_free_min_bytes']):>10} B")
+            print(flush=True)
+        if not arguments.follow:
+            return 0
+        time.sleep(max(0.0, arguments.interval - (time.monotonic() - started)))
 
 
 def invoke_rpc(arguments: Any, context: RunContext) -> dict[str, Any]:

@@ -6,11 +6,13 @@ import hashlib
 import hmac
 import struct
 import time
+from types import SimpleNamespace
 
 import pytest
 
 import iris_gateway.session as session_module
 from iris_gateway.protocol import (
+    Capability,
     Channel,
     ControlType,
     CrashType,
@@ -25,6 +27,86 @@ from iris_gateway.protocol import (
     encode_tlv,
 )
 from iris_gateway.session import DeviceSession
+
+
+def test_status_decodes_spiram_watermarks_and_old_firmware() -> None:
+    async def scenario() -> None:
+        async def discard(value: object) -> None:
+            pass
+
+        session = DeviceSession(FakeLink(), discard, discard)
+        session.info = SimpleNamespace(
+            hardware_mac="",
+            as_dict=lambda: {"device_id": "device-1", "boot_id": "42"},
+        )
+        payload = encode_tlv([
+            (TlvTag.FREE_INTERNAL, struct.pack("<I", 600)),
+            (TlvTag.MIN_FREE_INTERNAL, struct.pack("<I", 400)),
+            (TlvTag.TOTAL_INTERNAL, struct.pack("<I", 1000)),
+            (TlvTag.TOTAL_SPIRAM, struct.pack("<I", 2000)),
+            (TlvTag.FREE_SPIRAM, struct.pack("<I", 1500)),
+            (TlvTag.MIN_FREE_SPIRAM, struct.pack("<I", 1000)),
+        ])
+
+        async def response(channel: int, type_: int) -> Frame:
+            assert channel == Channel.CONTROL
+            assert type_ == ControlType.STATUS_REQUEST
+            return Frame(channel=channel, type=ControlType.STATUS_RESPONSE, payload=payload)
+
+        session._request = response
+        status = await session.status()
+        assert (status["total_spiram"], status["free_spiram"], status["min_free_spiram"]) == (2000, 1500, 1000)
+
+        payload = b""
+        old_status = await session.status()
+        assert old_status["total_spiram"] == 0
+        assert old_status["min_free_spiram"] == 0
+
+    asyncio.run(scenario())
+
+
+def test_task_memory_snapshot_is_complete_and_capability_gated() -> None:
+    async def scenario() -> None:
+        async def discard(value: object) -> None:
+            pass
+
+        session = DeviceSession(FakeLink(), discard, discard)
+        session.info = SimpleNamespace(
+            capabilities=Capability.TASK_MEMORY,
+            as_dict=lambda: {"device_id": "device-1", "boot_id": "42"},
+        )
+
+        async def response(channel: int, type_: int) -> Frame:
+            assert channel == Channel.CONTROL
+            assert type_ == ControlType.TASKS_REQUEST
+            return Frame(
+                channel=channel,
+                type=ControlType.TASKS_RESPONSE,
+                payload=struct.pack("<QHHIIII", 12345, 2, 0, 17, 384, 18, 768),
+            )
+
+        session._request = response
+        snapshot = await session.task_memory()
+        assert snapshot["uptime_us"] == 12345
+        assert snapshot["tasks"] == [
+            {"task_number": 17, "stack_free_min_bytes": 384},
+            {"task_number": 18, "stack_free_min_bytes": 768},
+        ]
+
+        async def truncated(channel: int, type_: int) -> Frame:
+            frame = await response(channel, type_)
+            frame.payload = frame.payload[:-1]
+            return frame
+
+        session._request = truncated
+        with pytest.raises(ProtocolError, match="invalid task memory response"):
+            await session.task_memory()
+
+        session.info.capabilities = 0
+        with pytest.raises(NotImplementedError):
+            await session.task_memory()
+
+    asyncio.run(scenario())
 
 
 class FakeLink:
