@@ -129,7 +129,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     init_parser = commands.add_parser(
         "init",
-        help="Create an application from the workspace's Hello World template",
+        help="Create an application from the workspace's template description",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     init_parser.add_argument(

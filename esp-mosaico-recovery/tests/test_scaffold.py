@@ -6,7 +6,6 @@ from dataclasses import replace
 import io
 import json
 from pathlib import Path
-import re
 import sys
 import tempfile
 import unittest
@@ -27,104 +26,93 @@ class ScaffoldTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name).resolve()
-        self.template = self.root / "projects" / "hello_world"
+        self.template = self.root / "templates" / "basic"
         self.template.mkdir(parents=True)
         config = {
             "schema_version": 1,
-            "workspace": {"projects_dir": "apps/nested", "default_project": "projects/hello_world"},
-            "dependencies": {"bsp": "vendor/bsp", "esp_iris": "vendor/iris"},
-            "build": {"runner": "builtin"},
-            "devices": [{"id": "esp-mosaico"}],
+            "workspace": {
+                "projects_dir": "apps/nested", "default_project": "apps/existing",
+                "init_template": "templates/basic/description.json",
+            },
+            "dependencies": {"bsp": "vendor/board", "esp_iris": "vendor/transport"},
+            "build": {"runner": "builtin"}, "devices": [{"id": "board"}],
         }
         (self.root / ".mosaico.json").write_text(json.dumps(config), encoding="utf-8")
         self.workspace = load_workspace(TOOL_ROOT, explicit=str(self.root))
-        contents = {
-            "CMakeLists.txt": '''cmake_minimum_required(VERSION 3.16)
-set(SDKCONFIG_DEFAULTS "sdkconfig.defaults;sdkconfig.application.defaults")
-set(EXTRA_COMPONENT_DIRS
-    "${CMAKE_CURRENT_LIST_DIR}/../../components/esp_mosaico_app_recovery")
-include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-project(hello_world VERSION 1.0.0)
-include(../../cmake/system_update.cmake)
-''',
-            "README.md": "# ESP-Mosaico Hello World\n\n"
-            "Hello World!\npython mosaico.py install --project projects/hello_world\n"
-            "python mosaico.py system-update --project projects/hello_world\n",
-            "partitions.csv": "# Keep exact bytes\r\nsysmeta,data,nvs,0xc000,0x14000,\r\n",
-            "sdkconfig.defaults": 'CONFIG_IDF_TARGET="esp32s31"\n',
-            "sdkconfig.application.defaults": 'CONFIG_ESP_IRIS_OTA_DEFAULT_VIA_RECOVERY=y\n'
-            '# CONFIG_ESP_IRIS_OTA is not set\nCONFIG_ESP_IRIS_USB_PRODUCT="ESP-Iris Mosaico Hello World"\n',
-            "main/CMakeLists.txt": 'idf_component_register(SRCS "main.c" REQUIRES esp_mosaico_app_recovery)\n',
-            "main/idf_component.yml": '''dependencies:
-  idf: ">=6.2"
-  esp-mosaico-bsp:
-    version: "*"
-    override_path: ../../../submodule/esp-mosaico-bsp/components/esp-mosaico-bsp
-  esp_iris:
-    version: "*"
-    override_path: ../../../submodule/esp-mosaico-utils/ESP-Iris/components/esp_iris
-  lvgl/lvgl:
-    version: ">=8,<10"
-''',
-            "main/main.c": 'static const char *TAG = "hello_world";\n'
-            'void app_main(void) { iris_ota_support_start(); /* Hello World! */ }\n',
+        # No board-specific application, source language or shared script is
+        # needed by this fixture: the descriptor owns the entire file layout.
+        (self.template / "entry.txt").write_text("App: original\nLink: original\n", encoding="utf-8")
+        (self.template / "payload.dat").write_bytes(b"\x00\xff\r\n")
+        self.description = {
+            "schema_version": 1,
+            "paths": {"shared": {"base": "workspace", "path": "library with spaces"}},
+            "files": [
+                {"source": "entry.txt", "destination": "source/deep/start.txt", "replacements": [
+                    {"pattern": "^App: original$", "replacement": "App: {{project_name}}"},
+                    {"pattern": "^Link: original$", "replacement": "Link: {{shared|json}}"},
+                ], "append": "Project: {{project_path}}\n"},
+                {"source": "payload.dat", "destination": "assets/payload.bin"},
+            ],
         }
-        for filename, content in contents.items():
-            path = self.template / filename
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_bytes(content.encode("utf-8"))
-        for filename in ("components/esp_mosaico_app_recovery/CMakeLists.txt",
-                         "cmake/system_update.cmake", "tools/prepare_system_update.py"):
-            path = self.root / filename
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("# shared resource\n", encoding="utf-8")
+        self.save_description()
+
+    def save_description(self) -> None:
+        self.workspace.init_template.write_text(json.dumps(self.description), encoding="utf-8")
 
     def snapshot(self) -> dict[str, bytes | None]:
         return {str(path.relative_to(self.root)): path.read_bytes() if path.is_file() else None
                 for path in self.root.rglob("*")}
 
-    def test_creates_only_sources_and_preserves_template_and_workspace(self) -> None:
-        for filename in ("build/app.bin", "managed_components/cache", "sdkconfig",
-                         "dependencies.lock", "sdkconfig.old", "extra.txt"):
-            path = self.template / filename
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("local-only", encoding="utf-8")
+    def test_generates_only_declared_files_and_preserves_workspace(self) -> None:
+        (self.template / "ignored.txt").write_text("local data", encoding="utf-8")
         before = self.snapshot()
         result = initialize_project(self.workspace, "My_app2")
         project = Path(result["project"])
         self.assertEqual(result["status"], "created")
+        self.assertEqual(result["template"], str(self.workspace.init_template))
         self.assertEqual(project, self.root / "apps/nested/My_app2")
-        self.assertEqual(len([p for p in project.rglob("*") if p.is_file()]), 8)
-        for filename in ("partitions.csv", "sdkconfig.defaults", "main/CMakeLists.txt"):
-            self.assertEqual((project / filename).read_bytes(), (self.template / filename).read_bytes())
-        self.assertIn("project(My_app2 VERSION 1.0.0)", (project / "CMakeLists.txt").read_text())
-        self.assertIn('TAG = "My_app2"', (project / "main/main.c").read_text())
-        self.assertIn("Hello World!", (project / "main/main.c").read_text())
-        self.assertIn("iris_ota_support_start()", (project / "main/main.c").read_text())
-        self.assertIn("python mosaico.py recover", (project / "README.md").read_text())
+        self.assertEqual(result["files"], ["source/deep/start.txt", "assets/payload.bin"])
+        self.assertEqual((project / "assets/payload.bin").read_bytes(), b"\x00\xff\r\n")
+        text = (project / "source/deep/start.txt").read_text()
+        self.assertIn("App: My_app2", text)
+        self.assertIn("Project: apps/nested/My_app2", text)
+        self.assertFalse((project / "main").exists())
+        self.assertFalse((project / "ignored.txt").exists())
         after = self.snapshot()
         self.assertTrue(all(after[path] == content for path, content in before.items()))
         self.assertFalse(self.workspace.run_dir.exists())
 
-    def test_rebases_shared_and_component_paths_for_nested_projects(self) -> None:
+    def test_paths_are_relative_to_each_destination_parent(self) -> None:
         workspace = replace(self.workspace, projects_dir=self.root / "apps with spaces/nested")
+        self.description["files"].append({"source": "entry.txt", "destination": "entry.txt", "replacements": [
+            {"pattern": "^Link: original$", "replacement": "Link: {{shared|json}}"},
+        ]})
+        self.save_description()
+        project = Path(initialize_project(workspace, "demo")["project"])
+        for filename in ("source/deep/start.txt", "entry.txt"):
+            path = project / filename
+            line = next(line for line in path.read_text().splitlines() if line.startswith("Link: "))
+            reference = json.loads(line[len("Link: "):])
+            self.assertEqual((path.parent / reference).resolve(), self.root / "library with spaces")
+
+    def test_filters_preserve_cmake_and_shell_literals(self) -> None:
+        self.description["paths"]["shared"]["path"] = "library$;folder"
+        self.description["files"][0]["append"] = "{{shared|cmake}}\n{{project_path|shell}}\n"
+        self.save_description()
+        workspace = replace(self.workspace, projects_dir=self.root / "apps with spaces")
         result = initialize_project(workspace, "demo")
-        project = Path(result["project"])
-        cmake = (project / "CMakeLists.txt").read_text()
-        references = re.findall(r'"\$\{CMAKE_CURRENT_LIST_DIR\}/([^"]+)"', cmake)
-        self.assertEqual({(project / path).resolve() for path in references}, {
-            self.root / "components/esp_mosaico_app_recovery",
-            self.root / "cmake/system_update.cmake", self.root / "vendor/iris",
-        })
-        manifest = (project / "main/idf_component.yml").read_text()
-        overrides = re.findall(r"override_path: (.+)", manifest)
-        self.assertEqual([(project / "main" / json.loads(p)).resolve() for p in overrides], [
-            self.root / "vendor/bsp/components/esp-mosaico-bsp",
-            self.root / "vendor/iris/components/esp_iris",
-        ])
-        self.assertIn('idf: ">=6.2"', manifest)
-        self.assertIn('version: ">=8,<10"', manifest)
-        self.assertIn("apps with spaces/nested/demo", result["install_command"])
+        lines = (Path(result["project"]) / "source/deep/start.txt").read_text().splitlines()
+        self.assertIn(r"library\$\;folder", lines[-2])
+        if sys.platform != "win32":
+            import shlex
+            self.assertEqual(shlex.split(lines[-1]), ["apps with spaces/demo"])
+        else:
+            self.assertEqual(lines[-1], '"apps with spaces/demo"')
+
+    def test_only_descriptor_text_is_interpolated(self) -> None:
+        (self.template / "entry.txt").write_text("App: original\nLink: original\n{{keep_source_literal}}\n", encoding="utf-8")
+        result = initialize_project(self.workspace, "demo")
+        self.assertIn("{{keep_source_literal}}", (Path(result["project"]) / "source/deep/start.txt").read_text())
 
     def test_dry_run_does_not_write_or_start_runtime(self) -> None:
         before = self.snapshot()
@@ -135,8 +123,56 @@ include(../../cmake/system_update.cmake)
         result = json.loads(output.getvalue())
         self.assertTrue(result["ok"])
         self.assertEqual(result["status"], "dry_run")
-        self.assertEqual(len(result["files"]), 8)
+        self.assertEqual(result["files"], ["source/deep/start.txt", "assets/payload.bin"])
         self.assertEqual(before, self.snapshot())
+
+    def test_unconfigured_init_is_an_explicit_error(self) -> None:
+        with self.assertRaisesRegex(EnvironmentError, "not configured"):
+            initialize_project(replace(self.workspace, init_template=None), "demo")
+
+    def test_required_resources_are_declared_by_the_template(self) -> None:
+        self.description["paths"]["shared"]["required"] = "file"
+        self.save_description()
+        with self.assertRaisesRegex(EnvironmentError, "Required template resource"):
+            initialize_project(self.workspace, "demo")
+        self.assertFalse(self.workspace.projects_dir.exists())
+        (self.root / "library with spaces").write_text("shared", encoding="utf-8")
+        initialize_project(self.workspace, "demo")
+
+    def test_invalid_descriptions_fail_without_writing(self) -> None:
+        mutations = [
+            {"schema_version": 2}, {"schema_version": True}, {"files": []},
+            {"files": [{"source": "entry.txt", "replacements": "bad"}]},
+            {"files": [{"source": "entry.txt", "replacements": [{"pattern": "[", "replacement": "x"}]}]},
+            {"files": [{"source": "entry.txt", "append": "{{unknown}}"}]},
+            {"files": [{"source": "entry.txt", "append": "{{project_name|unknown}}"}]},
+            {"paths": {"project_name": {"base": "workspace", "path": "x"}}},
+            {"paths": {"shared": {"base": "unknown", "path": "x"}}},
+            {"paths": {"shared": {"base": "workspace", "path": "x", "required": True}}},
+            {"execute": "do-not-run"},
+        ]
+        for mutation in mutations:
+            value = {**self.description, **mutation}
+            self.workspace.init_template.write_text(json.dumps(value), encoding="utf-8")
+            before = self.snapshot()
+            with self.subTest(mutation=mutation), self.assertRaises(EnvironmentError):
+                initialize_project(self.workspace, "demo")
+            self.assertEqual(before, self.snapshot())
+
+    def test_file_paths_cannot_escape_or_collide(self) -> None:
+        for field in ("source", "destination"):
+            for path in ("../outside", "/absolute", "C:/file", "x\\file", "x/../file", "CON", "a:stream", "a*b", "a?b"):
+                self.description["files"] = [{"source": "entry.txt", field: path}]
+                self.save_description()
+                with self.subTest(field=field, path=path), self.assertRaises(EnvironmentError):
+                    initialize_project(self.workspace, "demo")
+        for destination in ("same", "Same", "same/nested"):
+            self.description["files"] = [{"source": "entry.txt", "destination": "same"},
+                                         {"source": "entry.txt", "destination": destination}]
+            self.save_description()
+            with self.subTest(destination=destination), self.assertRaises(EnvironmentError):
+                initialize_project(self.workspace, "demo")
+        self.assertFalse(self.workspace.projects_dir.exists())
 
     def test_rejects_bad_names_before_writing(self) -> None:
         before = self.snapshot()
@@ -176,7 +212,7 @@ include(../../cmake/system_update.cmake)
                 initialize_project(workspace, "demo")
 
     def test_incomplete_template_fails_before_writing(self) -> None:
-        (self.template / "partitions.csv").unlink()
+        (self.template / "payload.dat").unlink()
         before = self.snapshot()
         with self.assertRaises(EnvironmentError):
             initialize_project(self.workspace, "demo")
@@ -189,26 +225,30 @@ include(../../cmake/system_update.cmake)
             initialize_project(self.workspace, "demo", dry_run=True)
         self.assertEqual(before, self.snapshot())
 
-    def test_ambiguous_template_rewrite_fails_before_writing(self) -> None:
-        cmake = self.template / "CMakeLists.txt"
-        cmake.write_text(cmake.read_text() + "project(hello_world)\n", encoding="utf-8")
-        with self.assertRaises(EnvironmentError):
+    def test_replacement_count_is_enforced(self) -> None:
+        source = self.template / "entry.txt"
+        source.write_text(source.read_text() + "App: original\n", encoding="utf-8")
+        with self.assertRaisesRegex(EnvironmentError, "expected 1 match"):
             initialize_project(self.workspace, "demo")
         self.assertFalse(self.workspace.projects_dir.exists())
+        self.description["files"][0]["replacements"][0]["count"] = 2
+        self.save_description()
+        result = initialize_project(self.workspace, "demo")
+        self.assertEqual((Path(result["project"]) / "source/deep/start.txt").read_text().count("App: demo"), 2)
 
     def test_crlf_template_is_supported(self) -> None:
         for path in self.template.rglob("*"):
             if path.is_file():
                 path.write_bytes(path.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", b"\r\n"))
         result = initialize_project(self.workspace, "demo")
-        self.assertIn("project(demo VERSION 1.0.0)", (Path(result["project"]) / "CMakeLists.txt").read_text())
+        self.assertIn("App: demo", (Path(result["project"]) / "source/deep/start.txt").read_text())
 
     def test_write_failure_cleans_created_files_and_parents(self) -> None:
         before = self.snapshot()
         original = Path.open
 
         def fail(path, mode="r", *args, **kwargs):
-            if mode == "xb" and path.name == "main.c":
+            if mode == "xb" and path.name == "payload.bin":
                 raise OSError("simulated disk full")
             return original(path, mode, *args, **kwargs)
 
@@ -227,7 +267,7 @@ include(../../cmake/system_update.cmake)
         with ThreadPoolExecutor(max_workers=2) as pool:
             results = list(pool.map(lambda _: create(), range(2)))
         self.assertCountEqual(results, ["created", "conflict"])
-        self.assertEqual(len(list((self.workspace.projects_dir / "demo").rglob("*.c"))), 1)
+        self.assertEqual(len(list((self.workspace.projects_dir / "demo").rglob("*.bin"))), 1)
 
     def test_failure_cleanup_preserves_content_created_by_someone_else(self) -> None:
         project = self.workspace.projects_dir / "demo"
@@ -235,7 +275,7 @@ include(../../cmake/system_update.cmake)
         original = Path.open
 
         def fail(path, mode="r", *args, **kwargs):
-            if mode == "xb" and path.name == "main.c":
+            if mode == "xb" and path.name == "payload.bin":
                 foreign.write_text("external content", encoding="utf-8")
                 raise OSError("simulated disk full")
             return original(path, mode, *args, **kwargs)

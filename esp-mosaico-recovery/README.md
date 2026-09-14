@@ -43,13 +43,15 @@ The CLI searches the current directory and its parents for `.mosaico.json`.
 Use `--workspace PATH` to select another workspace explicitly.
 
 Create a normal application with `python mosaico.py init my_app`. The consuming
-workspace supplies the template (`workspace.init_template`, default
-`projects/hello_world`), shared Recovery component and build scripts. Output goes
-under `workspace.projects_dir`; `default_project` is unchanged. The template must
-retain the eight-file Hello World structure and its name-replacement markers.
-Only source files are copied, with project identity and dependency references
-adjusted. Names use 1–31 ASCII letters, digits or underscores, starting with a
-letter, and cannot be Windows reserved names. Existing destinations are rejected.
+workspace supplies a JSON template description through `workspace.init_template`;
+there is no implicit template. Sources, file lists, text rules and resource paths
+are maintained by that workspace. Output goes under `workspace.projects_dir`;
+`default_project` is unchanged. The generic renderer handles path variables,
+validated replacements, exclusive creation and failure cleanup without assuming
+an application layout. See [the template format](docs/project-template.md).
+
+Names use 1–31 ASCII letters, digits or underscores, starting with a letter,
+and cannot be Windows reserved names. Existing destinations are rejected.
 Use `--dry-run` to validate and list files without writing, or `--json` for stable
 output. Initialization needs neither ESP-IDF nor a Gateway or connected device.
 
