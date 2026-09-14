@@ -163,6 +163,7 @@ class GatewayService:
         store.set_setting("mode", self.mode)
         self.mode_transition = False
         self._subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
+        self._memory_requests: dict[str, asyncio.Task[dict[str, Any]]] = {}
         self._crash_archives_in_progress: set[str] = set()
         self.operations = OperationManager(store, self.on_device_event, self.metrics)
         self.host_id = str(store.get_setting("host_id") or uuid.uuid4())
@@ -358,6 +359,43 @@ class GatewayService:
         self.store.set_setting(f"status.{device_id}", result)
         self.store.remember_device(result)
         return result
+
+    async def memory_snapshot(self, device_id: str) -> dict[str, Any]:
+        if self.mode != "develop":
+            raise web.HTTPConflict(text="live memory polling requires develop mode")
+        device_id = self.resolve_device(device_id)
+        pending = self._memory_requests.get(device_id)
+        if pending is None:
+            async def sample() -> dict[str, Any]:
+                status = boot_id_text(await self.device_hub.status(device_id))
+                tasks = boot_id_text(await self.device_hub.task_memory(device_id))
+                if tasks["device_id"] != device_id:
+                    raise web.HTTPConflict(text="device identity changed during memory snapshot")
+                if tasks["boot_id"] != status["boot_id"]:
+                    raise web.HTTPConflict(text="device rebooted during memory snapshot")
+                return {
+                    "device_id": device_id,
+                    "boot_id": status["boot_id"],
+                    "heap_uptime_us": status["uptime_us"],
+                    "task_uptime_us": tasks["uptime_us"],
+                    "total_internal_bytes": status["total_internal"],
+                    "free_internal_bytes": status["free_internal"],
+                    "min_free_internal_bytes": status["min_free_internal"],
+                    "total_spiram_bytes": status["total_spiram"],
+                    "free_spiram_bytes": status["free_spiram"],
+                    "min_free_spiram_bytes": status["min_free_spiram"],
+                    "tasks": tasks["tasks"],
+                }
+
+            pending = asyncio.create_task(sample())
+            self._memory_requests[device_id] = pending
+
+            def forget(completed: asyncio.Task[dict[str, Any]]) -> None:
+                if self._memory_requests.get(device_id) is completed:
+                    self._memory_requests.pop(device_id, None)
+
+            pending.add_done_callback(forget)
+        return await asyncio.shield(pending)
 
     async def preserve_coredump(self, device_id: str) -> dict[str, Any] | None:
         report = await self.device_hub.crash_report(device_id)
@@ -1268,6 +1306,13 @@ def create_app(service: GatewayService) -> web.Application:
     async def status(request: web.Request) -> web.Response:
         return web.json_response(await service.current_status(request.match_info["device_id"]))
 
+    async def memory_snapshot(request: web.Request) -> web.Response:
+        try:
+            snapshot = await service.memory_snapshot(request.match_info["device_id"])
+        except NotImplementedError as exc:
+            return _error(501, "not_supported", str(exc))
+        return web.json_response(snapshot)
+
     async def alias(request: web.Request) -> web.Response:
         device_id = service.resolve_device(request.match_info["device_id"])
         body = await _json_body(request)
@@ -1980,6 +2025,7 @@ def create_app(service: GatewayService) -> web.Application:
         maintenance_finish,
     )
     app.router.add_get("/v1/devices/{device_id}", status)
+    app.router.add_get("/v1/devices/{device_id}/memory", memory_snapshot)
     app.router.add_delete("/v1/devices/{device_id}", remove_device)
     app.router.add_patch("/v1/devices/{device_id}/alias", alias)
     app.router.add_get("/v1/events", event_history)

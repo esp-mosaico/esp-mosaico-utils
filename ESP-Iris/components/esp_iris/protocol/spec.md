@@ -129,6 +129,7 @@ Implemented control types:
 | JOB_QUERY/JOB_STATUS | `0x13/0x14` | job ID / fixed job status |
 | RESTART | `0x15` | `delay_ms:u32` |
 | AUTH_RESULT | `0x16` | `accepted:u8` |
+| TASKS_REQUEST/TASKS_RESPONSE | `0x17/0x18` | empty / task stack snapshot |
 | ERROR | `0x7f` | `esp_err:u32, channel:u8, type:u8, reserved:u16` |
 
 CONTROL and reliable EVENT traffic are not charged against media/log credit.
@@ -158,6 +159,36 @@ and static Iris bytes. The PC reports `internal_total_bytes` as static bytes
 plus Iris heap usage. Optional service allocations created after start are
 included. Mirror buffers are released on stop; registered RPC/screen metadata
 and retained jobs stay bounded by Kconfig.
+
+STATUS also includes allocator `TOTAL_INTERNAL` (`0x2c`), `TOTAL_SPIRAM`
+(`0x2d`), `FREE_SPIRAM` (`0x2e`), and `MIN_FREE_SPIRAM` (`0x2f`) as `u32`
+byte counts. `FREE_INTERNAL` (`0x20`) and `MIN_FREE_INTERNAL` (`0x21`) retain
+their existing meaning. A zero SPIRAM total means no allocatable SPIRAM was
+registered. The minimum-free values sum per-region low watermarks, which may
+have occurred at different times; they are not an exact simultaneous global
+minimum. Older firmware omits the new tags.
+
+When `CAP_TASK_MEMORY` (bit 19) is advertised, TASKS_REQUEST returns a single
+bounded TASKS_RESPONSE:
+
+```text
+sample_uptime_us:u64
+count:u16
+reserved:u16 = 0
+repeat count times:
+    task_number:u32
+    stack_free_min_bytes:u32
+```
+
+`task_number` is the FreeRTOS task number for this boot, not a pointer or a
+cross-boot identity. `stack_free_min_bytes` is the task's lifetime minimum
+remaining stack in ESP-IDF FreeRTOS byte units. The snapshot includes live
+tasks returned by `uxTaskGetSystemState()` and excludes tasks already marked
+deleted; tasks may be created or deleted between polls. A request with a body
+is rejected. If more than 128 tasks are
+present, the device returns CONTROL ERROR with `ESP_ERR_INVALID_SIZE` rather
+than silently truncating the list. The query allocates temporary storage and
+scans stacks only on request; it has no device-side polling task.
 
 ## Logs
 

@@ -193,6 +193,10 @@ class DemoHub:
             "uptime_us": uptime_us,
             "free_internal": 186_240 + wobble,
             "min_free_internal": 174_112,
+            "total_internal": 512_000,
+            "total_spiram": 8_388_608,
+            "free_spiram": 6_291_456 + wobble,
+            "min_free_spiram": 6_160_384,
             "log_dropped_bytes": 0,
             "rx_frames": 19_400 + self._phase,
             "tx_frames": 8_300 + self._phase,
@@ -207,6 +211,17 @@ class DemoHub:
             "clock_offset_us": 818.0,
             "clock_uncertainty_us": 410.0,
             "demo": True,
+        }
+
+    async def task_memory(self, device_id: str) -> dict[str, Any]:
+        device = self.get(device_id)
+        return {
+            **boot_id_text(device),
+            "uptime_us": (time.monotonic_ns() - self._started_ns) // 1000,
+            "tasks": [
+                {"task_number": 1, "stack_free_min_bytes": 2416},
+                {"task_number": 2, "stack_free_min_bytes": 4096},
+            ],
         }
 
     async def file_volumes(self, device_id: str) -> dict[str, Any]:

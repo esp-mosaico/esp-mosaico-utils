@@ -93,6 +93,7 @@ class DeviceInfo:
             14: "ota_project_name_match",
             15: "system_update",
             16: "system_inventory",
+            19: "task_memory",
         }
         names = [name for bit, name in bits.items() if self.capabilities & (1 << bit)]
         names.append("restart")
@@ -658,6 +659,10 @@ class DeviceSession:
             "uptime_us": tlv_u64(fields, TlvTag.UPTIME_US),
             "free_internal": tlv_u32(fields, TlvTag.FREE_INTERNAL),
             "min_free_internal": tlv_u32(fields, TlvTag.MIN_FREE_INTERNAL),
+            "total_internal": tlv_u32(fields, TlvTag.TOTAL_INTERNAL),
+            "total_spiram": tlv_u32(fields, TlvTag.TOTAL_SPIRAM),
+            "free_spiram": tlv_u32(fields, TlvTag.FREE_SPIRAM),
+            "min_free_spiram": tlv_u32(fields, TlvTag.MIN_FREE_SPIRAM),
             "log_dropped_bytes": tlv_u32(fields, TlvTag.LOG_DROPPED),
             "rx_frames": tlv_u32(fields, TlvTag.RX_FRAMES),
             "tx_frames": tlv_u32(fields, TlvTag.TX_FRAMES),
@@ -703,6 +708,25 @@ class DeviceSession:
             "crash_state_error": tlv_u32(fields, TlvTag.CRASH_STATE_ERROR),
             "clock_offset_us": self.clock_offset_us,
             "clock_uncertainty_us": self.clock_uncertainty_us,
+        }
+
+    async def task_memory(self) -> dict[str, Any]:
+        if self.info is None or not self.info.capabilities & Capability.TASK_MEMORY:
+            raise NotImplementedError("task memory observation is unavailable")
+        frame = await self._request(Channel.CONTROL, ControlType.TASKS_REQUEST)
+        if frame.type != ControlType.TASKS_RESPONSE or len(frame.payload) < 12:
+            raise ProtocolError("unexpected task memory response")
+        uptime_us, count, reserved = struct.unpack_from("<QHH", frame.payload)
+        if reserved or len(frame.payload) != 12 + count * 8:
+            raise ProtocolError("invalid task memory response")
+        tasks = [
+            {"task_number": number, "stack_free_min_bytes": free_bytes}
+            for number, free_bytes in struct.iter_unpack("<II", frame.payload[12:])
+        ]
+        return {
+            **self.info.as_dict(),
+            "uptime_us": uptime_us,
+            "tasks": tasks,
         }
 
     async def rpc(

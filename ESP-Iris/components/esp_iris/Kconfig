@@ -264,6 +264,15 @@ config ESP_IRIS_RPC_BODY_BYTES
     range 128 2048
     default 1024
 
+config ESP_IRIS_TASK_MEMORY_OBSERVATION
+    bool "Allow on-demand snapshots of every task's stack high-water mark"
+    depends on FREERTOS_USE_TRACE_FACILITY
+    default n
+    help
+        Enables a read-only task snapshot API. Each query temporarily allocates
+        a FreeRTOS status array and scans the task stacks. No background
+        sampler or per-allocation heap tracking is started.
+
 config ESP_IRIS_MAX_JOBS
     int "Maximum retained jobs"
     range 1 16
