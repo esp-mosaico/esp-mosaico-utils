@@ -30,6 +30,8 @@ htmlcov/
 # Node and frontend outputs
 **/node_modules/
 **/dist/
+!ESP-Iris/components/esp_iris/tools/frontend/dist/
+!ESP-Iris/components/esp_iris/tools/frontend/dist/**
 **/test-results/
 **/playwright-report/
 *.tsbuildinfo

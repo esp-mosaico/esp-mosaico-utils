@@ -34,8 +34,8 @@ venv/
 .ruff_cache/
 *.egg-info/
 dist/
-!common_components/esp_iris/tools/frontend/dist/
-!common_components/esp_iris/tools/frontend/dist/**
+!components/esp_iris/tools/frontend/dist/
+!components/esp_iris/tools/frontend/dist/**
 **/node_modules/
 **/test-results/
 *.tsbuildinfo

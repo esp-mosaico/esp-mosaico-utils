@@ -144,6 +144,22 @@ jobs:
         working-directory: ESP-Iris/components/esp_iris/tools/frontend
       - run: npm run build
         working-directory: ESP-Iris/components/esp_iris/tools/frontend
+      - name: Verify committed Workbench distribution
+        run: |
+          python3 - <<'PY'
+          import subprocess
+          import sys
+
+          result = subprocess.run(
+              ["git", "status", "--porcelain", "--untracked-files=all", "--",
+               "ESP-Iris/components/esp_iris/tools/frontend/dist"],
+              check=True, capture_output=True, text=True,
+          )
+          if result.stdout.strip():
+              print("Rebuild and commit the Workbench dist alongside its source:")
+              print(result.stdout)
+              sys.exit(1)
+          PY
       - run: npm audit --audit-level=high
         working-directory: ESP-Iris/components/esp_iris/tools/frontend
       - run: python3 tools/check_esp_iris_budgets.py --group directory_bytes

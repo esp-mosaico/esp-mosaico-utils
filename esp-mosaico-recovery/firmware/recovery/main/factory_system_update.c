@@ -1,4 +1,5 @@
 #include "factory_system_update.h"
+#include "factory_recovery_version.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -363,52 +364,6 @@ static esp_err_t component_kind(const char *name,
     return ESP_OK;
 }
 
-static bool parse_version_triplet(const char *text, uint32_t version[3])
-{
-    if (text == NULL || text[0] == '\0') {
-        return false;
-    }
-    const char *cursor = text;
-    for (size_t part = 0; part < 3; ++part) {
-        if (*cursor < '0' || *cursor > '9') {
-            return false;
-        }
-        uint32_t value = 0;
-        while (*cursor >= '0' && *cursor <= '9') {
-            const uint32_t digit = (uint32_t)(*cursor - '0');
-            if (value > (UINT32_MAX - digit) / 10U) {
-                return false;
-            }
-            value = value * 10U + digit;
-            ++cursor;
-        }
-        version[part] = value;
-        if (part < 2) {
-            if (*cursor != '.') {
-                return false;
-            }
-            ++cursor;
-        }
-    }
-    return *cursor == '\0' || *cursor == '-' || *cursor == '+';
-}
-
-static bool recovery_version_satisfies(const char *minimum)
-{
-    uint32_t required[3];
-    uint32_t current[3];
-    if (!parse_version_triplet(minimum, required) ||
-        !parse_version_triplet(esp_app_get_description()->version, current)) {
-        return false;
-    }
-    for (size_t i = 0; i < 3; ++i) {
-        if (current[i] != required[i]) {
-            return current[i] > required[i];
-        }
-    }
-    return true;
-}
-
 static esp_err_t authorize_component_target(
     const esp_iris_system_update_component_t *component)
 {
@@ -541,7 +496,8 @@ static esp_err_t parse_manifest_json(
     }
     if (minimum_recovery != NULL &&
         (!cJSON_IsString(minimum_recovery) ||
-         !recovery_version_satisfies(minimum_recovery->valuestring))) {
+         !factory_recovery_version_satisfies(
+             esp_app_get_description()->version, minimum_recovery->valuestring))) {
         err = ESP_ERR_INVALID_VERSION;
         goto done;
     }

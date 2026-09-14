@@ -2,6 +2,11 @@
 
 All notable ESP-Iris component changes are documented in this file.
 
+## Unreleased
+
+- Include the prebuilt Web Workbench, so a source checkout can serve the UI
+  without Node.js. Verify in CI that rebuilding matches the committed files.
+
 ## 0.1.0 - 2026-09-10
 
 - Publish ESP-Iris from `esp-mosaico-utils` and align the component, Python
