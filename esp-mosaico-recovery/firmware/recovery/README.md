@@ -11,10 +11,8 @@ workspace 的 `projects/hello_world` 创建，不应将本工程作为应用安�
 `recover --source current` 使用当前源码重新构建。
 此版本调整不改变 Recovery ABI 或分区布局；不能只修改 manifest 版本而不更换镜像。
 
-System Update 版本检查将 `0.1` 解析为 `0.1.0`。因为本次是从 `2.8.5-recovery`
-重命名，`0.1` 继续接受要求旧 2.x 版本且不高于 `2.8.5` 的更新包；
-`0.1.1`、`0.2.0`、`2.8.6` 等更高版本要求仍会被拒绝。
-该兼容规则只适用于本次 `0.1`，后续版本应明确维护迁移契约。
+System Update 版本检查将 `0.1` 解析为 `0.1.0`，不接受要求旧 2.x Recovery
+版本的更新包。Recovery 自更新也不允许将 `0.1` 回退为旧 2.x 镜像。
 
 ## 用户命令
 
@@ -61,8 +59,7 @@ operation receipt，并延迟重启；Gateway 必须观察到相同 Device ID、
 它仍是单副本原地更新：从开始擦除到完成校验之间掉电，可能导致 Recovery 无法启动，
 此时需按仓库规定进入 ROM download mode；开发期间运行
 `python mosaico.py recover --source current` 恢复本分支构建，发布后则使用已评审的
-Recovery 包。首次部署具备自更新能力的 `2.7.0-recovery` 也必须走该 ROM/`recover`
-路径；旧 Recovery 没有执行自更新事务的代码。
+Recovery 包。不具备自更新能力的设备必须走 ROM/`recover` 路径。
 
 ### Recovery 从 HTTP(S) 拉取系统更新
 

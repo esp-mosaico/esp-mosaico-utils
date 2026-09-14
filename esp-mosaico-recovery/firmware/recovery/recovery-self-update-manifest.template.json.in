@@ -1,7 +1,7 @@
 {
   "schema": "esp-iris-system-update/v1",
   "release": "@CONFIG_APP_PROJECT_VER@",
-  "minimum_recovery_version": "2.7.0-recovery",
+  "minimum_recovery_version": "0.1",
   "target": {
     "chip_id": 32,
     "flash_size": 16777216

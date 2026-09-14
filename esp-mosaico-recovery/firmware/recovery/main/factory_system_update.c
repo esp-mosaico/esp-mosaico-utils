@@ -848,6 +848,27 @@ static esp_err_t validate_memory_image(const uint8_t *image, size_t size,
     return ESP_OK;
 }
 
+static esp_err_t validate_recovery_release(const uint8_t *image, size_t size)
+{
+    const size_t description_offset =
+        sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t);
+    ESP_RETURN_ON_FALSE(image != NULL &&
+                            size >= description_offset + sizeof(esp_app_desc_t),
+                        ESP_ERR_IMAGE_INVALID, TAG, "missing recovery app description");
+    esp_app_desc_t description;
+    memcpy(&description, image + description_offset, sizeof(description));
+    ESP_RETURN_ON_FALSE(description.magic_word == ESP_APP_DESC_MAGIC_WORD &&
+                            memchr(description.version, '\0',
+                                   sizeof(description.version)) != NULL,
+                        ESP_ERR_IMAGE_INVALID, TAG, "invalid recovery app description");
+    ESP_RETURN_ON_FALSE(factory_recovery_version_can_replace(
+                            esp_app_get_description()->version,
+                            description.version),
+                        ESP_ERR_INVALID_VERSION, TAG,
+                        "Recovery downgrade or release-line change is not allowed");
+    return ESP_OK;
+}
+
 static const esp_partition_info_t *find_partition_entry(
     const esp_partition_info_t *entries, int count, esp_partition_type_t type,
     esp_partition_subtype_t subtype, const char *label)
@@ -1115,6 +1136,9 @@ static esp_err_t end_component(
                                                 component->size,
                                                 "recovery"), done, TAG,
                           "recovery validation");
+        ESP_GOTO_ON_ERROR(validate_recovery_release(s_update.recovery_image,
+                                                    component->size), done, TAG,
+                          "recovery release validation");
     } else if (component->kind ==
                ESP_IRIS_SYSTEM_UPDATE_COMPONENT_PARTITION_TABLE) {
         ESP_GOTO_ON_ERROR(

@@ -22,7 +22,7 @@
 - The retained Recovery firmware version is a separate on-device compatibility
   identifier. Do not reset or downgrade it merely to match the tools release.
   ESP-30 explicitly sets source builds and the prebuilt bundle to `0.1`.
-  Keep the documented legacy update-version compatibility for this rename.
+  Do not accept update bundles or Recovery image rollback from the old 2.x line.
 - Use product-specific tags: `esp-iris-vX.Y.Z` and
   `esp-mosaico-tools-vX.Y.Z`.
 
