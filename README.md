@@ -12,9 +12,10 @@ history while recording the source revisions used for the migration.
 | `esp-mosaico-recovery/` | ESP-Mosaico CLI and retained Recovery firmware | `0.1.x` |
 
 The release version of `esp-mosaico-recovery` describes the host toolchain.
-The embedded Recovery image keeps its independent compatibility version, such
-as `2.8.5-recovery`; migrating the repository does not downgrade firmware that
-may already be installed on devices.
+The embedded Recovery firmware keeps its independent version. New source
+builds use `0.1`, as requested for ESP-30. The reviewed prebuilt bundle remains
+`2.8.5-recovery` until a replacement passes hardware acceptance; changing the
+source version does not change that bundle or firmware already on devices.
 
 ## Use from a firmware workspace
 

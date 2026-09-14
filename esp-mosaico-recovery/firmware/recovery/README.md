@@ -4,6 +4,13 @@
 其源码和评审 bundle 与 `mosaico.py recover` 一同维护。普通应用从宿主
 workspace 的 `projects/hello_world` 创建，不应将本工程作为应用安装到 `ota_0`。
 
+当前源码构建的 Recovery 固件版本为 `0.1`，由
+`sdkconfig.recovery.defaults` 中的 `CONFIG_APP_PROJECT_VER` 定义。
+已评审的 `prebuilt/recovery` 基础包仍为 `2.8.5-recovery`；默认 `recover`
+继续使用该包，`recover --source current` 才使用当前源码构建。
+新版本通过 manifest、布局、hash 和真机验收后再替换基础包，不直接修改旧镜像的
+manifest 版本。此版本调整不改变 Recovery ABI 或分区布局。
+
 ## 用户命令
 
 在仓库根目录运行：
