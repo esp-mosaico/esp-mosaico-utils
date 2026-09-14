@@ -15,12 +15,17 @@ Compatibility, reconciliation and request identity have separate host modules.
 Workspace.tsx and the existing Gateway remain refactoring debt; their pre-existing
 growth is not hidden as a performance improvement in this patch.
 
+Task memory observation later added status fields and a control response to
+`esp_iris.c`. Its 1255-line measurement raises that file's reviewed ceiling to
+1300. Gateway snapshot assembly now lives in `memory_observation.py`, keeping
+`gateway.py` within its existing 2050-line limit.
+
 | Source | Review baseline lines | Integration lines | Previous limit | New limit |
 | --- | ---: | ---: | ---: | ---: |
-| `components/esp_iris/src/esp_iris.c` | 998 | 1177 | 1100 | 1200 |
+| `components/esp_iris/src/esp_iris.c` | 998 | 1255 | 1100 | 1300 |
 | `components/esp_iris/src/esp_iris_services.c` | 1946 | 2002 | 1900 | 2050 |
 | `components/esp_iris/src/esp_iris_files.c` | 1685 | 1718 | 1700 | 1750 |
-| `components/esp_iris/tools/iris_gateway/gateway.py` | 1960 | 2021 | 1250 | 2050 |
+| `components/esp_iris/tools/iris_gateway/gateway.py` | 1960 | 2049 | 1250 | 2050 |
 | `components/esp_iris/tools/iris_gateway/session.py` | 1108 | 1259 | 1200 | 1300 |
 | `components/esp_iris/tools/iris_gateway/files.py` | 509 | 509 | 550 | 550 |
 | `components/esp_iris/tools/iris_gateway/file_routes.py` | 353 | 368 | 400 | 400 |

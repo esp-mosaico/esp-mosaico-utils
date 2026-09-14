@@ -45,6 +45,7 @@ from mosaico_cli.commands import (
     invoke_rpc,
     list_devices,
     monitor,
+    monitor_memory,
     recover,
     read_http_update_code,
     start_system_update,
@@ -216,6 +217,22 @@ class ParserTests(unittest.TestCase):
         self.assertFalse(value.snapshot)
         self.assertFalse(value.force_color)
         self.assertFalse(value.disable_auto_color)
+
+    def test_memory_defaults_and_interval(self) -> None:
+        value = self.parse("memory", "--follow", "--interval", "10")
+        self.assertTrue(value.follow)
+        self.assertEqual(value.interval, 10)
+        with self.assertRaises(SystemExit):
+            self.parse("memory", "--interval", "0")
+
+    def test_memory_rejects_mismatched_device_snapshot(self) -> None:
+        arguments = self.parse("memory", "--device-id", "device-a")
+        with ExitStack() as patches:
+            patches.enter_context(mock.patch("mosaico_cli.commands.ensure_gateway", return_value=object()))
+            patches.enter_context(mock.patch("mosaico_cli.commands.connected_devices", return_value=[{"device_id": "device-a"}]))
+            patches.enter_context(mock.patch("mosaico_cli.commands.gateway_json", return_value={"device_id": "device-b"}))
+            with self.assertRaises(DeviceError):
+                monitor_memory(arguments, SimpleNamespace(), True)
 
     def test_rpc_accepts_hex_payload(self) -> None:
         value = self.parse(

@@ -47,6 +47,7 @@ from .http_support import (
     request_is_loopback as _request_is_loopback,
 )
 from .media import encode_media_image
+from .memory_observation import memory_snapshot as sample_memory
 from .observability import MetricsRegistry, normalize_event
 from .openapi_contract import build_openapi
 from .operation_identity import OperationConflict
@@ -163,6 +164,7 @@ class GatewayService:
         store.set_setting("mode", self.mode)
         self.mode_transition = False
         self._subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
+        self._memory_requests: dict[str, asyncio.Task[dict[str, Any]]] = {}
         self._crash_archives_in_progress: set[str] = set()
         self.operations = OperationManager(store, self.on_device_event, self.metrics)
         self.host_id = str(store.get_setting("host_id") or uuid.uuid4())
@@ -358,6 +360,9 @@ class GatewayService:
         self.store.set_setting(f"status.{device_id}", result)
         self.store.remember_device(result)
         return result
+
+    async def memory_snapshot(self, device_id: str) -> dict[str, Any]:
+        return await sample_memory(self, device_id)
 
     async def preserve_coredump(self, device_id: str) -> dict[str, Any] | None:
         report = await self.device_hub.crash_report(device_id)
@@ -1268,6 +1273,13 @@ def create_app(service: GatewayService) -> web.Application:
     async def status(request: web.Request) -> web.Response:
         return web.json_response(await service.current_status(request.match_info["device_id"]))
 
+    async def memory_snapshot(request: web.Request) -> web.Response:
+        try:
+            snapshot = await service.memory_snapshot(request.match_info["device_id"])
+        except NotImplementedError as exc:
+            return _error(501, "not_supported", str(exc))
+        return web.json_response(snapshot)
+
     async def alias(request: web.Request) -> web.Response:
         device_id = service.resolve_device(request.match_info["device_id"])
         body = await _json_body(request)
@@ -1980,6 +1992,7 @@ def create_app(service: GatewayService) -> web.Application:
         maintenance_finish,
     )
     app.router.add_get("/v1/devices/{device_id}", status)
+    app.router.add_get("/v1/devices/{device_id}/memory", memory_snapshot)
     app.router.add_delete("/v1/devices/{device_id}", remove_device)
     app.router.add_patch("/v1/devices/{device_id}/alias", alias)
     app.router.add_get("/v1/events", event_history)

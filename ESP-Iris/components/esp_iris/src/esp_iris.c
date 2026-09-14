@@ -1,4 +1,5 @@
 #include "esp_iris_internal.h"
+#include "esp_iris_memory.h"
 
 #include <limits.h>
 #include <string.h>
@@ -14,6 +15,7 @@
 #define IRIS_EVENT_BIT(type) (1UL << (uint32_t)(type))
 #define IRIS_STDIO_STATIC_BYTES (512U + 4U * sizeof(void *))
 #define IRIS_STOP_TIMEOUT_MS 1000U
+#define IRIS_MAX_TASK_MEMORY_RECORDS 128U
 
 iris_runtime_t g_iris = {
     .transport = {
@@ -185,6 +187,9 @@ static esp_err_t queue_hello(iris_runtime_t *runtime)
 #if CONFIG_ESP_IRIS_CRASH_LOOP_TRACKING
     capabilities |= ESP_IRIS_CAP_CRASH_LOOP;
 #endif
+#if CONFIG_ESP_IRIS_TASK_MEMORY_OBSERVATION
+    capabilities |= ESP_IRIS_CAP_TASK_MEMORY;
+#endif
     const uint8_t transport = (uint8_t)iris_transport_kind();
     const uint8_t auth_mode = iris_services_auth_mode();
     const uint32_t reset_reason = (uint32_t)esp_reset_reason();
@@ -346,8 +351,13 @@ static esp_err_t queue_event(iris_runtime_t *runtime, uint8_t event_type)
 
 static esp_err_t queue_status(iris_runtime_t *runtime, uint32_t request_id)
 {
-    uint8_t payload[256];
+    uint8_t payload[320];
     tlv_writer_t writer = {.data = payload, .capacity = sizeof(payload)};
+    esp_iris_heap_memory_t heap;
+    esp_err_t heap_err = esp_iris_memory_get_heap(&heap);
+    if (heap_err != ESP_OK) {
+        return heap_err;
+    }
     uint32_t dropped;
     taskENTER_CRITICAL(&runtime->log_lock);
     dropped = runtime->log_dropped_bytes;
@@ -358,9 +368,17 @@ static esp_err_t queue_status(iris_runtime_t *runtime, uint32_t request_id)
             !tlv_put_u64(&writer, ESP_IRIS_TLV_UPTIME_US,
                      (uint64_t)esp_timer_get_time()) ||
             !tlv_put_u32(&writer, ESP_IRIS_TLV_FREE_INTERNAL,
-                         heap_caps_get_free_size(MALLOC_CAP_INTERNAL)) ||
+                         heap.free_internal_bytes) ||
             !tlv_put_u32(&writer, ESP_IRIS_TLV_MIN_FREE_INTERNAL,
-                         heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL)) ||
+                         heap.min_free_internal_bytes) ||
+            !tlv_put_u32(&writer, ESP_IRIS_TLV_TOTAL_INTERNAL,
+                         heap.total_internal_bytes) ||
+            !tlv_put_u32(&writer, ESP_IRIS_TLV_TOTAL_SPIRAM,
+                         heap.total_spiram_bytes) ||
+            !tlv_put_u32(&writer, ESP_IRIS_TLV_FREE_SPIRAM,
+                         heap.free_spiram_bytes) ||
+            !tlv_put_u32(&writer, ESP_IRIS_TLV_MIN_FREE_SPIRAM,
+                         heap.min_free_spiram_bytes) ||
             !tlv_put_u32(&writer, ESP_IRIS_TLV_LOG_DROPPED, dropped) ||
             !tlv_put_u32(&writer, ESP_IRIS_TLV_RX_FRAMES,
                          runtime->rx_frames) ||
@@ -410,6 +428,45 @@ static esp_err_t queue_status(iris_runtime_t *runtime, uint32_t request_id)
                        ESP_IRIS_CONTROL_STATUS_RESPONSE,
                        ESP_IRIS_FLAG_RESPONSE, request_id, 0,
                        payload, writer.length);
+}
+
+static esp_err_t queue_task_memory(iris_runtime_t *runtime,
+                                   uint32_t request_id)
+{
+#if CONFIG_ESP_IRIS_TASK_MEMORY_OBSERVATION
+    _Static_assert(sizeof(esp_iris_task_memory_t) == 8,
+                   "task wire record must be eight bytes");
+    const size_t capacity = 12U + IRIS_MAX_TASK_MEMORY_RECORDS * 8U;
+    uint8_t *payload = heap_caps_malloc(capacity, MALLOC_CAP_8BIT);
+    if (payload == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    size_t count = 0;
+    esp_err_t err = esp_iris_memory_get_tasks(
+        (esp_iris_task_memory_t *)(void *)(payload + 12),
+        IRIS_MAX_TASK_MEMORY_RECORDS, &count);
+    if (err == ESP_OK) {
+        iris_put_le64(payload, (uint64_t)esp_timer_get_time());
+        iris_put_le16(payload + 8, (uint16_t)count);
+        iris_put_le16(payload + 10, 0);
+        for (size_t i = 0; i < count; ++i) {
+            esp_iris_task_memory_t record;
+            memcpy(&record, payload + 12 + i * 8, sizeof(record));
+            iris_put_le32(payload + 12 + i * 8, record.task_number);
+            iris_put_le32(payload + 16 + i * 8, record.stack_free_min_bytes);
+        }
+        err = queue_frame(runtime, ESP_IRIS_CHANNEL_CONTROL,
+                          ESP_IRIS_CONTROL_TASKS_RESPONSE,
+                          ESP_IRIS_FLAG_RESPONSE, request_id, 0,
+                          payload, 12U + count * 8U);
+    }
+    heap_caps_free(payload);
+    return err;
+#else
+    (void)runtime;
+    (void)request_id;
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
 }
 
 static void begin_session(iris_runtime_t *runtime);
@@ -486,6 +543,20 @@ static void handle_control(iris_runtime_t *runtime,
         break;
     case ESP_IRIS_CONTROL_STATUS_REQUEST:
         (void)queue_status(runtime, header->request_id);
+        break;
+    case ESP_IRIS_CONTROL_TASKS_REQUEST:
+        if (header->payload_size != 0) {
+            (void)queue_error(runtime, header->request_id,
+                              ESP_ERR_INVALID_SIZE, header->channel, header->type);
+            break;
+        }
+        {
+            esp_err_t err = queue_task_memory(runtime, header->request_id);
+            if (err != ESP_OK) {
+                (void)queue_error(runtime, header->request_id, err,
+                                  header->channel, header->type);
+            }
+        }
         break;
     case ESP_IRIS_CONTROL_CREDIT:
         if (header->payload_size == 8U &&
@@ -610,6 +681,7 @@ static void handle_frame(iris_runtime_t *runtime,
          frame->header.type == ESP_IRIS_CONTROL_PING ||
          frame->header.type == ESP_IRIS_CONTROL_TIME_SYNC_REQUEST ||
          frame->header.type == ESP_IRIS_CONTROL_STATUS_REQUEST ||
+         frame->header.type == ESP_IRIS_CONTROL_TASKS_REQUEST ||
          frame->header.type == ESP_IRIS_CONTROL_CREDIT)) {
         handle_control(runtime, frame, received_us);
     } else if (frame->header.channel == ESP_IRIS_CHANNEL_CRASH) {

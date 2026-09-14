@@ -33,6 +33,9 @@ def build_openapi(auth_required: bool) -> dict[str, Any]:
                 "description": "Preserves operations, events, logs, and audit history.",
             },
         },
+        "/v1/devices/{device_id}/memory": {
+            "get": {"summary": "Live internal RAM, SPIRAM and task stack watermarks"}
+        },
         "/v1/devices/{device_id}/system-inventory": {
             "get": {"summary": "Live bootloader and partition-table inventory"}
         },
