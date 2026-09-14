@@ -6,10 +6,10 @@ workspace 的 `projects/hello_world` 创建，不应将本工程作为应用安�
 
 当前源码构建的 Recovery 固件版本为 `0.1`，由
 `sdkconfig.recovery.defaults` 中的 `CONFIG_APP_PROJECT_VER` 定义。
-已评审的 `prebuilt/recovery` 基础包仍为 `2.8.5-recovery`；默认 `recover`
-继续使用该包，`recover --source current` 才使用当前源码构建。
-新版本通过 manifest、布局、hash 和真机验收后再替换基础包，不直接修改旧镜像的
-manifest 版本。此版本调整不改变 Recovery ABI 或分区布局。
+`prebuilt/recovery` 基础包也使用 `0.1`：更新实际 Recovery 镜像并重新生成 manifest，
+保留此前已评审的 bootloader、分区表和初始 OTA 数据。默认 `recover` 使用该包，
+`recover --source current` 使用当前源码重新构建。
+此版本调整不改变 Recovery ABI 或分区布局；不能只修改 manifest 版本而不更换镜像。
 
 System Update 版本检查将 `0.1` 解析为 `0.1.0`。因为本次是从 `2.8.5-recovery`
 重命名，`0.1` 继续接受要求旧 2.x 版本且不高于 `2.8.5` 的更新包；

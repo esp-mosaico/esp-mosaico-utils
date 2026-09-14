@@ -21,8 +21,8 @@
   `esp-mosaico-recovery/tools/mosaico_cli/__init__.py`.
 - The retained Recovery firmware version is a separate on-device compatibility
   identifier. Do not reset or downgrade it merely to match the tools release.
-  ESP-30 explicitly sets new source builds to `0.1`; the reviewed prebuilt
-  bundle remains `2.8.5-recovery` until its replacement passes validation.
+  ESP-30 explicitly sets source builds and the prebuilt bundle to `0.1`.
+  Keep the documented legacy update-version compatibility for this rename.
 - Use product-specific tags: `esp-iris-vX.Y.Z` and
   `esp-mosaico-tools-vX.Y.Z`.
 

@@ -7,8 +7,9 @@
 - Accept two-part Recovery versions in System Update checks. Recovery `0.1`
   retains compatibility with legacy 2.x minimum versions through `2.8.5`,
   while rejecting newer requirements. Keep existing update bundles usable.
-- Preserve the reviewed `2.8.5-recovery` prebuilt bundle until a replacement
-  completes manifest, layout, hash, and device validation.
+- Update the prebuilt Recovery application and generated manifest to `0.1`
+  after device validation; retain the reviewed bootloader, partition table,
+  and initial OTA data unchanged.
 
 ## 0.1.0 - 2026-09-10
 

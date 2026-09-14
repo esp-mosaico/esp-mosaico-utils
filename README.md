@@ -13,9 +13,14 @@ history while recording the source revisions used for the migration.
 
 The release version of `esp-mosaico-recovery` describes the host toolchain.
 The embedded Recovery firmware keeps its independent version. New source
-builds use `0.1`, as requested for ESP-30. The reviewed prebuilt bundle remains
-`2.8.5-recovery` until a replacement passes hardware acceptance; changing the
-source version does not change that bundle or firmware already on devices.
+builds and the prebuilt bundle use `0.1`, as requested for ESP-30. The bundle
+retains its reviewed bootloader, partition table, and initial OTA data; its
+Recovery application is rebuilt from this repository and validated on device.
+Changing the checkout does not update firmware already on devices.
+
+The ESP-Iris checkout also includes the prebuilt Web Workbench. The Gateway
+serves it directly without Node.js; frontend contributors regenerate and commit
+`ESP-Iris/components/esp_iris/tools/frontend/dist` with their source changes.
 
 ## Use from a firmware workspace
 
