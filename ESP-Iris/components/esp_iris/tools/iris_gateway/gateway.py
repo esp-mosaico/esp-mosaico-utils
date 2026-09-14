@@ -47,6 +47,7 @@ from .http_support import (
     request_is_loopback as _request_is_loopback,
 )
 from .media import encode_media_image
+from .memory_observation import memory_snapshot as sample_memory
 from .observability import MetricsRegistry, normalize_event
 from .openapi_contract import build_openapi
 from .operation_identity import OperationConflict
@@ -361,41 +362,7 @@ class GatewayService:
         return result
 
     async def memory_snapshot(self, device_id: str) -> dict[str, Any]:
-        if self.mode != "develop":
-            raise web.HTTPConflict(text="live memory polling requires develop mode")
-        device_id = self.resolve_device(device_id)
-        pending = self._memory_requests.get(device_id)
-        if pending is None:
-            async def sample() -> dict[str, Any]:
-                status = boot_id_text(await self.device_hub.status(device_id))
-                tasks = boot_id_text(await self.device_hub.task_memory(device_id))
-                if tasks["device_id"] != device_id:
-                    raise web.HTTPConflict(text="device identity changed during memory snapshot")
-                if tasks["boot_id"] != status["boot_id"]:
-                    raise web.HTTPConflict(text="device rebooted during memory snapshot")
-                return {
-                    "device_id": device_id,
-                    "boot_id": status["boot_id"],
-                    "heap_uptime_us": status["uptime_us"],
-                    "task_uptime_us": tasks["uptime_us"],
-                    "total_internal_bytes": status["total_internal"],
-                    "free_internal_bytes": status["free_internal"],
-                    "min_free_internal_bytes": status["min_free_internal"],
-                    "total_spiram_bytes": status["total_spiram"],
-                    "free_spiram_bytes": status["free_spiram"],
-                    "min_free_spiram_bytes": status["min_free_spiram"],
-                    "tasks": tasks["tasks"],
-                }
-
-            pending = asyncio.create_task(sample())
-            self._memory_requests[device_id] = pending
-
-            def forget(completed: asyncio.Task[dict[str, Any]]) -> None:
-                if self._memory_requests.get(device_id) is completed:
-                    self._memory_requests.pop(device_id, None)
-
-            pending.add_done_callback(forget)
-        return await asyncio.shield(pending)
+        return await sample_memory(self, device_id)
 
     async def preserve_coredump(self, device_id: str) -> dict[str, Any] | None:
         report = await self.device_hub.crash_report(device_id)
