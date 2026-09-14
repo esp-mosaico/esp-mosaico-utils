@@ -180,8 +180,8 @@ def load_workspace(
         ),
         build_runner=build_runner,
         devices=tuple(dict(item) for item in devices_value),
-        init_template=workspace_path(
-            workspace.get("init_template", "projects/hello_world"),
-            "workspace.init_template",
+        init_template=(
+            workspace_path(workspace["init_template"], "workspace.init_template")
+            if "init_template" in workspace else None
         ),
     )

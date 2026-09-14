@@ -87,7 +87,7 @@ class WorkspaceTests(unittest.TestCase):
 
             self.assertEqual(workspace.root, root.resolve())
             self.assertEqual(workspace.projects_dir, (root / "apps").resolve())
-            self.assertEqual(workspace.init_template, (root / "projects/hello_world").resolve())
+            self.assertIsNone(workspace.init_template)
             self.assertEqual(
                 workspace.esp_iris_path, (root / "third_party" / "esp-iris").resolve()
             )
@@ -128,10 +128,10 @@ class WorkspaceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             value = configuration()
-            value["workspace"]["init_template"] = "templates/reference"
+            value["workspace"]["init_template"] = "templates/reference.json"
             (root / CONFIG_NAME).write_text(json.dumps(value), encoding="utf-8")
             workspace = load_workspace(TOOL_ROOT, explicit=str(root))
-            self.assertEqual(workspace.init_template, (root / "templates/reference").resolve())
+            self.assertEqual(workspace.init_template, (root / "templates/reference.json").resolve())
 
     def test_invalid_init_template_configuration_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
