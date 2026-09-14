@@ -58,6 +58,7 @@ class Capability(enum.IntFlag):
     SYSTEM_INVENTORY = 1 << 16
     SESSION_REOPEN = 1 << 17
     CRASH_LOOP = 1 << 18
+    TASK_MEMORY = 1 << 19
 
 
 class ControlType(enum.IntEnum):
@@ -77,6 +78,8 @@ class ControlType(enum.IntEnum):
     JOB_STATUS = 0x14
     RESTART = 0x15
     AUTH_RESULT = 0x16
+    TASKS_REQUEST = 0x17
+    TASKS_RESPONSE = 0x18
     ERROR = 0x7F
 
 
@@ -234,6 +237,10 @@ class TlvTag(enum.IntEnum):
     LIFECYCLE_STATE = 0x29
     INTERNAL_HEAP_USED = 0x2A
     STATIC_INTERNAL_BYTES = 0x2B
+    TOTAL_INTERNAL = 0x2C
+    TOTAL_SPIRAM = 0x2D
+    FREE_SPIRAM = 0x2E
+    MIN_FREE_SPIRAM = 0x2F
     PREVIOUS_BOOT_CRASH = 0x30
     CORE_DUMP_PRESENT = 0x31
     CORE_DUMP_VALID = 0x32

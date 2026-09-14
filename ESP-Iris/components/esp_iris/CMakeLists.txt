@@ -24,6 +24,7 @@ if(CONFIG_ESP_IRIS_ENABLE)
         "src/esp_iris_crash_recovery.c"
         "src/esp_iris_identity.c"
         "src/esp_iris_log.c"
+        "src/esp_iris_memory.c"
         "src/esp_iris_mdns.c"
         "src/esp_iris_files.c"
         "src/esp_iris_platform.c"
@@ -50,6 +51,7 @@ if(CONFIG_ESP_IRIS_ENABLE)
 else()
     set(ESP_IRIS_SRCS
         "src/esp_iris_disabled.c"
+        "src/esp_iris_memory.c"
         "src/esp_iris_platform.c"
     )
 endif()
