@@ -197,6 +197,23 @@ static char *manifest(bool preserve, const char *kind, uint32_t offset, uint32_t
     cJSON_Delete(root);
     return json;
 }
+static char *recovery_manifest(const uint8_t *image)
+{
+    uint8_t sha[32];
+    hash_memory(image, 0x1c0000, sha);
+    char *json = manifest(true, "recovery", 0x20000, 0x1c0000);
+    cJSON *root = cJSON_Parse(json);
+    free(json);
+    char hash[65];
+    for (int i = 0; i < 32; i++)
+        sprintf(hash + 2 * i, "%02x", sha[i]);
+    cJSON_ReplaceItemInObject(
+        cJSON_GetArrayItem(cJSON_GetObjectItem(root, "components"), 0), "sha256",
+        cJSON_CreateString(hash));
+    json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return json;
+}
 static esp_err_t prepare(factory_system_update_owner_t owner, char *json)
 {
     esp_err_t err =
@@ -352,25 +369,19 @@ int main(void)
     esp_image_header_t header = {
         .magic = ESP_IMAGE_HEADER_MAGIC, .segment_count = 1, .chip_id = 32};
     memcpy(image, &header, sizeof(header));
-    esp_image_segment_header_t segment = {.data_len = 4};
+    esp_image_segment_header_t segment = {.data_len = sizeof(esp_app_desc_t)};
     memcpy(image + sizeof(header), &segment, sizeof(segment));
-    memcpy(image + sizeof(header) + sizeof(segment), "data", 4);
-    size_t end = (sizeof(header) + sizeof(segment) + 4 + 1 + 15) & ~(size_t)15;
-    image[end - 1] = 0xef ^ 'd' ^ 'a' ^ 't' ^ 'a';
-    uint8_t sha[32];
-    hash_memory(image, 0x1c0000, sha);
-    json = manifest(true, "recovery", 0x20000, 0x1c0000);
-    root = cJSON_Parse(json);
-    free(json);
-    char hash[65];
-    for (int i = 0; i < 32; i++)
-        sprintf(hash + 2 * i, "%02x", sha[i]);
-    cJSON_ReplaceItemInObject(
-        cJSON_GetArrayItem(cJSON_GetObjectItem(root, "components"), 0), "sha256",
-        cJSON_CreateString(hash));
-    json = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    assert(prepare(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE, json) == 0);
+    esp_app_desc_t app = {.magic_word = ESP_APP_DESC_MAGIC_WORD,
+                          .version = "0.1"};
+    memcpy(image + sizeof(header) + sizeof(segment), &app, sizeof(app));
+    size_t end = (sizeof(header) + sizeof(segment) + sizeof(app) + 1 + 15) &
+                 ~(size_t)15;
+    uint8_t checksum = 0xef;
+    for (size_t i = 0; i < sizeof(app); i++)
+        checksum ^= ((const uint8_t *)&app)[i];
+    image[end - 1] = checksum;
+    assert(prepare(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE,
+                   recovery_manifest(image)) == 0);
     c = s_update.plan[0].descriptor;
     assert(begin_component(&c, NULL) == 0);
     assert(write_component(&c, 0, image, c.size, NULL) == 0);
@@ -381,6 +392,22 @@ int main(void)
     assert(
         factory_system_update_source_needs_restart(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE));
     assert(last_write == 0x20000 && !memcmp(flash + 0x20000, image, 0x1c0000));
+    /* Pre-1.0 Recovery images cannot replace the 0.1 release line. */
+    setup();
+    esp_app_desc_t *old_app =
+        (void *)(image + sizeof(header) + sizeof(segment));
+    strcpy(old_app->version, "2.8.5-recovery");
+    checksum = 0xef;
+    for (size_t i = 0; i < sizeof(*old_app); i++)
+        checksum ^= ((const uint8_t *)old_app)[i];
+    image[end - 1] = checksum;
+    assert(prepare(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE,
+                   recovery_manifest(image)) == 0);
+    c = s_update.plan[0].descriptor;
+    assert(begin_component(&c, NULL) == 0);
+    assert(write_component(&c, 0, image, c.size, NULL) == 0);
+    assert(end_component(&c, c.sha256, NULL) == ESP_ERR_INVALID_VERSION);
+    assert(!erased && !mock_writes);
     free(image);
     puts("Recovery backend ownership, layout, readback and factory gates passed");
 }

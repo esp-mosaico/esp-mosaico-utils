@@ -61,6 +61,7 @@ typedef struct __attribute__((packed)) {
 typedef struct {
     uint32_t load_addr, data_len;
 } esp_image_segment_header_t;
+#define ESP_APP_DESC_MAGIC_WORD 0xABCD5432
 typedef struct {
     int unused;
 } esp_image_metadata_t;

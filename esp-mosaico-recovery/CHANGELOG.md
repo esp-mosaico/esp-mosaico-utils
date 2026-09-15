@@ -1,3 +1,5 @@
+# Changelog
+
 ## Unreleased
 
 - Replace local HTTP triggers and URL downloads with the Recovery-owned HTTPS
@@ -10,10 +12,6 @@
   `https://iris-bridge.esp-claw.com` Origin and `esp-mosaico` board ID.
 - Keep the reviewed `0.1` Recovery images unchanged pending Bridge device
   acceptance.
-
-# Changelog
-
-## Unreleased
 
 - Set newly built Recovery firmware to version `0.1` for ESP-30, independently
   of the `0.1.0` host CLI version. Keep the Recovery ABI and partition layout.
