@@ -6,7 +6,10 @@
   `http-update-code` and `system-update --manifest-url` without aliases.
 - Preserve complete RFC 3339 pairing expiry timestamps and report the overall
   pairing deadline when the final USB poll times out.
-- Keep reviewed Recovery images unchanged pending release acceptance.
+- Configure source-built ESP-Mosaico Recovery images to use the production
+  `https://iris-bridge.esp-claw.com` Origin and `esp-mosaico` board ID.
+- Keep the reviewed `0.1` Recovery images unchanged pending Bridge device
+  acceptance.
 
 # Changelog
 

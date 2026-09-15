@@ -64,8 +64,10 @@ Recovery 包。不具备自更新能力的设备必须走 ROM/`recover` 路径�
 ### Recovery HTTPS Bridge
 
 Recovery 主动通过 HTTPS 连接 Bridge 服务，支持 `partitions`、`layout` 和
-`factory`。构建时设置 `CONFIG_IRIS_FACTORY_BRIDGE_SERVER_URL`（无末尾斜杠的
-HTTPS Origin）和 `CONFIG_IRIS_FACTORY_BRIDGE_BOARD_ID`；默认留空且不注册。
+`factory`。本仓库的 Recovery 源码构建默认连接
+`https://iris-bridge.esp-claw.com`，并使用 `esp-mosaico` board ID。部署到其他
+环境时，通过 `CONFIG_IRIS_FACTORY_BRIDGE_SERVER_URL`（无末尾斜杠的 HTTPS
+Origin）和 `CONFIG_IRIS_FACTORY_BRIDGE_BOARD_ID` 覆盖这两个值；任一值为空都不注册。
 
 用户进入 **Bridge download** 页面后，设备等待 Wi-Fi IP、注册并显示服务器
 配对码。网页配对并上传后，设备拉取任务、验证并写入；一次会话仅烧录一次。
