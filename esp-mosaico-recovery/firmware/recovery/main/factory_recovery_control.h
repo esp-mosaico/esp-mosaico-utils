@@ -7,7 +7,7 @@ extern "C" {
 #endif
 
 /* Register USB-only Recovery control methods used to configure Wi-Fi and to
- * open/read the physical HTTP Update authorization screen during testing. */
+ * open and query the Bridge download session. */
 esp_err_t factory_recovery_control_register(void);
 
 #ifdef __cplusplus

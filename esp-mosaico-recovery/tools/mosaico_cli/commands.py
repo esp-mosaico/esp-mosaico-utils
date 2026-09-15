@@ -65,7 +65,8 @@ _ANSI_NORMAL = "\033[0m"
 _RECOVERY_CONTROL_SERVICE_ID = "0x1202"
 _RECOVERY_WIFI_CONNECT_METHOD = "1"
 _RECOVERY_NETWORK_STATUS_METHOD = "2"
-_RECOVERY_HTTP_CODE_METHOD = "3"
+_RECOVERY_BRIDGE_OPEN_METHOD = "4"
+_RECOVERY_BRIDGE_STATUS_METHOD = "5"
 
 
 def _device_status(value: Any) -> dict[str, Any]:
@@ -170,59 +171,57 @@ def configure_recovery_network(arguments: Any, context: RunContext) -> dict[str,
     )
 
 
-def read_http_update_code(arguments: Any, context: RunContext) -> dict[str, Any]:
+def read_bridge_code(arguments: Any, context: RunContext) -> dict[str, Any]:
     session, device_id = _recovery_control_device(arguments, context)
-    network_value = gateway_json(
-        context,
-        session,
-        "rpc-raw",
-        device_id,
-        _RECOVERY_CONTROL_SERVICE_ID,
-        _RECOVERY_NETWORK_STATUS_METHOD,
-        "--deadline-ms",
-        "2000",
-        timeout=5,
-        sensitive_output=True,
-    )
-    try:
-        network = json.loads(_raw_rpc_payload(network_value).decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise DeviceError("Recovery returned invalid network status JSON.") from error
-    if not isinstance(network, dict) or network.get("connected") is not True:
-        raise DeviceError(
-            "Recovery must be connected to Wi-Fi before opening HTTP Update."
-        )
-    context.status("recovery: opening the physical HTTP Update screen over USB")
-    value = gateway_json(
-        context,
-        session,
-        "rpc-raw",
-        device_id,
-        _RECOVERY_CONTROL_SERVICE_ID,
-        _RECOVERY_HTTP_CODE_METHOD,
-        "--deadline-ms",
-        "5000",
-        timeout=10,
-        sensitive_output=True,
-    )
-    try:
-        code_value = json.loads(_raw_rpc_payload(value).decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
-        raise DeviceError("Recovery returned invalid HTTP Update code JSON.") from error
-    if not isinstance(code_value, dict) or re.fullmatch(
-        r"[0-9]{6}", str(code_value.get("code", ""))
-    ) is None:
-        raise DeviceError("Recovery returned an invalid HTTP Update code.")
-    return {
-        "command": "http-update-code",
-        "status": "succeeded",
-        "device_id": device_id,
-        "authorization": code_value,
-        "network": network,
-        "base_url": f"http://{network.get('ip')}:{code_value.get('http_port', 8080)}",
-        "gateway_started": session.started_local,
-        "log": str(context.log_path),
-    }
+    deadline = time.monotonic() + arguments.timeout
+    method = _RECOVERY_BRIDGE_OPEN_METHOD
+    timeout_message = "Bridge pairing code was not ready before the timeout."
+    snapshot: dict[str, Any] = {}
+    context.status("recovery: opening Bridge download over USB")
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise OperationError(timeout_message, details={"bridge": snapshot})
+        try:
+            value = gateway_json(
+                context, session, "rpc-raw", device_id,
+                _RECOVERY_CONTROL_SERVICE_ID, method,
+                "--deadline-ms", str(max(1, min(2000, int(remaining * 1000)))),
+                timeout=remaining, sensitive_output=True,
+            )
+        except DeviceError:
+            # The final subprocess also shares the overall deadline. Its startup
+            # overhead can exhaust a short remaining interval before an RPC reply.
+            if time.monotonic() >= deadline:
+                raise OperationError(timeout_message, details={"bridge": snapshot}) from None
+            raise
+        method = _RECOVERY_BRIDGE_STATUS_METHOD
+        try:
+            snapshot = json.loads(_raw_rpc_payload(value).decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise DeviceError("Recovery returned invalid Bridge status JSON.") from error
+        if not isinstance(snapshot, dict):
+            raise DeviceError("Recovery returned invalid Bridge status.")
+        state = snapshot.get("state")
+        if state == "NOT_CONFIGURED":
+            raise DeviceError("Recovery Bridge URL or board ID is not configured; rebuild with both settings.")
+        code = snapshot.get("code")
+        if state == "PAIRING" and code:
+            if not isinstance(code, str) or re.fullmatch(r"[A-Z0-9]{5}-[A-Z0-9]{5}", code) is None:
+                raise DeviceError("Recovery returned an invalid Bridge pairing code.")
+            if not isinstance(snapshot.get("server_url"), str) or not snapshot["server_url"].startswith("https://"):
+                raise DeviceError("Recovery returned an invalid Bridge server URL.")
+            return {
+                "command": "bridge-code", "status": "succeeded",
+                "device_id": device_id, "bridge": snapshot,
+                "server_url": snapshot["server_url"],
+                "gateway_started": session.started_local, "log": str(context.log_path),
+            }
+        if state in {"PAIRED", "PRECHECK", "WRITING", "VERIFYING", "COMMITTING"}:
+            raise DeviceError("Bridge session is already paired or flashing; no new code was generated.")
+        if state not in {"WAITING_NETWORK", "REGISTERING", "PAIRING"} or snapshot.get("running") is not True:
+            raise DeviceError("Bridge session ended: {}.".format(state))
+        time.sleep(min(0.25, max(0, deadline - time.monotonic())))
 
 
 def _recovery_verification_status(
@@ -495,13 +494,12 @@ def enter_recovery(arguments: Any, context: RunContext) -> dict[str, Any]:
 def start_system_update(arguments: Any, context: RunContext) -> dict[str, Any]:
     """Build or select a full-system bundle and apply it through Recovery."""
 
-    manifest_url = getattr(arguments, "manifest_url", None)
     manifest_path = getattr(arguments, "manifest_path", None)
     bundle_argument = getattr(arguments, "bundle", None)
     project_argument = getattr(arguments, "project", None)
     skip_build = bool(getattr(arguments, "skip_build", False))
     timeout = float(getattr(arguments, "timeout", 900.0))
-    external_source = manifest_url is not None or manifest_path is not None
+    external_source = manifest_path is not None
 
     project: Path | None = None
     bundle: Path | None = None
@@ -598,16 +596,10 @@ def start_system_update(arguments: Any, context: RunContext) -> dict[str, Any]:
             "log": str(context.log_path),
         }
 
-    if manifest_url:
-        method_id = "1"
-        payload = manifest_url
-        source = "http"
-        action = "HTTP(S) pull"
-    else:
-        method_id = "2"
-        payload = arguments.manifest_path
-        source = "nand"
-        action = "NAND LittleFS read"
+    method_id = "2"
+    payload = arguments.manifest_path
+    source = "nand"
+    action = "NAND LittleFS read"
     context.status(f"system update: requesting Recovery {action}")
     response = gateway_json(
         context,
