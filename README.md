@@ -12,9 +12,15 @@ history while recording the source revisions used for the migration.
 | `esp-mosaico-recovery/` | ESP-Mosaico CLI and retained Recovery firmware | `0.1.x` |
 
 The release version of `esp-mosaico-recovery` describes the host toolchain.
-The embedded Recovery image keeps its independent compatibility version, such
-as `2.8.5-recovery`; migrating the repository does not downgrade firmware that
-may already be installed on devices.
+The embedded Recovery firmware keeps its independent version. New source
+builds and the prebuilt bundle use `0.1`. The bundle
+retains its reviewed bootloader, partition table, and initial OTA data; its
+Recovery application is rebuilt from this repository and validated on device.
+Changing the checkout does not update firmware already on devices.
+
+The ESP-Iris checkout also includes the prebuilt Web Workbench. The Gateway
+serves it directly without Node.js; frontend contributors regenerate and commit
+`ESP-Iris/components/esp_iris/tools/frontend/dist` with their source changes.
 
 ## Use from a firmware workspace
 

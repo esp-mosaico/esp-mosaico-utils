@@ -4,6 +4,16 @@
 其源码和评审 bundle 与 `mosaico.py recover` 一同维护。普通应用从宿主
 workspace 的 `projects/hello_world` 创建，不应将本工程作为应用安装到 `ota_0`。
 
+当前源码构建的 Recovery 固件版本为 `0.1`，由
+`sdkconfig.recovery.defaults` 中的 `CONFIG_APP_PROJECT_VER` 定义。
+`prebuilt/recovery` 基础包也使用 `0.1`，其 manifest 记录各镜像的大小与 SHA-256。
+默认 `recover` 使用该包，`recover --source current` 使用当前源码重新构建。
+Recovery ABI 与分区布局由工程配置和包 manifest 约束。
+
+System Update 版本检查将 `0.1` 解析为 `0.1.0`，只接受同一主版本线、且
+最低版本要求不高于当前 Recovery 的更新包。Recovery 自更新拒绝降级或
+跨主版本线的镜像。
+
 ## 用户命令
 
 在仓库根目录运行：
@@ -49,8 +59,7 @@ operation receipt，并延迟重启；Gateway 必须观察到相同 Device ID、
 它仍是单副本原地更新：从开始擦除到完成校验之间掉电，可能导致 Recovery 无法启动，
 此时需按仓库规定进入 ROM download mode；开发期间运行
 `python mosaico.py recover --source current` 恢复本分支构建，发布后则使用已评审的
-Recovery 包。首次部署具备自更新能力的 `2.7.0-recovery` 也必须走该 ROM/`recover`
-路径；旧 Recovery 没有执行自更新事务的代码。
+Recovery 包。不具备自更新能力的设备必须走 ROM/`recover` 路径。
 
 ### Recovery 从 HTTP(S) 拉取系统更新
 

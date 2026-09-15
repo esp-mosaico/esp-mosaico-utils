@@ -1,4 +1,5 @@
 #include "factory_system_update.h"
+#include "factory_recovery_version.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -363,52 +364,6 @@ static esp_err_t component_kind(const char *name,
     return ESP_OK;
 }
 
-static bool parse_version_triplet(const char *text, uint32_t version[3])
-{
-    if (text == NULL || text[0] == '\0') {
-        return false;
-    }
-    const char *cursor = text;
-    for (size_t part = 0; part < 3; ++part) {
-        if (*cursor < '0' || *cursor > '9') {
-            return false;
-        }
-        uint32_t value = 0;
-        while (*cursor >= '0' && *cursor <= '9') {
-            const uint32_t digit = (uint32_t)(*cursor - '0');
-            if (value > (UINT32_MAX - digit) / 10U) {
-                return false;
-            }
-            value = value * 10U + digit;
-            ++cursor;
-        }
-        version[part] = value;
-        if (part < 2) {
-            if (*cursor != '.') {
-                return false;
-            }
-            ++cursor;
-        }
-    }
-    return *cursor == '\0' || *cursor == '-' || *cursor == '+';
-}
-
-static bool recovery_version_satisfies(const char *minimum)
-{
-    uint32_t required[3];
-    uint32_t current[3];
-    if (!parse_version_triplet(minimum, required) ||
-        !parse_version_triplet(esp_app_get_description()->version, current)) {
-        return false;
-    }
-    for (size_t i = 0; i < 3; ++i) {
-        if (current[i] != required[i]) {
-            return current[i] > required[i];
-        }
-    }
-    return true;
-}
-
 static esp_err_t authorize_component_target(
     const esp_iris_system_update_component_t *component)
 {
@@ -541,7 +496,8 @@ static esp_err_t parse_manifest_json(
     }
     if (minimum_recovery != NULL &&
         (!cJSON_IsString(minimum_recovery) ||
-         !recovery_version_satisfies(minimum_recovery->valuestring))) {
+         !factory_recovery_version_satisfies(
+             esp_app_get_description()->version, minimum_recovery->valuestring))) {
         err = ESP_ERR_INVALID_VERSION;
         goto done;
     }
@@ -892,6 +848,27 @@ static esp_err_t validate_memory_image(const uint8_t *image, size_t size,
     return ESP_OK;
 }
 
+static esp_err_t validate_recovery_release(const uint8_t *image, size_t size)
+{
+    const size_t description_offset =
+        sizeof(esp_image_header_t) + sizeof(esp_image_segment_header_t);
+    ESP_RETURN_ON_FALSE(image != NULL &&
+                            size >= description_offset + sizeof(esp_app_desc_t),
+                        ESP_ERR_IMAGE_INVALID, TAG, "missing recovery app description");
+    esp_app_desc_t description;
+    memcpy(&description, image + description_offset, sizeof(description));
+    ESP_RETURN_ON_FALSE(description.magic_word == ESP_APP_DESC_MAGIC_WORD &&
+                            memchr(description.version, '\0',
+                                   sizeof(description.version)) != NULL,
+                        ESP_ERR_IMAGE_INVALID, TAG, "invalid recovery app description");
+    ESP_RETURN_ON_FALSE(factory_recovery_version_can_replace(
+                            esp_app_get_description()->version,
+                            description.version),
+                        ESP_ERR_INVALID_VERSION, TAG,
+                        "Recovery downgrade or release-line change is not allowed");
+    return ESP_OK;
+}
+
 static const esp_partition_info_t *find_partition_entry(
     const esp_partition_info_t *entries, int count, esp_partition_type_t type,
     esp_partition_subtype_t subtype, const char *label)
@@ -1159,6 +1136,9 @@ static esp_err_t end_component(
                                                 component->size,
                                                 "recovery"), done, TAG,
                           "recovery validation");
+        ESP_GOTO_ON_ERROR(validate_recovery_release(s_update.recovery_image,
+                                                    component->size), done, TAG,
+                          "recovery release validation");
     } else if (component->kind ==
                ESP_IRIS_SYSTEM_UPDATE_COMPONENT_PARTITION_TABLE) {
         ESP_GOTO_ON_ERROR(

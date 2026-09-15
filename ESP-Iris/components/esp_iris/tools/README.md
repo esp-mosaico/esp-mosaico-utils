@@ -49,9 +49,10 @@ markers make pip select the validated packages for the active interpreter
 (including the Python 3.8-compatible aiohttp and zeroconf versions). This
 Gateway interpreter is independent of the interpreter required by ESP-IDF.
 
-The Registry archive includes the Workbench source but excludes generated
-`node_modules` and `dist` directories. Build it once before starting the
-Gateway:
+This checkout includes a prebuilt Workbench in `tools/frontend/dist`, which
+the Gateway serves directly. Node.js and npm are not required to open it.
+The component file rules retain this distribution and exclude `node_modules`.
+To rebuild after changing frontend source or its dependency lock:
 
 ```bash
 cd "$ESP_IRIS_COMPONENT_DIR/tools/frontend"
@@ -60,8 +61,9 @@ npm run build
 cd -
 ```
 
-Rebuild after changing frontend source. The Gateway displays a clear fallback
-page when `dist/index.html` is absent.
+Commit the regenerated `dist` files together with frontend source changes.
+CI rebuilds from `package-lock.json` and checks that the committed distribution
+matches. The Gateway displays a fallback page when `dist/index.html` is absent.
 
 ## Evaluate without hardware
 
