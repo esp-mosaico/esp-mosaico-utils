@@ -286,6 +286,16 @@ config ESP_IRIS_MEDIA_LATEST_BYTES
         Allocated only while mirror/IMAGE/AUDIO streaming is active. A newer
         submission replaces an unsent one and increments the drop count.
 
+config ESP_IRIS_MEDIA_BUFFER_PSRAM
+    bool "Place latest media chunk buffers in PSRAM"
+    depends on SPIRAM && !ESP_IRIS_OTA && !ESP_IRIS_SYSTEM_UPDATE
+    default n
+    help
+        Allocate only the optional latest media chunks from external RAM.
+        ESP-Iris copies each chunk into its internal wire frame before USB
+        transmission. Keep this disabled in firmware that writes Flash via
+        ESP-Iris, because PSRAM may be inaccessible while cache is disabled.
+
 config ESP_IRIS_MAX_FILE_VOLUMES
     int "Maximum registered logical file volumes"
     range 1 8

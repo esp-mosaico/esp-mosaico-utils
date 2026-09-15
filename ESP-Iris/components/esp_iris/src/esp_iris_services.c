@@ -299,14 +299,20 @@ static esp_err_t ensure_media_buffer(iris_service_state_t *state,
     if (slot->data != NULL) {
         return ESP_OK;
     }
-    uint8_t *data = heap_caps_malloc(CONFIG_ESP_IRIS_MEDIA_LATEST_BYTES,
-                                     MALLOC_CAP_INTERNAL);
+#ifdef CONFIG_ESP_IRIS_MEDIA_BUFFER_PSRAM
+    const uint32_t caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+#else
+    const uint32_t caps = MALLOC_CAP_INTERNAL;
+#endif
+    uint8_t *data = heap_caps_malloc(CONFIG_ESP_IRIS_MEDIA_LATEST_BYTES, caps);
     if (data == NULL) {
         return ESP_ERR_NO_MEM;
     }
     taskENTER_CRITICAL(&s_services_lock);
     slot->data = data;
+#ifndef CONFIG_ESP_IRIS_MEDIA_BUFFER_PSRAM
     state->allocated_bytes += CONFIG_ESP_IRIS_MEDIA_LATEST_BYTES;
+#endif
     taskEXIT_CRITICAL(&s_services_lock);
     return ESP_OK;
 }
@@ -325,9 +331,11 @@ static void release_media_buffer(iris_service_state_t *state,
     slot->stream_id = 0;
     slot->total_size = 0;
     slot->offset = 0;
+#ifndef CONFIG_ESP_IRIS_MEDIA_BUFFER_PSRAM
     if (data != NULL) {
         state->allocated_bytes -= CONFIG_ESP_IRIS_MEDIA_LATEST_BYTES;
     }
+#endif
     taskEXIT_CRITICAL(&s_services_lock);
     free(data);
 }
