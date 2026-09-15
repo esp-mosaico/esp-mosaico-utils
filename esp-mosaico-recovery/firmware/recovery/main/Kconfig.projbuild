@@ -12,7 +12,7 @@ config FACTORY_RECOVERY_FIRMWARE
 config IRIS_FACTORY_WIFI_MAX_NETWORKS
     int "Maximum Wi-Fi scan results shown"
     range 4 16
-    default 8
+    default 16
 
 config IRIS_FACTORY_WIFI_CONNECT_TIMEOUT_MS
     int "Wi-Fi connection timeout (milliseconds)"
