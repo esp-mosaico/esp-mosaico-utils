@@ -190,6 +190,7 @@ static bool executor_reap_idle(TaskHandle_t task)
     if (work == NULL) {
         return false;
     }
+    iris_runtime_wire_deinit(work);
     free(work);
     return true;
 }
@@ -217,12 +218,19 @@ static esp_err_t executor_ensure(void)
     if (s_executor.work == NULL) {
         s_executor.work = heap_caps_calloc(1, sizeof(*s_executor.work), MALLOC_CAP_INTERNAL);
         if (s_executor.work == NULL) return ESP_ERR_NO_MEM;
+        const esp_err_t wire_err = iris_runtime_wire_init(s_executor.work);
+        if (wire_err != ESP_OK) {
+            free(s_executor.work);
+            s_executor.work = NULL;
+            return wire_err;
+        }
         work_created = true;
     }
     if (s_executor.task == NULL &&
         xTaskCreate(executor_worker, "iris-service", CONFIG_ESP_IRIS_SERVICE_STACK_SIZE,
                     NULL, CONFIG_ESP_IRIS_TASK_PRIORITY, &s_executor.task) != pdPASS) {
         if (work_created) {
+            iris_runtime_wire_deinit(s_executor.work);
             free(s_executor.work);
             s_executor.work = NULL;
         }

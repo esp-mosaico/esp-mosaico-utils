@@ -115,12 +115,20 @@ typedef struct iris_runtime {
     size_t rx_pending_length;
     size_t rx_pending_offset;
 
+#ifdef CONFIG_ESP_IRIS_WIRE_BUFFERS_PSRAM
+    uint8_t *rx_wire;
+#else
     uint8_t rx_wire[ESP_IRIS_MAX_WIRE_FRAME_SIZE];
+#endif
     size_t rx_wire_length;
     bool rx_discarding;
     bool disconnect_after_tx;
 
+#ifdef CONFIG_ESP_IRIS_WIRE_BUFFERS_PSRAM
+    uint8_t *tx_wire;
+#else
     uint8_t tx_wire[ESP_IRIS_MAX_WIRE_FRAME_SIZE];
+#endif
     size_t tx_wire_length;
     size_t tx_wire_offset;
 
@@ -155,6 +163,8 @@ typedef struct iris_runtime {
 } iris_runtime_t;
 
 extern iris_runtime_t g_iris;
+esp_err_t iris_runtime_wire_init(iris_runtime_t *runtime);
+void iris_runtime_wire_deinit(iris_runtime_t *runtime);
 void iris_notify_worker(iris_runtime_t *runtime);
 void iris_crash_context_prepare(iris_runtime_t *runtime);
 

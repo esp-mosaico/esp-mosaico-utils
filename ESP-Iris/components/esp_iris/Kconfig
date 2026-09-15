@@ -292,9 +292,21 @@ config ESP_IRIS_MEDIA_BUFFER_PSRAM
     default n
     help
         Allocate only the optional latest media chunks from external RAM.
-        ESP-Iris copies each chunk into its internal wire frame before USB
+        ESP-Iris copies each chunk into its wire frame before USB
         transmission. Keep this disabled in firmware that writes Flash via
         ESP-Iris, because PSRAM may be inaccessible while cache is disabled.
+
+config ESP_IRIS_WIRE_BUFFERS_PSRAM
+    bool "Place protocol wire frame buffers in PSRAM"
+    depends on SPIRAM && SPIRAM_XIP_FROM_PSRAM
+    depends on !ESP_IRIS_OTA && !ESP_IRIS_SYSTEM_UPDATE
+    default n
+    help
+        Allocate the protocol RX and TX frames from PSRAM when ESP-Iris
+        starts, including a separate pair for each transient service work
+        copy. The USB driver copies data through its own internal DMA/FIFO
+        buffers. Keep this disabled for ESP-Iris Flash writers. Validate
+        protocol traffic and recovery on the target before product use.
 
 config ESP_IRIS_MAX_FILE_VOLUMES
     int "Maximum registered logical file volumes"

@@ -32,6 +32,36 @@ iris_runtime_t g_iris = {
 
 static portMUX_TYPE s_start_lock = portMUX_INITIALIZER_UNLOCKED;
 
+esp_err_t iris_runtime_wire_init(iris_runtime_t *runtime)
+{
+#ifdef CONFIG_ESP_IRIS_WIRE_BUFFERS_PSRAM
+    if (runtime->rx_wire != NULL) {
+        return ESP_OK;
+    }
+    uint8_t *frames = heap_caps_malloc(2U * ESP_IRIS_MAX_WIRE_FRAME_SIZE,
+                                      MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (frames == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    runtime->rx_wire = frames;
+    runtime->tx_wire = frames + ESP_IRIS_MAX_WIRE_FRAME_SIZE;
+#else
+    (void)runtime;
+#endif
+    return ESP_OK;
+}
+
+void iris_runtime_wire_deinit(iris_runtime_t *runtime)
+{
+#ifdef CONFIG_ESP_IRIS_WIRE_BUFFERS_PSRAM
+    heap_caps_free(runtime->rx_wire);
+    runtime->rx_wire = NULL;
+    runtime->tx_wire = NULL;
+#else
+    (void)runtime;
+#endif
+}
+
 void iris_notify_worker(iris_runtime_t *runtime)
 {
     taskENTER_CRITICAL(&s_start_lock);
@@ -133,7 +163,7 @@ static esp_err_t queue_frame(iris_runtime_t *runtime, uint8_t channel,
     };
     size_t wire_size = 0;
     esp_err_t err = iris_frame_encode(runtime->tx_wire,
-                                      sizeof(runtime->tx_wire), &header,
+                                      ESP_IRIS_MAX_WIRE_FRAME_SIZE, &header,
                                       payload, payload_size, &wire_size);
     if (err == ESP_OK) {
         runtime->tx_wire_length = wire_size;
@@ -595,7 +625,7 @@ static void handle_crash(iris_runtime_t *runtime,
         }
         size_t payload_size = 0;
         esp_err_t err = iris_crash_build_metadata(
-            runtime, runtime->rx_wire, sizeof(runtime->rx_wire),
+            runtime, runtime->rx_wire, ESP_IRIS_MAX_WIRE_FRAME_SIZE,
             &payload_size);
         if (err == ESP_OK) {
             err = queue_frame(runtime, ESP_IRIS_CHANNEL_CRASH,
@@ -727,7 +757,7 @@ static size_t feed_rx(iris_runtime_t *runtime, const uint8_t *data,
         if (runtime->rx_discarding) {
             continue;
         }
-        if (runtime->rx_wire_length >= sizeof(runtime->rx_wire) - 1U) {
+        if (runtime->rx_wire_length >= ESP_IRIS_MAX_WIRE_FRAME_SIZE - 1U) {
             runtime->rx_discarding = true;
             runtime->rx_wire_length = 0;
             ++runtime->invalid_frames;
@@ -987,6 +1017,9 @@ esp_err_t esp_iris_start(void)
         }
     }
     if (err == ESP_OK) {
+        err = iris_runtime_wire_init(&g_iris);
+    }
+    if (err == ESP_OK) {
         err = iris_services_init(&g_iris);
     }
     if (err == ESP_OK) {
@@ -1021,6 +1054,7 @@ esp_err_t esp_iris_start(void)
             g_iris.vfs_registered = false;
         }
         iris_transport_stop(&g_iris);
+        iris_runtime_wire_deinit(&g_iris);
     }
 
     taskENTER_CRITICAL(&s_start_lock);
@@ -1108,6 +1142,7 @@ esp_err_t esp_iris_stop(void)
     g_iris.log_tail = 0;
     g_iris.log_used = 0;
     taskEXIT_CRITICAL(&g_iris.log_lock);
+    iris_runtime_wire_deinit(&g_iris);
     (void)transition_lifecycle(
         &g_iris, result == ESP_OK ? ESP_IRIS_LIFECYCLE_STOPPED
                                   : ESP_IRIS_LIFECYCLE_FAILED);
