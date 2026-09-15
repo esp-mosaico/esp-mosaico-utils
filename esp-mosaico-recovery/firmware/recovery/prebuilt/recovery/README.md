@@ -3,9 +3,8 @@
 The Recovery application reports version `0.1` and embeds the production
 `https://iris-bridge.esp-claw.com` Bridge Origin. `manifest.json` records the
 clean utility source revision and the size, offset, and SHA-256 of every image.
-The bootloader and Recovery application were rebuilt together; the partition
-table and initial OTA data remain byte-for-byte identical to the previous
-reviewed bundle.
+The bootloader is retained from the reviewed Bridge bundle; the partition
+table and initial OTA data remain byte-for-byte identical to that bundle.
 
 On 2026-09-15 the complete candidate bundle passed ROM provisioning on an
 ESP-Mosaico v1.2 ESP32-S31 board with hardware MAC `30:ed:a0:f4:51:56`, using
@@ -34,6 +33,25 @@ pre-existing local modifications, as reflected in the manifest's IDF version.
 The utility source revision is clean, but the IDF checkout is not; this does
 not attest to a fully clean release build.
 
+On 2026-09-15, ESP-34 raised the displayed Wi-Fi scan limit to 16 and replaced
+the password Show/Hide text with an eye icon anchored inside the input's right
+edge. The field reserves 64 px for the icon, and opening another network's
+password page resets visibility to hidden. A candidate built on the current
+Bridge base first aborted during Wi-Fi SHA1 passphrase derivation because the
+hardware peripheral returned an all-zero digest; its valid Core Dump was saved
+and decoded against the matching ELF. The checked-in ESP-34 build disables
+mbedTLS hardware SHA in Recovery so Wi-Fi uses software SHA1.
+
+The resulting single-component Recovery self-update bundle completed through
+`mosaico.py system-update` on the same Device ID
+`4553502d49524953010030eda0f45156`. The new Boot ID was
+`1655024390838925042`, the running ELF SHA-256 was
+`ff6833f427a86f9df5336b3d94a874166d507048a63ba7200be69bbe64c3baa8`,
+Recovery and its protected partitions were healthy, and the crash count was 0.
+The 1,728,064-byte application fits the unchanged 1,835,008-byte factory
+partition. All five checked-in files match this validated candidate manifest.
+
 Structured device-operation records and raw logs are retained in the consuming
-Vibe workspace under `.codex-runs/esp-30-prebuilt/` and `.codex-runs/mosaico/`.
+Vibe workspace under `.codex-runs/esp-30-prebuilt/`,
+`.codex-runs/esp-34-bridge/`, and `.codex-runs/mosaico/`.
 Archive them with release evidence before publishing a formal release.
