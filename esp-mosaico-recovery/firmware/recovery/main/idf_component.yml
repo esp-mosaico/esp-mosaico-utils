@@ -6,7 +6,7 @@ dependencies:
   esp-mosaico-bsp:
     git: https://github.com/esp-mosaico/esp-mosaico-bsp
     path: components/esp-mosaico-bsp
-    version: aba1269ecafc34d2c690370bfcd6e51f3e7df8f1
+    version: 3d5c451598aaffbda6f41895a0414dba4bac3505
   espressif/mdns:
     version: "1.12.0"
   espressif/cjson:

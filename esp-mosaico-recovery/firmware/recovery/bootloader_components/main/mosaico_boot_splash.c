@@ -19,8 +19,6 @@
 #include "hal/spi_ll.h"
 #include "sdkconfig.h"
 #include "soc/gpio_sig_map.h"
-#include "soc/lp_system_reg.h"
-#include "soc/soc.h"
 #include "soc/spi_periph.h"
 
 #define LCD_WIDTH 480U
@@ -59,9 +57,6 @@
 #define MOSAICO_HW_VERSION(major, minor)                                       \
   ((uint16_t)(((uint16_t)(major) << 8) | ((uint16_t)(minor) & 0xFFU)))
 
-#define MOSAICO_BOOT_LCD_HANDOFF_REG LP_SYSTEM_REG_LP_STORE15_REG
-#define MOSAICO_BOOT_LCD_HANDOFF_MAGIC UINT32_C(0x4D4C4344) /* "MLCD" */
-
 static const char *TAG = "boot_splash";
 static spi_hal_context_t s_spi;
 static spi_hal_dev_config_t s_spi_device;
@@ -78,12 +73,6 @@ static const uint8_t s_logo[LOGO_CHAR_COUNT][LOGO_GLYPH_ROWS] = {
     {0x00, 0x0F, 0x10, 0x10, 0x10, 0x10, 0x0F}, /* c */
     {0x00, 0x0E, 0x11, 0x11, 0x11, 0x11, 0x0E}, /* o */
 };
-
-static void handoff_clear(void) { REG_WRITE(MOSAICO_BOOT_LCD_HANDOFF_REG, 0); }
-
-static void handoff_publish(void) {
-  REG_WRITE(MOSAICO_BOOT_LCD_HANDOFF_REG, MOSAICO_BOOT_LCD_HANDOFF_MAGIC);
-}
 
 static bool hardware_version_supported(void) {
   uint16_t version = 0;
@@ -317,17 +306,14 @@ static bool draw_splash(void) {
 }
 
 bool mosaico_boot_splash_show(void) {
-  handoff_clear();
   if (!hardware_version_supported()) {
     ESP_LOGW(TAG, "unsupported hardware; LCD splash skipped");
     return false;
   }
   if (!panel_init() || !draw_splash()) {
-    handoff_clear();
     ESP_LOGW(TAG, "LCD splash failed; continuing boot");
     return false;
   }
-  handoff_publish();
   ESP_LOGW(TAG, "LCD boot splash visible");
   return true;
 }
