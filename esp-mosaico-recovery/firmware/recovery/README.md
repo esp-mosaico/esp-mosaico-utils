@@ -14,6 +14,22 @@ System Update 版本检查将 `0.1` 解析为 `0.1.0`，只接受同一主版本
 最低版本要求不高于当前 Recovery 的更新包。Recovery 自更新拒绝降级或
 跨主版本线的镜像。
 
+## 静态开机 Logo
+
+保留 Recovery 的二级 bootloader 在选择应用分区前，通过 SPI2 QSPI 初始化
+CO5300，绘制黑底橙色点阵 `mosaico`。Logo 使用紧凑的字形数据逐像素生成，
+不依赖 LVGL、GSP、PSRAM 或外部 UI 资源。支持 eFuse 标识的 v1.0、v1.1 和
+v1.2 板；未知板型或 SPI 传输失败时跳过 Logo，继续正常启动与 Recovery。
+
+Logo 仅在 bootloader 阶段显示，不发布跨启动阶段的屏幕交接标记，也不保留
+LP STORE 寄存器。BSP 和应用使用原来的完整屏幕 reset 与初始化流程；进入
+Recovery 或普通应用时允许短暂黑屏，不保证 Logo 连续显示至应用首次刷新。
+
+bootloader 默认仅保留 ERROR 日志，以适配 `0x2000` 到 `0x8000` 的 24 KiB
+固定空间。分区布局、OTA 选择、Recovery Boot 按键和恢复协议不变。维护者必须
+在更新源码后重新生成并校验 `prebuilt/recovery` 的完整包，不能只替换其中一个
+镜像；普通应用更新仍使用宿主 workspace 的 `mosaico.py install`。
+
 ## 用户命令
 
 在仓库根目录运行：

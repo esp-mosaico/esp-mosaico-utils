@@ -16,6 +16,7 @@
 #include "bootloader_utility.h"
 #include "bootloader_common.h"
 #include "hal/gpio_ll.h"
+#include "mosaico_boot_splash.h"
 #include "soc/gpio_struct.h"
 #include "soc/soc_caps.h"
 
@@ -87,6 +88,11 @@ void __attribute__((noreturn)) call_start_cpu0(void)
     if (bootloader_init() != ESP_OK) {
         bootloader_reset();
     }
+
+    /* The retained Recovery bootloader owns the product's first visible
+     * frame. Splash failures are deliberately non-fatal so display hardware
+     * can never prevent Recovery or the normal application from booting. */
+    (void)mosaico_boot_splash_show();
 
 #ifdef CONFIG_BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP
     bootloader_utility_load_boot_image_from_deep_sleep();
