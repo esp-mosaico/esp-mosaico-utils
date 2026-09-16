@@ -39,7 +39,7 @@ esp_err_t esp_iris_system_inventory_unregister(void *user_ctx)
     return ESP_OK;
 }
 
-bool iris_system_inventory_handle_frame(iris_runtime_t *runtime,
+bool iris_system_inventory_handle_frame(iris_service_call_t *runtime,
                                         const iris_decoded_frame_t *frame)
 {
     if (frame->header.channel != ESP_IRIS_CHANNEL_SYSTEM_UPDATE ||
@@ -47,13 +47,13 @@ bool iris_system_inventory_handle_frame(iris_runtime_t *runtime,
         return false;
     }
     if (frame->header.payload_size != 0) {
-        (void)iris_queue_error(runtime, frame->header.request_id,
+        (void)iris_service_error(runtime, frame->header.request_id,
                                ESP_ERR_INVALID_SIZE, frame->header.channel,
                                frame->header.type);
         return true;
     }
     if (!s_system_inventory.registered) {
-        (void)iris_queue_error(runtime, frame->header.request_id,
+        (void)iris_service_error(runtime, frame->header.request_id,
                                ESP_ERR_NOT_SUPPORTED, frame->header.channel,
                                frame->header.type);
         return true;
@@ -63,12 +63,12 @@ bool iris_system_inventory_handle_frame(iris_runtime_t *runtime,
     const esp_err_t err = s_system_inventory.provider.get_inventory(
         &inventory, s_system_inventory.provider.user_ctx);
     if (err != ESP_OK) {
-        (void)iris_queue_error(runtime, frame->header.request_id, err,
+        (void)iris_service_error(runtime, frame->header.request_id, err,
                                frame->header.channel, frame->header.type);
         return true;
     }
     if ((inventory.flags & ~ESP_IRIS_SYSTEM_INVENTORY_VALID_FLAGS) != 0) {
-        (void)iris_queue_error(runtime, frame->header.request_id,
+        (void)iris_service_error(runtime, frame->header.request_id,
                                ESP_ERR_INVALID_ARG, frame->header.channel,
                                frame->header.type);
         return true;
@@ -81,7 +81,7 @@ bool iris_system_inventory_handle_frame(iris_runtime_t *runtime,
     memcpy(response + 40, inventory.partition_table_sha256, 32);
     memcpy(response + 72, inventory.last_operation_id, 16);
     iris_put_le32(response + 88, (uint32_t)inventory.last_result);
-    (void)iris_queue_frame(runtime, frame->header.channel,
+    (void)iris_service_reply(runtime, frame->header.channel,
                            ESP_IRIS_SYSTEM_UPDATE_INVENTORY_RESPONSE,
                            ESP_IRIS_FLAG_RESPONSE, frame->header.request_id,
                            0, response, sizeof(response));
@@ -118,7 +118,7 @@ esp_err_t esp_iris_system_inventory_unregister(void *user_ctx)
     return ESP_ERR_NOT_SUPPORTED;
 }
 
-bool iris_system_inventory_handle_frame(iris_runtime_t *runtime,
+bool iris_system_inventory_handle_frame(iris_service_call_t *runtime,
                                         const iris_decoded_frame_t *frame)
 {
     (void)runtime;

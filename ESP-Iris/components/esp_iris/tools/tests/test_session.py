@@ -127,6 +127,65 @@ class FakeLink:
         self.closed = True
 
 
+def test_media_credit_does_not_block_receive_behind_rpc_writer() -> None:
+    async def scenario() -> None:
+        async def discard(value: object) -> None:
+            pass
+
+        link = FakeLink()
+        session = DeviceSession(link, discard, discard)
+        session.info = SimpleNamespace(device_id="device", boot_id=42, session_id=7)
+        # Model a large RPC waiting for the device's RX while mirror TX is full.
+        await session._write_lock.acquire()
+        payload = struct.pack("<QIIHHHHHHIHH", 0, 1, 0, 0, 2,
+                              0, 0, 1, 1, 2, 1, 0) + b"\x00\x00"
+        frame = Frame(channel=Channel.SCREEN, type=MediaType.DATA, payload=payload)
+        for _ in range(20):
+            await asyncio.wait_for(session._handle_media(frame), 0.1)
+        assert len(session._credit_tasks) == 1  # bounded, coalesced replenishment
+        assert not link.writes
+        session._write_lock.release()
+        await asyncio.gather(*session._credit_tasks.values())
+        assert not session._credit_tasks
+        grants = [decode_frame(wire[:-1]) for wire in link.writes]
+        assert len(grants) == 1
+        assert grants[0].type == ControlType.CREDIT
+        assert session._media_credit[int(Channel.SCREEN)] == 128 * 1024
+        await session.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("yield_before_close", [False, True])
+def test_credit_tasks_are_cancelled_on_close_and_write_failure(yield_before_close) -> None:
+    async def scenario() -> None:
+        async def discard(value: object) -> None:
+            pass
+
+        link = FakeLink()
+        session = DeviceSession(link, discard, discard)
+        await session._write_lock.acquire()
+        session._queue_credit(Channel.LOG, 1024)
+        session._queue_credit(Channel.SCREEN, 1024)
+        if yield_before_close:
+            await asyncio.sleep(0)
+        await asyncio.wait_for(session.close(), 0.1)
+        assert not session._credit_tasks
+        assert link.closed
+        session._write_lock.release()
+
+        session = DeviceSession(FakeLink(), discard, discard)
+        async def fail(*args, **kwargs) -> None:
+            raise OSError("write failed")
+        session._send = fail
+        session._queue_credit(Channel.SCREEN, 1024)
+        await asyncio.wait_for(asyncio.gather(*session._credit_tasks.values()), 0.1)
+        assert not session._credit_tasks
+        assert session._closed and session.link.closed
+
+    asyncio.run(scenario())
+
+
 async def wait_for_request(
     link: FakeLink, channel: int, type_: int, after: int = 0
 ) -> tuple[int, Frame]:
