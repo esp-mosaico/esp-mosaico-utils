@@ -227,7 +227,7 @@ static void password_toggle_event(lv_event_t *event)
     const bool hidden = lv_textarea_get_password_mode(s_ui.password_input);
     lv_textarea_set_password_mode(s_ui.password_input, !hidden);
     lv_label_set_text(lv_obj_get_child(s_ui.password_toggle, 0),
-                      hidden ? "Hide" : "Show");
+                      hidden ? LV_SYMBOL_EYE_CLOSE : LV_SYMBOL_EYE_OPEN);
 }
 
 static void network_select_event(lv_event_t *event)
@@ -240,6 +240,9 @@ static void network_select_event(lv_event_t *event)
     lv_label_set_text_fmt(s_ui.password_title, "Join %s", ssid);
     lv_obj_set_style_text_color(s_ui.password_title, COLOR_TEXT, LV_PART_MAIN);
     lv_textarea_set_text(s_ui.password_input, "");
+    lv_textarea_set_password_mode(s_ui.password_input, true);
+    lv_label_set_text(lv_obj_get_child(s_ui.password_toggle, 0),
+                      LV_SYMBOL_EYE_OPEN);
     show_page(FACTORY_PAGE_PASSWORD);
 }
 
@@ -611,9 +614,20 @@ static void password_screen_create(void)
                               LV_PART_MAIN);
     lv_obj_set_style_text_font(s_ui.password_input, &lv_font_montserrat_14,
                                LV_PART_MAIN);
-    s_ui.password_toggle = button_create(s_ui.password_screen, "Show", 70, 34,
-                                         false);
-    lv_obj_align(s_ui.password_toggle, LV_ALIGN_TOP_RIGHT, -50, 118);
+    lv_obj_set_style_pad_right(s_ui.password_input, 64, LV_PART_MAIN);
+    const int32_t toggle_width = 44;
+    s_ui.password_toggle = lv_button_create(s_ui.password_screen);
+    lv_obj_set_size(s_ui.password_toggle, toggle_width, toggle_width);
+    lv_obj_set_style_bg_opa(s_ui.password_toggle, LV_OPA_TRANSP, LV_PART_MAIN);
+    lv_obj_set_style_border_width(s_ui.password_toggle, 0, LV_PART_MAIN);
+    lv_obj_set_style_shadow_width(s_ui.password_toggle, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_all(s_ui.password_toggle, 0, LV_PART_MAIN);
+    lv_obj_t *eye = label_create(s_ui.password_toggle, LV_SYMBOL_EYE_OPEN,
+                                 &lv_font_montserrat_22, COLOR_MUTED);
+    lv_obj_center(eye);
+    /* RIGHT_MID uses the padded content box; anchor to the field's outer edge. */
+    lv_obj_align_to(s_ui.password_toggle, s_ui.password_input,
+                    LV_ALIGN_OUT_RIGHT_MID, -toggle_width - 8, 0);
     lv_obj_add_event_cb(s_ui.password_toggle, password_toggle_event,
                         LV_EVENT_CLICKED, NULL);
     lv_obj_t *help = label_create(

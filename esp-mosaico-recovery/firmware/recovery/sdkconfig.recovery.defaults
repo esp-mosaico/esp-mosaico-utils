@@ -34,3 +34,7 @@ CONFIG_ESP_IRIS_RECOVERY_ABI=1
 CONFIG_ESP_IRIS_HEALTH_TIMEOUT_MS=45000
 
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+
+# Wi-Fi's SHA1 passphrase derivation must not rely on a peripheral that can
+# return an all-zero digest and abort Recovery during startup.
+# CONFIG_MBEDTLS_HARDWARE_SHA is not set
