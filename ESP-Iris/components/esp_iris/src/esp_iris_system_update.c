@@ -187,31 +187,31 @@ static void encode_status(uint8_t payload[36])
     iris_put_le32(payload + 32, (uint32_t)status.result);
 }
 
-static bool handle_status(iris_runtime_t *runtime,
+static bool handle_status(iris_service_call_t *runtime,
                           const iris_decoded_frame_t *frame)
 {
     if (!s_system_update.backend_registered) {
-        (void)iris_queue_error(runtime, frame->header.request_id,
+        (void)iris_service_error(runtime, frame->header.request_id,
                                ESP_ERR_NOT_SUPPORTED, frame->header.channel,
                                frame->header.type);
         return true;
     }
     if (frame->header.payload_size != 0) {
-        (void)iris_queue_error(runtime, frame->header.request_id,
+        (void)iris_service_error(runtime, frame->header.request_id,
                                ESP_ERR_INVALID_SIZE, frame->header.channel,
                                frame->header.type);
         return true;
     }
     uint8_t payload[36];
     encode_status(payload);
-    (void)iris_queue_frame(runtime, frame->header.channel,
+    (void)iris_service_reply(runtime, frame->header.channel,
                            ESP_IRIS_SYSTEM_UPDATE_STATUS_RESPONSE,
                            ESP_IRIS_FLAG_RESPONSE, frame->header.request_id,
                            iris_get_le32(payload + 16), payload, sizeof(payload));
     return true;
 }
 
-static void queue_begin_response(iris_runtime_t *runtime,
+static void queue_begin_response(iris_service_call_t *runtime,
                                  const iris_decoded_frame_t *frame)
 {
     uint8_t response[24];
@@ -220,7 +220,7 @@ static void queue_begin_response(iris_runtime_t *runtime,
     iris_put_le16(response + 20, CONFIG_ESP_IRIS_SYSTEM_UPDATE_CHUNK_BYTES);
     response[22] = s_system_update.status.component_count;
     response[23] = s_system_update.flags;
-    (void)iris_queue_frame(runtime, frame->header.channel,
+    (void)iris_service_reply(runtime, frame->header.channel,
                            ESP_IRIS_SYSTEM_UPDATE_BEGIN_RESPONSE,
                            ESP_IRIS_FLAG_RESPONSE |
                                ESP_IRIS_FLAG_STREAM_BEGIN,
@@ -228,19 +228,19 @@ static void queue_begin_response(iris_runtime_t *runtime,
                            sizeof(response));
 }
 
-static bool handle_begin(iris_runtime_t *runtime,
+static bool handle_begin(iris_service_call_t *runtime,
                          const iris_decoded_frame_t *frame)
 {
     const uint8_t *payload = frame->payload;
     const size_t payload_size = frame->header.payload_size;
     if (!s_system_update.backend_registered) {
-        (void)iris_queue_error(runtime, frame->header.request_id,
+        (void)iris_service_error(runtime, frame->header.request_id,
                                ESP_ERR_NOT_SUPPORTED,
                                frame->header.channel, frame->header.type);
         return true;
     }
     if (payload_size < IRIS_SYSTEM_BEGIN_FIXED_SIZE) {
-        (void)iris_queue_error(runtime, frame->header.request_id,
+        (void)iris_service_error(runtime, frame->header.request_id,
                                ESP_ERR_INVALID_SIZE,
                                frame->header.channel, frame->header.type);
         return true;
@@ -257,7 +257,7 @@ static bool handle_begin(iris_runtime_t *runtime,
         component_count > CONFIG_ESP_IRIS_SYSTEM_UPDATE_MAX_COMPONENTS ||
         payload_size != IRIS_SYSTEM_BEGIN_FIXED_SIZE + manifest_size +
                             signature_size) {
-        (void)iris_queue_error(runtime, frame->header.request_id,
+        (void)iris_service_error(runtime, frame->header.request_id,
                                ESP_ERR_INVALID_SIZE, frame->header.channel,
                                frame->header.type);
         return true;
@@ -271,7 +271,7 @@ static bool handle_begin(iris_runtime_t *runtime,
         err = ESP_ERR_INVALID_CRC;
     }
     if (err != ESP_OK) {
-        (void)iris_queue_error(runtime, frame->header.request_id, err,
+        (void)iris_service_error(runtime, frame->header.request_id, err,
                                frame->header.channel, frame->header.type);
         return true;
     }
@@ -289,7 +289,7 @@ static bool handle_begin(iris_runtime_t *runtime,
             queue_begin_response(runtime, frame);
             return true;
         }
-        (void)iris_queue_error(runtime, frame->header.request_id,
+        (void)iris_service_error(runtime, frame->header.request_id,
                                ESP_ERR_INVALID_STATE, frame->header.channel,
                                frame->header.type);
         return true;
@@ -309,7 +309,7 @@ static bool handle_begin(iris_runtime_t *runtime,
     if (err != ESP_OK) {
         s_system_update.backend.abort(manifest.operation_id, err,
                                       s_system_update.backend.user_ctx);
-        (void)iris_queue_error(runtime, frame->header.request_id, err,
+        (void)iris_service_error(runtime, frame->header.request_id, err,
                                frame->header.channel, frame->header.type);
         return true;
     }
@@ -328,7 +328,7 @@ static bool handle_begin(iris_runtime_t *runtime,
                               &s_system_update.job);
     if (err != ESP_OK) {
         backend_abort(err, ESP_IRIS_SYSTEM_UPDATE_PHASE_FAILED);
-        (void)iris_queue_error(runtime, frame->header.request_id, err,
+        (void)iris_service_error(runtime, frame->header.request_id, err,
                                frame->header.channel, frame->header.type);
         return true;
     }
@@ -338,7 +338,7 @@ static bool handle_begin(iris_runtime_t *runtime,
     return true;
 }
 
-static bool handle_component_begin(iris_runtime_t *runtime,
+static bool handle_component_begin(iris_service_call_t *runtime,
                                    const iris_decoded_frame_t *frame)
 {
     const uint8_t *payload = frame->payload;
@@ -347,7 +347,7 @@ static bool handle_component_begin(iris_runtime_t *runtime,
         s_system_update.status.phase !=
             ESP_IRIS_SYSTEM_UPDATE_PHASE_PREPARED ||
         s_system_update.status.active_component_id != 0) {
-        (void)iris_queue_error(runtime, frame->header.request_id,
+        (void)iris_service_error(runtime, frame->header.request_id,
                                ESP_ERR_INVALID_STATE, frame->header.channel,
                                frame->header.type);
         return true;
@@ -364,7 +364,7 @@ static bool handle_component_begin(iris_runtime_t *runtime,
         component.kind < ESP_IRIS_SYSTEM_UPDATE_COMPONENT_BOOTLOADER ||
         component.kind > ESP_IRIS_SYSTEM_UPDATE_COMPONENT_DATA ||
         completed_id(component.id)) {
-        (void)iris_queue_error(runtime, frame->header.request_id,
+        (void)iris_service_error(runtime, frame->header.request_id,
                                ESP_ERR_INVALID_ARG, frame->header.channel,
                                frame->header.type);
         return true;
@@ -383,7 +383,7 @@ static bool handle_component_begin(iris_runtime_t *runtime,
     if (err != ESP_OK) {
         backend_abort(err, ESP_IRIS_SYSTEM_UPDATE_PHASE_FAILED);
         (void)esp_iris_job_finish(s_system_update.job, err);
-        (void)iris_queue_error(runtime, frame->header.request_id, err,
+        (void)iris_service_error(runtime, frame->header.request_id, err,
                                frame->header.channel, frame->header.type);
         return true;
     }
@@ -399,7 +399,7 @@ static bool handle_component_begin(iris_runtime_t *runtime,
     response[17] = (uint8_t)component.kind;
     iris_put_le16(response + 18, CONFIG_ESP_IRIS_SYSTEM_UPDATE_CHUNK_BYTES);
     iris_put_le32(response + 20, component.size);
-    (void)iris_queue_frame(runtime, frame->header.channel,
+    (void)iris_service_reply(runtime, frame->header.channel,
                            ESP_IRIS_SYSTEM_UPDATE_COMPONENT_BEGIN_RESPONSE,
                            ESP_IRIS_FLAG_RESPONSE,
                            frame->header.request_id, job_id(), response,
@@ -407,7 +407,7 @@ static bool handle_component_begin(iris_runtime_t *runtime,
     return true;
 }
 
-static bool handle_data(iris_runtime_t *runtime,
+static bool handle_data(iris_service_call_t *runtime,
                         const iris_decoded_frame_t *frame)
 {
     const uint8_t *payload = frame->payload;
@@ -421,7 +421,7 @@ static bool handle_data(iris_runtime_t *runtime,
         iris_get_le16(payload + 18) != 0 ||
         iris_get_le32(payload + 20) !=
             s_system_update.status.component_received) {
-        (void)iris_queue_error(runtime, frame->header.request_id,
+        (void)iris_service_error(runtime, frame->header.request_id,
                                ESP_ERR_INVALID_SIZE, frame->header.channel,
                                frame->header.type);
         return true;
@@ -431,7 +431,7 @@ static bool handle_data(iris_runtime_t *runtime,
                         IRIS_SYSTEM_DATA_HEADER_SIZE;
     if (size > s_system_update.component.size -
                    s_system_update.status.component_received) {
-        (void)iris_queue_error(runtime, frame->header.request_id,
+        (void)iris_service_error(runtime, frame->header.request_id,
                                ESP_ERR_INVALID_SIZE, frame->header.channel,
                                frame->header.type);
         return true;
@@ -446,7 +446,7 @@ static bool handle_data(iris_runtime_t *runtime,
     if (err != ESP_OK) {
         backend_abort(err, ESP_IRIS_SYSTEM_UPDATE_PHASE_FAILED);
         (void)esp_iris_job_finish(s_system_update.job, err);
-        (void)iris_queue_error(runtime, frame->header.request_id, err,
+        (void)iris_service_error(runtime, frame->header.request_id, err,
                                frame->header.channel, frame->header.type);
         return true;
     }
@@ -460,7 +460,7 @@ static bool handle_data(iris_runtime_t *runtime,
     iris_put_le16(response + 18, progress);
     iris_put_le32(response + 20,
                   s_system_update.status.component_received);
-    (void)iris_queue_frame(runtime, frame->header.channel,
+    (void)iris_service_reply(runtime, frame->header.channel,
                            ESP_IRIS_SYSTEM_UPDATE_DATA_RESPONSE,
                            ESP_IRIS_FLAG_RESPONSE,
                            frame->header.request_id, job_id(), response,
@@ -468,7 +468,7 @@ static bool handle_data(iris_runtime_t *runtime,
     return true;
 }
 
-static bool handle_component_end(iris_runtime_t *runtime,
+static bool handle_component_end(iris_service_call_t *runtime,
                                  const iris_decoded_frame_t *frame)
 {
     const uint8_t *payload = frame->payload;
@@ -479,7 +479,7 @@ static bool handle_component_end(iris_runtime_t *runtime,
             ESP_IRIS_SYSTEM_UPDATE_PHASE_RECEIVING ||
         s_system_update.status.component_received !=
             s_system_update.component.size) {
-        (void)iris_queue_error(runtime, frame->header.request_id,
+        (void)iris_service_error(runtime, frame->header.request_id,
                                ESP_ERR_INVALID_STATE, frame->header.channel,
                                frame->header.type);
         return true;
@@ -505,7 +505,7 @@ static bool handle_component_end(iris_runtime_t *runtime,
     if (err != ESP_OK) {
         backend_abort(err, ESP_IRIS_SYSTEM_UPDATE_PHASE_FAILED);
         (void)esp_iris_job_finish(s_system_update.job, err);
-        (void)iris_queue_error(runtime, frame->header.request_id, err,
+        (void)iris_service_error(runtime, frame->header.request_id, err,
                                frame->header.channel, frame->header.type);
         return true;
     }
@@ -532,7 +532,7 @@ static bool handle_component_end(iris_runtime_t *runtime,
     response[16] = component_id;
     response[17] = completed;
     iris_put_le32(response + 20, (uint32_t)ESP_OK);
-    (void)iris_queue_frame(runtime, frame->header.channel,
+    (void)iris_service_reply(runtime, frame->header.channel,
                            ESP_IRIS_SYSTEM_UPDATE_COMPONENT_END_RESPONSE,
                            ESP_IRIS_FLAG_RESPONSE,
                            frame->header.request_id, job_id(), response,
@@ -540,7 +540,7 @@ static bool handle_component_end(iris_runtime_t *runtime,
     return true;
 }
 
-static bool handle_commit(iris_runtime_t *runtime,
+static bool handle_commit(iris_service_call_t *runtime,
                           const iris_decoded_frame_t *frame)
 {
     if (frame->header.payload_size != IRIS_SYSTEM_OPERATION_PAYLOAD_SIZE ||
@@ -549,7 +549,7 @@ static bool handle_commit(iris_runtime_t *runtime,
             ESP_IRIS_SYSTEM_UPDATE_PHASE_COMPONENT_VERIFIED ||
         s_system_update.status.completed_components !=
             s_system_update.status.component_count) {
-        (void)iris_queue_error(runtime, frame->header.request_id,
+        (void)iris_service_error(runtime, frame->header.request_id,
                                ESP_ERR_INVALID_STATE, frame->header.channel,
                                frame->header.type);
         return true;
@@ -577,7 +577,7 @@ static bool handle_commit(iris_runtime_t *runtime,
     memcpy(response, s_system_update.status.operation_id, 16);
     iris_put_le32(response + 16, job_id());
     iris_put_le32(response + 20, (uint32_t)err);
-    (void)iris_queue_frame(runtime, frame->header.channel,
+    (void)iris_service_reply(runtime, frame->header.channel,
                            ESP_IRIS_SYSTEM_UPDATE_COMMIT_RESPONSE,
                            ESP_IRIS_FLAG_RESPONSE |
                                ESP_IRIS_FLAG_STREAM_END |
@@ -587,12 +587,12 @@ static bool handle_commit(iris_runtime_t *runtime,
     return true;
 }
 
-static bool handle_cancel(iris_runtime_t *runtime,
+static bool handle_cancel(iris_service_call_t *runtime,
                           const iris_decoded_frame_t *frame)
 {
     if (frame->header.payload_size != IRIS_SYSTEM_OPERATION_PAYLOAD_SIZE ||
         !operation_matches(frame->payload) || !update_in_progress()) {
-        (void)iris_queue_error(runtime, frame->header.request_id,
+        (void)iris_service_error(runtime, frame->header.request_id,
                                ESP_ERR_INVALID_STATE, frame->header.channel,
                                frame->header.type);
         return true;
@@ -602,7 +602,7 @@ static bool handle_cancel(iris_runtime_t *runtime,
     (void)esp_iris_job_finish(s_system_update.job, ESP_ERR_INVALID_STATE);
     uint8_t response[36];
     encode_status(response);
-    (void)iris_queue_frame(runtime, frame->header.channel,
+    (void)iris_service_reply(runtime, frame->header.channel,
                            ESP_IRIS_SYSTEM_UPDATE_STATUS_RESPONSE,
                            ESP_IRIS_FLAG_RESPONSE |
                                ESP_IRIS_FLAG_STREAM_END,
@@ -695,7 +695,7 @@ void iris_system_update_session_end(void)
     s_system_update.job = NULL;
 }
 
-bool iris_system_update_handle_frame(iris_runtime_t *runtime,
+bool iris_system_update_handle_frame(iris_service_call_t *runtime,
                                      const iris_decoded_frame_t *frame)
 {
     if (frame->header.channel != ESP_IRIS_CHANNEL_SYSTEM_UPDATE) {
@@ -717,7 +717,7 @@ bool iris_system_update_handle_frame(iris_runtime_t *runtime,
     case ESP_IRIS_SYSTEM_UPDATE_CANCEL:
         return handle_cancel(runtime, frame);
     default:
-        (void)iris_queue_error(runtime, frame->header.request_id,
+        (void)iris_service_error(runtime, frame->header.request_id,
                                ESP_ERR_NOT_SUPPORTED, frame->header.channel,
                                frame->header.type);
         return true;
@@ -774,13 +774,13 @@ void iris_system_update_session_end(void)
 {
 }
 
-bool iris_system_update_handle_frame(iris_runtime_t *runtime,
+bool iris_system_update_handle_frame(iris_service_call_t *runtime,
                                      const iris_decoded_frame_t *frame)
 {
     if (frame->header.channel != ESP_IRIS_CHANNEL_SYSTEM_UPDATE) {
         return false;
     }
-    (void)iris_queue_error(runtime, frame->header.request_id,
+    (void)iris_service_error(runtime, frame->header.request_id,
                            ESP_ERR_NOT_SUPPORTED, frame->header.channel,
                            frame->header.type);
     return true;

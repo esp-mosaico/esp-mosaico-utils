@@ -161,6 +161,25 @@ config ESP_IRIS_TCP_PORT
     range 1024 65535
     default 19772
 
+config ESP_IRIS_USB_TASK_STACK_SIZE
+    int "TinyUSB device task stack size (bytes)"
+    depends on ESP_IRIS_TRANSPORT_USB
+    range 2048 16384
+    default 4096
+    help
+        Keep the USB callback task stack internal. Products may lower this
+        only after measuring USB callbacks under their complete workload.
+        Recovery retains the default independently of normal applications.
+
+config ESP_IRIS_TCP_DEFER_UNTIL_NETIF
+    bool "Defer TCP listener until the product creates a network interface"
+    depends on ESP_IRIS_TRANSPORT_TCP
+    default n
+    help
+        Keep TCP available without creating the global lwIP task on USB-only
+        boots. The product owns network interface creation; ESP-Iris starts
+        listening as soon as an interface exists. No IP address is required.
+
 config ESP_IRIS_USB_SERIAL_JTAG_RX_BUFFER_BYTES
     int "USB Serial/JTAG receive ring size"
     depends on ESP_IRIS_TRANSPORT_USB_SERIAL_JTAG
@@ -189,17 +208,36 @@ config ESP_IRIS_SERVICE_STACK_SIZE
     default 6144
     help
         One lazy bounded worker owns RPC callbacks and OTA flash steps.
-        Its private buffers and stack are released after the configured idle
-        interval and recreated for the next slow operation.
+        Its owned business request/result buffers and stack are released after
+        the idle interval, unless the persistent-worker option is enabled.
 
 config ESP_IRIS_SERVICE_IDLE_TIMEOUT_MS
     int "Slow service executor idle release delay (ms)"
     range 100 60000
     default 1000
     help
-        Release the lazy service worker and its private frame buffers after
+        Release the lazy service worker and its business request/result buffers after
         this much idle time. Active operations and responses waiting for TX
         space are never reclaimed.
+
+config ESP_IRIS_SERVICE_PERSISTENT
+    bool "Retain one slow-service worker across sessions"
+    default n
+    help
+        Create the worker on first use and retain it until reset, including
+        across esp_iris_stop/start. This bounds peak stack residency: a new
+        worker cannot overlap an old self-deleted task awaiting idle cleanup.
+        The idle release delay is ignored. Active work remains serialized.
+
+config ESP_IRIS_SERVICE_CONTEXT_PSRAM
+    bool "Place slow-service request/result contexts in PSRAM"
+    depends on ESP_IRIS_WIRE_BUFFERS_PSRAM
+    default n
+    help
+        Keep the executor stack internal but allocate its owned business input
+        and result context in PSRAM. There is no duplicate protocol runtime.
+        Allocation failure never falls back to internal RAM. Do not
+        enable in a firmware that writes Flash through ESP-Iris.
 
 config ESP_IRIS_TASK_STACK_SIZE
     int "Worker task stack size (bytes)"
@@ -263,6 +301,26 @@ config ESP_IRIS_RPC_BODY_BYTES
     int "Maximum RPC request or response body"
     range 128 2048
     default 1024
+
+config ESP_IRIS_RPC_RESPONSE_PSRAM
+    bool "Place slow-service result storage in PSRAM"
+    depends on SPIRAM && !ESP_IRIS_OTA && !ESP_IRIS_SYSTEM_UPDATE
+    default n
+    help
+        Preserve the existing configuration key while moving the executor's
+        raw result buffer to PSRAM. RPC registration no longer allocates an
+        independent response buffer. This option does not move the input
+        context or callback stack.
+        Allocation failure never falls back to internal RAM.
+
+config ESP_IRIS_SERVICE_STATE_PSRAM
+    bool "Place service metadata in PSRAM"
+    depends on ESP_IRIS_WIRE_BUFFERS_PSRAM
+    default n
+    help
+        Allocate RPC/job/media control metadata in PSRAM without an internal
+        fallback. Synchronization locks and task stacks remain internal.
+        Like external wire buffers, this is for normal non-writer firmware.
 
 config ESP_IRIS_TASK_MEMORY_OBSERVATION
     bool "Allow on-demand snapshots of every task's stack high-water mark"

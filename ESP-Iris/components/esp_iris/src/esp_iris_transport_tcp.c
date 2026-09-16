@@ -24,6 +24,11 @@ static esp_err_t open_listener(iris_transport_state_t *state)
     if (state->listen_fd >= 0) {
         return ESP_OK;
     }
+#if CONFIG_ESP_IRIS_TCP_DEFER_UNTIL_NETIF
+    if (esp_netif_get_nr_of_ifs() == 0) {
+        return ESP_OK;
+    }
+#endif
     const int fd = socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
     if (fd < 0) {
         return ESP_FAIL;
@@ -66,7 +71,13 @@ static esp_err_t tcp_start(iris_runtime_t *runtime,
     /* socket() asserts inside lwIP when tcpip_init has not run yet. Initialize
      * only the global TCP/IP core; the product still owns interfaces, Wi-Fi,
      * addressing and reconnect policy. esp_netif_init() is idempotent. */
-    esp_err_t err = esp_netif_init();
+    esp_err_t err = ESP_OK;
+#if CONFIG_ESP_IRIS_TCP_DEFER_UNTIL_NETIF
+    if (esp_netif_get_nr_of_ifs() != 0)
+#endif
+    {
+        err = esp_netif_init();
+    }
     if (err != ESP_OK) {
         state->driver_started = false;
         return err;

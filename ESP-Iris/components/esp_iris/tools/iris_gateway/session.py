@@ -159,6 +159,7 @@ class DeviceSession:
         self._crash_chunk_max = 1024
         self._ready_announced = False
         self._media_credit = [0] * channel_count
+        self._credit_tasks: dict[int, asyncio.Task[None]] = {}
         self.files = DeviceFiles(self)
         self.clock_offset_us: float | None = None
         self.clock_uncertainty_us: float | None = None
@@ -177,6 +178,7 @@ class DeviceSession:
                 self.state = session_transition(self.state, SessionEvent.CLOSE)
             self._fail_pending()
             try:
+                await self._cancel_credit_tasks()
                 if self._clock_task is not None:
                     self._clock_task.cancel()
                     # Consume child cancellation, not run() cancellation during
@@ -190,7 +192,51 @@ class DeviceSession:
         if self.state is not SessionState.CLOSED:
             self.state = session_transition(self.state, SessionEvent.CLOSE)
         self._fail_pending()
+        await self._cancel_credit_tasks()
         await self.link.close()
+
+    async def _cancel_credit_tasks(self) -> None:
+        current = asyncio.current_task()
+        entries = [(channel, task) for channel, task in self._credit_tasks.items()
+                   if task is not current]
+        tasks = [task for _, task in entries]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        # Cancellation before a coroutine's first turn never enters its
+        # finally block. Reclaim those dictionary entries explicitly too.
+        for channel, task in entries:
+            if self._credit_tasks.get(channel) is task:
+                self._credit_tasks.pop(channel, None)
+
+    def _queue_credit(self, channel: int, amount: int) -> None:
+        """Never block the receive loop on a duplex USB write.
+
+        A large RPC can occupy the writer while the device drains TX before
+        reading RX. Waiting for that writer here stops host RX and deadlocks
+        both sides with small CDC FIFOs. Coalesce to one task per channel.
+        """
+        channel = int(channel)
+        if self._closed or channel in self._credit_tasks:
+            return
+
+        async def grant() -> None:
+            try:
+                if channel == int(Channel.LOG):
+                    await self._grant_log_credit(amount)
+                else:
+                    await self._grant_media_credit(channel, amount)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                # Wake the supervisor/pending requests on a failed write;
+                # do not leave an unobserved background task exception.
+                await self.close()
+            finally:
+                self._credit_tasks.pop(channel, None)
+
+        self._credit_tasks[channel] = asyncio.create_task(grant())
 
     def _fail_pending(self) -> None:
         for future in self._pending.values():
@@ -455,7 +501,7 @@ class DeviceSession:
         }
         await self._on_event(event)
         if self._log_credit < self.LOG_CREDIT_LOW_WATER:
-            await self._grant_log_credit(self.LOG_CREDIT_GRANT)
+            self._queue_credit(Channel.LOG, self.LOG_CREDIT_GRANT)
 
     async def _handle_event(self, frame: Frame, host_receive_ns: int) -> None:
         if frame.type == EventType.JOB_UPDATE:
@@ -595,7 +641,7 @@ class DeviceSession:
             }
         )
         if self._media_credit[int(frame.channel)] < 64 * 1024:
-            await self._grant_media_credit(frame.channel, 128 * 1024)
+            self._queue_credit(frame.channel, 128 * 1024)
 
     def _accept_sequence(self, frame: Frame) -> bool:
         channel = int(frame.channel)

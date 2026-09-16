@@ -108,6 +108,7 @@ static esp_err_t usb_start(iris_runtime_t *runtime,
 
     tinyusb_config_t config =
         TINYUSB_DEFAULT_CONFIG(usb_device_event_callback, runtime);
+    config.task.size = CONFIG_ESP_IRIS_USB_TASK_STACK_SIZE;
     config.descriptor.device = &s_device_descriptor;
     config.descriptor.string = s_string_descriptors;
     config.descriptor.string_count = sizeof(s_string_descriptors) /
