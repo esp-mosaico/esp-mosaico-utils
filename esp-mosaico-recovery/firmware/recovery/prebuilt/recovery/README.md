@@ -1,57 +1,75 @@
 # Recovery 0.1 prebuilt bundle
 
-The Recovery application reports version `0.1` and embeds the production
-`https://iris-bridge.esp-claw.com` Bridge Origin. `manifest.json` records the
-clean utility source revision and the size, offset, and SHA-256 of every image.
-The bootloader is retained from the reviewed Bridge bundle; the partition
-table and initial OTA data remain byte-for-byte identical to that bundle.
+This bundle includes the retained bootloader's black-background, orange dotted
+`mosaico` Logo and the matching BSP LCD handoff implementation. Recovery reports
+version `0.1`, embeds the production `https://iris-bridge.esp-claw.com` Bridge
+Origin, and retains the software SHA1 configuration introduced for Wi-Fi in
+ESP-34. The partition table and initial OTA selection data remain byte-for-byte
+identical to the previous reviewed bundle.
 
-On 2026-09-15 the complete candidate bundle passed ROM provisioning on an
-ESP-Mosaico v1.2 ESP32-S31 board with hardware MAC `30:ed:a0:f4:51:56`, using
-the consuming workspace's `mosaico.py recover --source current` launcher.
-The launcher verified image hashes after write and observed healthy Recovery
-`0.1` on Device ID `4553502d49524953010030eda0f45156`. The live firmware
-ELF SHA-256 was `10ae5e16139fd6486255a9fc582da5776c1987e2e6cdfa031f046652bd286a55`,
-matching the built image descriptor. The v1.2 display showed the Recovery UI.
-No credentials, Device ID, or user NVS were erased. This exact candidate was
-then promoted to the checked-in prebuilt bundle.
+`manifest.json` records the clean utility source revision
+`b3a67ce1bda1284e710f677c7260bfe99e208358`, offsets, sizes and SHA-256 of all four
+images. Recovery's BSP dependency is pinned to
+`aba1269ecafc34d2c690370bfcd6e51f3e7df8f1` so independent source builds also
+include the handoff implementation.
 
-On 2026-09-14 the application passed Gateway-driven self-update on ESP32-S31.
-The device reported healthy Recovery `0.1`, and its ELF identity matched the
-build. An update bundle requiring the old 2.x release line was rejected with
-`ESP_ERR_INVALID_VERSION` before writing. A bundle with the same verified
-application and data bytes and a `0.1` minimum restored the original
-`cyber_ride` ELF hash. The Device ID remained stable and Boot IDs changed.
-No credentials or user NVS were erased. Fresh ROM provisioning of that earlier
-base bundle was not repeated during the ESP-30 self-update test; the new
-Bridge-enabled bundle above did receive complete ROM provisioning.
+## Build and package validation
 
-All four new bundle images passed manifest size/hash checks, the Recovery image
-fits the unchanged factory slot, and its embedded version is `0.1`. The new
-build used IDF revision `7b9cc1ac79f865983f59bb8ff3ff43eb74ff1dbe` with
-pre-existing local modifications, as reflected in the manifest's IDF version.
-The utility source revision is clean, but the IDF checkout is not; this does
-not attest to a fully clean release build.
+On 2026-09-16 the pinned Recovery source was rebuilt for ESP32-S31 with zero
+compiler warnings. `update-recovery-prebuilt` atomically published the complete
+bundle after candidate validation and device acceptance; the checked-in
+bootloader and application match the tested candidate bytes exactly.
 
-On 2026-09-15, ESP-34 raised the displayed Wi-Fi scan limit to 16 and replaced
-the password Show/Hide text with an eye icon anchored inside the input's right
-edge. The field reserves 64 px for the icon, and opening another network's
-password page resets visibility to hidden. A candidate built on the current
-Bridge base first aborted during Wi-Fi SHA1 passphrase derivation because the
-hardware peripheral returned an all-zero digest; its valid Core Dump was saved
-and decoded against the matching ELF. The checked-in ESP-34 build disables
-mbedTLS hardware SHA in Recovery so Wi-Fi uses software SHA1.
+- Bootloader: 23,456 bytes (`0x5ba0`); 1,120 bytes (`0x460`) remain in its fixed
+  24 KiB range, using ERROR-only bootloader logging.
+- Recovery application: 1,728,480 bytes, within the unchanged 1,835,008-byte
+  factory slot.
+- Partition table: 3,072 bytes at `0x8000`; initial OTA data: 8,192 bytes at
+  `0x9000`. Both hashes are unchanged from the previous reviewed bundle.
+- Manifest schema, image magic, layout, security settings, sizes and hashes
+  passed the product bundle validator.
+- Recovery host tests: 170 passed plus 45 subtests. Workspace boot Logo,
+  retained Recovery and System Update contract tests: 15 passed.
 
-The resulting single-component Recovery self-update bundle completed through
-`mosaico.py system-update` on the same Device ID
-`4553502d49524953010030eda0f45156`. The new Boot ID was
-`1655024390838925042`, the running ELF SHA-256 was
-`ff6833f427a86f9df5336b3d94a874166d507048a63ba7200be69bbe64c3baa8`,
-Recovery and its protected partitions were healthy, and the crash count was 0.
-The 1,728,064-byte application fits the unchanged 1,835,008-byte factory
-partition. All five checked-in files match this validated candidate manifest.
+The build used ESP-IDF revision
+`7b9cc1ac79f865983f59bb8ff3ff43eb74ff1dbe` with pre-existing local modifications,
+Python 3.12.3, and verified ESP32-S31 support. The Recovery utility source was
+clean, but the IDF checkout was not; this is not a fully clean release-build
+attestation.
 
-Structured device-operation records and raw logs are retained in the consuming
-Vibe workspace under `.codex-runs/esp-30-prebuilt/`,
-`.codex-runs/esp-34-bridge/`, and `.codex-runs/mosaico/`.
-Archive them with release evidence before publishing a formal release.
+## Device acceptance
+
+An ESP-Mosaico v1.2 board with hardware MAC `30:ed:a0:f4:60:56` and Device ID
+`4553502d49524953010030eda0f46056` accepted the recompiled candidate through the
+consuming workspace's `mosaico.py system-update` launcher:
+
+1. Recovery-only self-update, operation
+   `62a2af9a-6a69-4335-9ef0-406dcfddf107`: new Boot ID
+   `10763401593792953525`; healthy Recovery `0.1`; ELF SHA-256
+   `2769b0ace6d0aa6a8b42e98e3f295024636123b8d233ca6cdbe63b3cd167811d`
+   matched the candidate image descriptor.
+2. Bootloader plus the device's unchanged GSP partition table, operation
+   `e9b360da-bcf6-4ce2-adc3-5ad44e5f059e`: new Boot ID
+   `14981715707388590585`; full 24 KiB bootloader readback SHA-256
+   `d2bf457cf5c764cdddc84ee79b1e9091e432fd813c9ccd4a88a653cf1071949e`
+   matched the padded candidate.
+3. `mosaico.py install` returned the same device to healthy `gsp_hello` with
+   Boot ID `16131398577361773906` and verified application ELF identity.
+
+The developer physically observed the same Logo implementation during this
+2026-09-16 session and confirmed that the dotted Logo and display were normal.
+Retained application logs confirm LCD handoff, and the recompiled Recovery's
+native screenshot shows its firmware update service ready. v1.0/v1.1 GPIO
+branches are compiled but have not received physical device acceptance.
+
+No whole-Flash erase, credential/identity overwrite, UI-resource overwrite or
+layout migration was performed. The device kept its existing GSP table; its
+recovery-critical prefix matches this base bundle. Fresh ROM provisioning of
+the complete recompiled base bundle was not repeated: the first automatic ROM
+connection attempt failed before any write, and the live Recovery-supported
+System Update path was used instead. The unchanged base table and initial OTA
+data retain their earlier reviewed provisioning evidence in Git history.
+
+Raw logs and device screenshots are retained in the consuming Vibe workspace
+under `.codex-runs/pr-boot-splash-20260916/` and `.codex-runs/mosaico/`.
+Archive that evidence before publishing a formal release.
