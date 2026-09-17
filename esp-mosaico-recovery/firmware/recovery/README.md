@@ -85,9 +85,18 @@ Recovery 主动通过 HTTPS 连接 Bridge 服务，支持 `partitions`、`layout
 环境时，通过 `CONFIG_IRIS_FACTORY_BRIDGE_SERVER_URL`（无末尾斜杠的 HTTPS
 Origin）和 `CONFIG_IRIS_FACTORY_BRIDGE_BOARD_ID` 覆盖这两个值；任一值为空都不注册。
 
-用户进入 **Bridge download** 页面后，设备等待 Wi-Fi IP、注册并显示服务器
-配对码。网页配对并上传后，设备拉取任务、验证并写入；一次会话仅烧录一次。
+首页主按钮为 **Download From Spark**，引导用户访问
+<https://mosaico-spark.espressif.com/> 并选择适合设备的应用。没有保存 Wi-Fi
+配置时，点击主按钮先进入配网页；连接取得 IP 后自动继续下载流程。返回首页
+会取消这次续接。普通 **Wi-Fi** 入口不会自动开启下载。
+
+进入下载页面后，设备等待 Wi-Fi IP、注册并显示服务器配对码。
+网页配对并上传后，设备拉取任务、验证并写入；一次会话仅烧录一次。
 退出会请求异步安全停止，完成或失败后重新进入页面才能再次配对。
+
+Recovery 支持 Gateway Web 工作台截图，以及 USB 会话下的交互输入。
+触摸输入使用 Gateway 的 `0x1001/1` pointer RPC，在真实 LVGL 输入设备上
+处理按下、移动和抬起；TCP 会话不能通过此接口操作 Recovery 界面。
 
 ```sh
 python mosaico.py recovery-wifi --ssid SSID
@@ -118,7 +127,7 @@ bundle 放到同一目录，例如：
 /nand/system-update/partition-table.bin
 ```
 
-Recovery 首页提供 **Update from NAND**：进入后固件会异步扫描以下两种
+Recovery 首页底部提供 **NAND update**：进入后固件会异步扫描以下两种
 catalog 布局，最多列出 8 个完整 bundle；点击条目可先核对 release、组件数、总
 容量和 manifest 路径，再确认更新。
 

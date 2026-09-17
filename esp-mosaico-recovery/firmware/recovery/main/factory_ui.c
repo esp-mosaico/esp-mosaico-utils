@@ -29,6 +29,7 @@
 #define COLOR_ORANGE  lv_color_hex(0xFF4C01)
 #define COLOR_GREEN   lv_color_hex(0x2E7D32)
 #define COLOR_RED     lv_color_hex(0xC62828)
+#define SPARK_WEBSITE "https://mosaico-spark.espressif.com/"
 
 static const char *TAG = "factory_ui";
 
@@ -97,6 +98,7 @@ typedef struct {
     lv_obj_t *wifi_connection_detail;
     lv_obj_t *wifi_list;
     lv_obj_t *wifi_scan_status;
+    lv_obj_t *wifi_note;
     lv_obj_t *pairing_endpoint;
     lv_obj_t *pairing_token;
     lv_obj_t *bridge_endpoint;
@@ -131,6 +133,7 @@ typedef struct {
     uint32_t ota_job_id;
     uint16_t ota_logged_bucket;
     bool ota_was_active;
+    bool spark_download_pending;
 } factory_ui_context_t;
 
 static factory_ui_context_t s_ui;
@@ -147,8 +150,14 @@ static lv_obj_t *button_create(lv_obj_t *parent, const char *text,
     lv_obj_set_style_bg_color(button, primary ? COLOR_TEXT : COLOR_SURFACE,
                               LV_PART_MAIN);
     lv_obj_set_style_shadow_width(button, 0, LV_PART_MAIN);
+    lv_obj_set_style_pad_hor(button, 10, LV_PART_MAIN);
+    lv_obj_set_style_pad_ver(button, 6, LV_PART_MAIN);
+    lv_obj_clear_flag(button, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_t *label = label_create(button, text, &lv_font_montserrat_14,
                                    primary ? COLOR_PAPER : COLOR_TEXT);
+    lv_obj_set_width(label, lv_pct(100));
+    lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
     lv_obj_center(label);
     return button;
 }
@@ -160,6 +169,20 @@ static void show_page(factory_page_t page);
 static void page_event(lv_event_t *event)
 {
     show_page((factory_page_t)(intptr_t)lv_event_get_user_data(event));
+}
+
+static void spark_download_event(lv_event_t *event)
+{
+    (void)event;
+    factory_network_snapshot_t network = {0};
+    const bool have_network = factory_network_get_snapshot(&network) == ESP_OK;
+    if (have_network && (network.credentials_saved ||
+                         network.state == FACTORY_NETWORK_CONNECTED)) {
+        show_page(FACTORY_PAGE_BRIDGE);
+    } else {
+        s_ui.spark_download_pending = true;
+        show_page(FACTORY_PAGE_WIFI);
+    }
 }
 
 static void bridge_cancel_event(lv_event_t *event)
@@ -203,7 +226,7 @@ static void password_submit(void)
     const char *password = lv_textarea_get_text(s_ui.password_input);
     const esp_err_t err = factory_network_connect(s_ui.selected_ssid, password);
     if (err == ESP_OK) {
-        show_page(FACTORY_PAGE_READY);
+        show_page(s_ui.spark_download_pending ? FACTORY_PAGE_WIFI : FACTORY_PAGE_READY);
     } else {
         lv_label_set_text(s_ui.password_title, "Check password and try again");
         lv_obj_set_style_text_color(s_ui.password_title, COLOR_RED,
@@ -314,8 +337,8 @@ static void ready_screen_create(void)
     lv_obj_center(badge_label);
 
     lv_obj_t *arc = lv_arc_create(s_ui.ready_screen);
-    lv_obj_set_size(arc, 82, 82);
-    lv_obj_align(arc, LV_ALIGN_TOP_MID, 0, 80);
+    lv_obj_set_size(arc, 72, 72);
+    lv_obj_align(arc, LV_ALIGN_TOP_MID, 0, 72);
     lv_arc_set_rotation(arc, 120);
     lv_arc_set_bg_angles(arc, 0, 300);
     lv_arc_set_range(arc, 0, 100);
@@ -333,17 +356,17 @@ static void ready_screen_create(void)
 
     lv_obj_t *title = label_create(s_ui.ready_screen, "Recovery Mode",
                                    &lv_font_montserrat_32, COLOR_TEXT);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 177);
+    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 152);
     lv_obj_t *subtitle = label_create(
         s_ui.ready_screen, "Firmware update service is ready",
         &lv_font_montserrat_14, lv_color_hex(0x383B40));
-    lv_obj_align(subtitle, LV_ALIGN_TOP_MID, 0, 217);
+    lv_obj_align(subtitle, LV_ALIGN_TOP_MID, 0, 194);
 
     lv_obj_t *panel = box_create(s_ui.ready_screen, 360, 90,
                                  COLOR_SURFACE, 18);
     lv_obj_set_style_border_width(panel, 1, LV_PART_MAIN);
     lv_obj_set_style_border_color(panel, COLOR_LINE, LV_PART_MAIN);
-    lv_obj_align(panel, LV_ALIGN_TOP_MID, 0, 250);
+    lv_obj_align(panel, LV_ALIGN_TOP_MID, 0, 222);
     status_row_create(panel, 0, "USB", &s_ui.usb_dot, &s_ui.usb_value);
     status_row_create(panel, 45, "Network", &s_ui.network_dot,
                       &s_ui.network_value);
@@ -354,28 +377,33 @@ static void ready_screen_create(void)
     lv_obj_set_width(s_ui.address, 400);
     lv_obj_set_style_text_align(s_ui.address, LV_TEXT_ALIGN_CENTER,
                                 LV_PART_MAIN);
-    lv_obj_align(s_ui.address, LV_ALIGN_TOP_MID, 0, 351);
+    lv_obj_align(s_ui.address, LV_ALIGN_TOP_MID, 0, 322);
 
-    lv_obj_t *nand = button_create(s_ui.ready_screen, "Update from NAND", 360,
-                                   40, true);
-    lv_obj_align(nand, LV_ALIGN_TOP_MID, 0, 380);
-    lv_obj_add_event_cb(nand, nand_open_event, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *spark_hint = label_create(
+        s_ui.ready_screen, "Visit " SPARK_WEBSITE "\nChoose an app for your device.",
+        &lv_font_montserrat_12, COLOR_MUTED);
+    lv_obj_set_width(spark_hint, 400);
+    lv_obj_set_style_text_align(spark_hint, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+    lv_obj_align(spark_hint, LV_ALIGN_TOP_MID, 0, 344);
 
-    lv_obj_t *settings = button_create(s_ui.ready_screen, "Wi-Fi", 112, 36,
+    lv_obj_t *spark = button_create(s_ui.ready_screen, "Download From Spark", 360,
+                                    42, true);
+    lv_obj_align(spark, LV_ALIGN_TOP_MID, 0, 380);
+    lv_obj_add_event_cb(spark, spark_download_event, LV_EVENT_CLICKED, NULL);
+
+    lv_obj_t *settings = button_create(s_ui.ready_screen, "Wi-Fi", 84, 38,
                                        false);
-    lv_obj_align(settings, LV_ALIGN_TOP_LEFT, 60, 428);
+    lv_obj_align(settings, LV_ALIGN_TOP_LEFT, 60, 430);
     lv_obj_add_event_cb(settings, page_event, LV_EVENT_CLICKED,
                         (void *)(intptr_t)FACTORY_PAGE_WIFI);
     lv_obj_t *pairing = button_create(s_ui.ready_screen, "TCP pairing", 112,
-                                      36, false);
-    lv_obj_align(pairing, LV_ALIGN_TOP_LEFT, 184, 428);
+                                      38, false);
+    lv_obj_align(pairing, LV_ALIGN_TOP_LEFT, 156, 430);
     lv_obj_add_event_cb(pairing, page_event, LV_EVENT_CLICKED,
                         (void *)(intptr_t)FACTORY_PAGE_PAIRING);
-    lv_obj_t *bridge = button_create(s_ui.ready_screen, "Bridge download", 112,
-                                          36, false);
-    lv_obj_align(bridge, LV_ALIGN_TOP_LEFT, 308, 428);
-    lv_obj_add_event_cb(bridge, page_event, LV_EVENT_CLICKED,
-                        (void *)(intptr_t)FACTORY_PAGE_BRIDGE);
+    lv_obj_t *nand = button_create(s_ui.ready_screen, "NAND update", 140, 38, false);
+    lv_obj_align(nand, LV_ALIGN_TOP_LEFT, 280, 430);
+    lv_obj_add_event_cb(nand, nand_open_event, LV_EVENT_CLICKED, NULL);
 }
 
 static void pairing_screen_create(void)
@@ -456,18 +484,18 @@ static void bridge_screen_create(void)
 {
     s_ui.bridge_screen = lv_obj_create(NULL);
     screen_prepare(s_ui.bridge_screen);
-    header_create(s_ui.bridge_screen, "RECOVERY", "Bridge download",
+    header_create(s_ui.bridge_screen, "RECOVERY", "Download From Spark",
                   true);
 
     lv_obj_t *endpoint_card = box_create(s_ui.bridge_screen, 368, 76,
                                          COLOR_TEXT, 18);
     lv_obj_align(endpoint_card, LV_ALIGN_TOP_MID, 0, 88);
-    lv_obj_t *endpoint_title = label_create(endpoint_card, "BRIDGE WEBSITE",
+    lv_obj_t *endpoint_title = label_create(endpoint_card, "SPARK WEBSITE",
                                             &lv_font_montserrat_12,
                                             COLOR_ORANGE);
     lv_obj_align(endpoint_title, LV_ALIGN_TOP_LEFT, 18, 13);
     s_ui.bridge_endpoint = label_create(
-        endpoint_card, "Connect Wi-Fi first", &lv_font_montserrat_14,
+        endpoint_card, SPARK_WEBSITE, &lv_font_montserrat_14,
         COLOR_PAPER);
     lv_obj_set_width(s_ui.bridge_endpoint, 332);
     lv_obj_set_style_text_align(s_ui.bridge_endpoint,
@@ -488,7 +516,7 @@ static void bridge_screen_create(void)
     lv_obj_set_style_text_letter_space(s_ui.bridge_code, 1, LV_PART_MAIN);
     lv_obj_align(s_ui.bridge_code, LV_ALIGN_TOP_MID, 0, 17);
     s_ui.bridge_code_detail = label_create(
-        code_card, "Connecting to Bridge", &lv_font_montserrat_12, COLOR_MUTED);
+        code_card, "Connecting to Spark", &lv_font_montserrat_12, COLOR_MUTED);
     lv_obj_set_width(s_ui.bridge_code_detail, 330);
     lv_obj_set_style_text_align(s_ui.bridge_code_detail,
                                 LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
@@ -496,7 +524,8 @@ static void bridge_screen_create(void)
 
     lv_obj_t *warning = label_create(
         s_ui.bridge_screen,
-        "Open the Bridge website and enter this code.\nOne pairing allows one flash.",
+        "Visit Spark and choose an app for your device.\n"
+        "Enter this pairing code to download.\nOne pairing allows one flash.",
         &lv_font_montserrat_12, COLOR_MUTED);
     lv_obj_set_width(warning, 368);
     lv_obj_set_style_text_align(warning, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
@@ -514,8 +543,6 @@ static void bridge_screen_update(const factory_network_snapshot_t *network)
     (void)network;
     iris_bridge_snapshot_t snapshot;
     iris_bridge_get_snapshot(&snapshot);
-    lv_label_set_text(s_ui.bridge_endpoint, snapshot.server_url[0] ?
-                      snapshot.server_url : "Configure Bridge URL and board ID");
     lv_label_set_text(s_ui.bridge_code, snapshot.code[0] ? snapshot.code : "----------");
     if (strcmp(snapshot.state, "NOT_CONFIGURED") == 0) {
         lv_label_set_text(s_ui.bridge_code_detail, "Bridge URL or board ID is not configured");
@@ -583,10 +610,10 @@ static void wifi_screen_create(void)
     lv_obj_set_style_bg_opa(s_ui.wifi_list, LV_OPA_TRANSP, LV_PART_MAIN);
     lv_obj_set_style_border_width(s_ui.wifi_list, 0, LV_PART_MAIN);
     lv_obj_set_scrollbar_mode(s_ui.wifi_list, LV_SCROLLBAR_MODE_AUTO);
-    lv_obj_t *usb_note = label_create(
+    s_ui.wifi_note = label_create(
         s_ui.wifi_screen, "USB OTA remains available while offline",
         &lv_font_montserrat_12, COLOR_MUTED);
-    lv_obj_align(usb_note, LV_ALIGN_BOTTOM_MID, 0, -20);
+    lv_obj_align(s_ui.wifi_note, LV_ALIGN_BOTTOM_MID, 0, -20);
 }
 
 static void password_screen_create(void)
@@ -887,6 +914,10 @@ static void result_screen_create(void)
 static void show_page(factory_page_t page)
 {
     const factory_page_t previous = s_ui.page;
+    /* Leaving setup cancels its continuation, including Back and external OTA. */
+    if (page != FACTORY_PAGE_WIFI && page != FACTORY_PAGE_PASSWORD) {
+        s_ui.spark_download_pending = false;
+    }
     if (previous == FACTORY_PAGE_BRIDGE && page != FACTORY_PAGE_BRIDGE &&
         page != FACTORY_PAGE_UPDATE && page != FACTORY_PAGE_RESULT) {
         iris_bridge_stop();
@@ -898,6 +929,9 @@ static void show_page(factory_page_t page)
     lv_obj_t *screen = s_ui.ready_screen;
     if (page == FACTORY_PAGE_WIFI) {
         screen = s_ui.wifi_screen;
+        lv_label_set_text(s_ui.wifi_note, s_ui.spark_download_pending ?
+                          "Connect Wi-Fi to continue to Spark" :
+                          "USB OTA remains available while offline");
         (void)factory_network_request_scan();
     } else if (page == FACTORY_PAGE_PAIRING) {
         screen = s_ui.pairing_screen;
@@ -1131,6 +1165,10 @@ static void network_ui_update(const factory_network_snapshot_t *network)
     if (network->scan_generation != s_ui.scan_generation) {
         s_ui.scan_generation = network->scan_generation;
         wifi_list_rebuild(network);
+    }
+    if (s_ui.spark_download_pending && s_ui.page == FACTORY_PAGE_WIFI &&
+        network->state == FACTORY_NETWORK_CONNECTED && network->ip[0] != '\0') {
+        show_page(FACTORY_PAGE_BRIDGE);
     }
 }
 

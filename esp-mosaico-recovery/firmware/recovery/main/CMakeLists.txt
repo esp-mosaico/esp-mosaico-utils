@@ -9,6 +9,7 @@ idf_component_register(
         "factory_system_metadata.c"
         "factory_system_update.c"
         "factory_ui.c"
+        "factory_ui_input.c"
         "recovery_ota_support.c"
         "iris_screen_mirror.c"
     INCLUDE_DIRS "."
