@@ -21,7 +21,7 @@ def test_recovery_ui_layout_and_wifi_continuation(tmp_path):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text('#include "sdk.h"\n')
     (tmp_path / "lv_conf.h").write_text("\n".join([
-        "#pragma once", "#define LV_COLOR_DEPTH 16", "#define LV_DPI_DEF 60",
+        "#pragma once", "#define LV_CONF_H", "#define LV_COLOR_DEPTH 16", "#define LV_DPI_DEF 60",
         "#define LV_USE_STDLIB_MALLOC LV_STDLIB_CLIB", "#define LV_USE_SNAPSHOT 1",
         *["#define LV_FONT_MONTSERRAT_{} 1".format(size) for size in (12, 14, 22, 32, 48)],
         "",

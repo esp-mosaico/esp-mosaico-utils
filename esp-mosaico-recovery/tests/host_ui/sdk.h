@@ -5,6 +5,9 @@
 #include <string.h>
 #include "lvgl.h"
 
+/* ESP-IDF provides strlcpy; older Linux libc versions do not. */
+#define strlcpy lv_strlcpy
+
 typedef int esp_err_t;
 #define ESP_OK 0
 #define ESP_FAIL -1
