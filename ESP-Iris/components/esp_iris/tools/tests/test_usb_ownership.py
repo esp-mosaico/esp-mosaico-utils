@@ -182,7 +182,10 @@ def test_silent_endpoint_is_closed_after_hello_deadline(usb):
         try:
             with patch.object(SerialLink, "open", return_value=link):
                 await hub.add_usb(usb.device)
-                await until(lambda: link.closed)
+                # Link closure precedes supervisor cleanup and the retry state update.
+                await until(
+                    lambda: link.closed and hub.list_endpoints()[0]["state"] == "retrying"
+                )
                 assert not hub.list_devices()
                 assert hub.list_endpoints()[0]["state"] == "retrying"
         finally:
