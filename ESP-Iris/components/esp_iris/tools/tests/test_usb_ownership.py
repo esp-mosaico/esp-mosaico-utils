@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -192,8 +193,8 @@ def test_silent_endpoint_is_closed_after_hello_deadline(usb):
 
 def test_second_gateway_cannot_mutate_active_operations(tmp_path, usb):
     async def scenario():
-        state = tmp_path / "state"
-        lock = EndpointLock("gateway-state:" + str(state.resolve()))
+        state = tmp_path / "State"
+        lock = EndpointLock("gateway-state:" + os.path.normcase(str(state.resolve())))
         lock.acquire()
         first = GatewayStore(state)
         try:
@@ -212,7 +213,7 @@ def test_second_gateway_cannot_mutate_active_operations(tmp_path, usb):
                 ["web", "--state-dir", str(state), "--demo"]
             )
             with pytest.raises(RuntimeError, match="owned by another"):
-                await _web(args)
+                await asyncio.wait_for(_web(args), timeout=2)
             assert first.operation("ota")["status"] == "transferring"
         finally:
             first.close()
