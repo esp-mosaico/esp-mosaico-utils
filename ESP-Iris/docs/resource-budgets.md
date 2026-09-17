@@ -52,3 +52,10 @@ bootloader and partition table, and checks the IDF path against the build
 description. It records hashes of tracked and untracked, non-ignored source
 files as well as revision/dirty status. Indexing existing artifacts is not a
 substitute for a successful build of that source snapshot or for hardware tests.
+
+The bootloader-logo CI repair separates OTA request handling from the service
+registry, executor dispatch/response delivery from worker lifecycle, and the
+Gateway device-info model from session transport. Existing ceilings stay in
+place; the extracted modules have explicit 400, 200 and 100 line ceilings,
+respectively. C include fragments preserve the existing translation unit and
+private state, and `session.DeviceInfo` remains available to existing callers.
