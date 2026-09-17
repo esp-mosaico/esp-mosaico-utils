@@ -189,7 +189,7 @@ def test_quiesce_endpoint_without_hello_identity_releases_physical_link() -> Non
             if hub.list_endpoints()[0]["state"] == "handshaking":
                 break
             await asyncio.sleep(0.002)
-        detached = await hub.quiesce_endpoint("/dev/serial/by-path/test-recovery")
+        detached = await hub.quiesce_endpoint(HandshakingLink.endpoint)
         assert detached["state"] == "maintenance_detached"
         assert detached["device_id"] is None
         assert HandshakingLink.endpoint in hub._locks

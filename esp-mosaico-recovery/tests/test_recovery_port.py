@@ -114,6 +114,27 @@ def _check_independent_recovery_holds_both_leases_and_verifies_original_device(t
 
 
 class RecoveryPortTests(unittest.TestCase):
+    def test_explicit_port_with_multiple_boards(self):
+        ports = [SimpleNamespace(device=name, vid=0x303A, pid=0x1001)
+                 for name in ("COM14", "COM15")]
+        with mock.patch("serial.tools.list_ports.comports", return_value=ports):
+            assert serial_jtag_candidate("COM15")["path"] == "COM15"
+
+    def test_unavailable_device_id_never_selects_or_writes_other_rom(self):
+        arguments = SimpleNamespace(model=None, source="reviewed", device_id="missing-a",
+                                    gateway_profile=None, timeout=180, dry_run=False)
+        context = mock.Mock(workspace=WORKSPACE, repository=REPOSITORY)
+        with mock.patch.object(commands, "load_bundle", return_value={"version": "0.1"}), \
+                mock.patch.object(commands, "resolve_idf_path", return_value=Path("/idf")), \
+                mock.patch.object(commands, "ensure_gateway"), \
+                mock.patch.object(commands, "connected_devices", return_value=[]), \
+                mock.patch.object(commands, "provisioning_candidate") as candidate, \
+                mock.patch.object(commands, "run_idf_target") as write:
+            with self.assertRaisesRegex(DeviceError, "refusing to select another"):
+                commands.recover(arguments, context)
+            candidate.assert_not_called()
+            write.assert_not_called()
+
     def test_identity_and_parser(self):
         _check_explicit_port_records_usb_identity()
 
@@ -127,7 +148,7 @@ def _port_test(ports, requested, error):
 for _name, _ports, _requested, _error in [
     ("missing", [], "COM14", SelectionError),
     ("ambiguous", [SimpleNamespace(device="COM14", vid=0x303A, pid=0x1001),
-                   SimpleNamespace(device="COM15", vid=0x303A, pid=0x1001)], "COM14", SelectionError),
+                   SimpleNamespace(device="COM14", vid=0x303A, pid=0x1001)], "COM14", SelectionError),
     ("wrong_path", [SimpleNamespace(device="COM14", vid=0x303A, pid=0x1001)], "COM15", DeviceError),
     ("wrong_pid", [SimpleNamespace(device="COM14", vid=0x303A, pid=0x1002)], "COM14", SelectionError),
 ]:

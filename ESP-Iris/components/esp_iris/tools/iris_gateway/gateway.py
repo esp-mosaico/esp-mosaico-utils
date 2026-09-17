@@ -57,6 +57,12 @@ from .operations import (
     OperationManager,
     OperationOutcomeUnknown,
 )
+from .ota_validation import (
+    DEFAULT_OTA_VALIDATION_MODE,
+    OTA_VALIDATION_MODES,
+    _require_ota_validation_mode,
+    _validate_ota_identity,
+)
 from .reconciliation import health_timeout, reconcile_operation, reconciliation_records
 from .security import Actor, AuthManager
 from .store import GatewayStore
@@ -69,8 +75,6 @@ from .system_update_workflow import run_system_update
 LOG_PATTERN = re.compile(r"^(?P<level>[EWIDV])\s+\((?P<stamp>\d+)\)\s+(?P<tag>[^:]+):\s?(?P<message>.*)$")
 CONSOLE_METHOD_NAME = "console.execute"
 CONSOLE_LINE_MAX_BYTES = 255
-OTA_VALIDATION_MODES = ("elf_sha256", "version")
-DEFAULT_OTA_VALIDATION_MODE = "elf_sha256"
 GATEWAY_CLIENT_MAX_SIZE = 1024 * 1024 * 1024
 GATEWAY_API = {"major": 1, "minor": 1}
 GATEWAY_CAPABILITIES = [
@@ -85,53 +89,6 @@ ACTIVE_MAINTENANCE_STATES = {
     "verifying",
     "expired_quarantined",
 }
-
-
-def _require_ota_validation_mode(value: str) -> str:
-    if value not in OTA_VALIDATION_MODES:
-        choices = ", ".join(OTA_VALIDATION_MODES)
-        raise ValueError(f"OTA validation mode must be one of: {choices}")
-    return value
-
-
-def _validate_ota_identity(
-    status: dict[str, Any],
-    metadata: dict[str, Any],
-    validation_mode: str,
-) -> dict[str, str]:
-    validation_mode = _require_ota_validation_mode(validation_mode)
-    if status.get("project_name") != metadata.get("project_name"):
-        raise RuntimeError("device reconnected with an unexpected firmware project")
-
-    if validation_mode == "elf_sha256":
-        expected_field = "elf_sha256"
-        actual_field = "firmware_sha256"
-        expected = str(metadata.get(expected_field, "")).lower()
-        actual = str(status.get(actual_field, "")).lower()
-        label = "firmware ELF SHA-256"
-    else:
-        expected_field = "version"
-        actual_field = "app_version"
-        expected = str(metadata.get(expected_field, ""))
-        actual = str(status.get(actual_field, ""))
-        label = "firmware version"
-
-    if not expected:
-        raise RuntimeError(f"OTA artifact is missing the expected {label}")
-    if not actual:
-        raise OperationOutcomeUnknown(f"device did not report its {label}; acceptance remains unknown")
-    if actual != expected:
-        raise RuntimeError(
-            f"device reconnected with an unexpected {label}: "
-            f"expected {expected}, got {actual}"
-        )
-    return {
-        "mode": validation_mode,
-        "expected_field": expected_field,
-        "actual_field": actual_field,
-        "expected": expected,
-        "actual": actual,
-    }
 
 
 class GatewayService:
@@ -475,7 +432,7 @@ class GatewayService:
         except BaseException:
             if endpoint is not None:
                 with contextlib.suppress(Exception):
-                    await self.device_hub.resume_maintenance_endpoint(str(endpoint["endpoint"]))
+                    await self.device_hub.resume_maintenance_endpoint(str(endpoint["endpoint"]), restore_only=True)
             self.operations.release_maintenance(device_id)
             raise
 
@@ -585,7 +542,7 @@ class GatewayService:
             if endpoint is not None:
                 with contextlib.suppress(Exception):
                     await self.device_hub.resume_maintenance_endpoint(
-                        str(endpoint["endpoint"])
+                        str(endpoint["endpoint"]), restore_only=True
                     )
             self.operations.release_maintenance(gate_key)
             raise
@@ -630,10 +587,12 @@ class GatewayService:
         audit_device_id = expected_device_id or gate_key
         observation_retries = 0
         last_observation_error: str | None = None
+        reattached = False
         try:
             self.store.update_maintenance_lease(lease_id, state="reattaching")
-            await self.device_hub.resume_maintenance_endpoint(endpoint)
             if abort:
+                await self.device_hub.resume_maintenance_endpoint(endpoint, restore_only=True)
+                reattached = True
                 completed = self.store.update_maintenance_lease(
                     lease_id, state="aborted", finished_ns=time.time_ns()
                 )
@@ -645,6 +604,8 @@ class GatewayService:
                 )
                 return self._lease_public(completed)
 
+            await self.device_hub.resume_maintenance_endpoint(endpoint)
+            reattached = True
             self.store.update_maintenance_lease(lease_id, state="verifying")
             deadline = asyncio.get_running_loop().time() + max(0.1, timeout)
             last_status: dict[str, Any] | None = None
@@ -722,22 +683,23 @@ class GatewayService:
         except BaseException as exc:
             self.store.update_maintenance_lease(
                 lease_id,
-                state="verification_failed",
+                state="verification_failed" if reattached else "expired_quarantined",
                 evidence_json={**lease.get("evidence", {}),
                                "observation_retries": observation_retries,
                                "last_observation_error": last_observation_error},
-                finished_ns=time.time_ns(),
+                finished_ns=time.time_ns() if reattached else None,
                 error=str(exc),
             )
             self.store.add_audit(
                 "lease",
                 lease_id,
-                "maintenance.verification_failed",
+                "maintenance.verification_failed" if reattached else "maintenance.quarantined",
                 {"device_id": audit_device_id, "error": str(exc)},
             )
             raise
         finally:
-            self.operations.release_maintenance(gate_key)
+            if reattached:
+                self.operations.release_maintenance(gate_key)
 
     async def closed_loop_ota(
         self,

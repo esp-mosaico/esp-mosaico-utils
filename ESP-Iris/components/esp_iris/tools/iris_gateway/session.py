@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import hashlib
 import hmac
+import logging
 import secrets
 import struct
 import time
@@ -41,6 +42,7 @@ EventCallback = Callable[[Dict[str, Any]], Awaitable[None]]
 ProgressCallback = Callable[[Dict[str, Any]], Awaitable[None]]
 MediaCallback = Callable[[Dict[str, Any]], Awaitable[None]]
 ReadyCallback = Callable[["DeviceSession"], Awaitable[None]]
+_LOGGER = logging.getLogger(__name__)
 
 
 async def _discard_media(event: dict[str, Any]) -> None:
@@ -170,9 +172,10 @@ class DeviceSession:
                     await self._grant_media_credit(channel, amount)
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001 - any background write failure must close the session
+            except Exception:
                 # Wake the supervisor/pending requests on a failed write;
                 # do not leave an unobserved background task exception.
+                _LOGGER.exception("ESP-Iris credit replenishment failed on %s", self.link.endpoint)
                 await self.close()
             finally:
                 self._credit_tasks.pop(channel, None)

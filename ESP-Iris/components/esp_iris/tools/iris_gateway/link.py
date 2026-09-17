@@ -195,27 +195,39 @@ class EndpointLock:
             self._file.write(b"\0")
             self._file.flush()
 
-    def acquire(self) -> None:
+    def _owner_message(self) -> str:
+        try:
+            self._file.seek(0)
+            owner = self._file.read(512).decode("utf-8", errors="replace").strip()
+        except OSError:
+            # Windows byte-range locks can also prohibit reading this byte.
+            owner = "owner metadata unavailable"
+        return f"endpoint is owned by another ESP-Iris instance ({owner}; lock={self.path})"
+
+    def acquire(self, *, blocking: bool = False) -> None:
         if sys.platform == "win32":
             import msvcrt
 
             self._file.seek(0)
             try:
                 msvcrt.locking(  # type: ignore[attr-defined]
-                    self._file.fileno(), msvcrt.LK_NBLCK, 1  # type: ignore[attr-defined]
+                    self._file.fileno(),
+                    msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK,  # type: ignore[attr-defined]
+                    1,
                 )
             except OSError as exc:
                 raise RuntimeError(
-                    "endpoint is owned by another ESP-Iris instance"
+                    self._owner_message()
                 ) from exc
         else:
             import fcntl
 
             try:
-                fcntl.flock(self._file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                flags = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
+                fcntl.flock(self._file.fileno(), flags)
             except OSError as exc:
                 raise RuntimeError(
-                    "endpoint is owned by another ESP-Iris instance"
+                    self._owner_message()
                 ) from exc
         self._file.seek(0)
         self._file.truncate()
