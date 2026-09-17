@@ -22,8 +22,8 @@
     "recovery": {
       "file": "factory.bin",
       "offset": "0x20000",
-      "sha256": "5e5112526d8f9672950faeecd336d1cc8a483f8a0a2ed08cd8bbb4fb7cae45a6",
-      "size": 1728480
+      "sha256": "9b4eb245ee2851ceba8810dbda84de4df498270d5c507638bf1cb05525810915",
+      "size": 1730592
     }
   },
   "initial_boot": {
@@ -50,7 +50,7 @@
     "secure_boot": false
   },
   "source": {
-    "commit": "17c4e49a2f8630f8430f157a110bf32ee4878118",
+    "commit": "a102c653b160a3e74af599ec159d597040e34171",
     "dirty": false
   },
   "target": "esp32s31",

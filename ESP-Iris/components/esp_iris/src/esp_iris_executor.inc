@@ -5,6 +5,41 @@
 #define CONFIG_ESP_IRIS_SERVICE_IDLE_TIMEOUT_MS 1000
 #endif
 
+
+#define IRIS_EXEC_MAX(a, b) ((a) > (b) ? (a) : (b))
+#define IRIS_EXEC_RPC_BYTES (IRIS_RPC_HEADER_SIZE + CONFIG_ESP_IRIS_RPC_BODY_BYTES)
+#if CONFIG_ESP_IRIS_OTA
+#define IRIS_EXEC_OTA_BYTES IRIS_EXEC_MAX(104U, 4U + CONFIG_ESP_IRIS_OTA_CHUNK_BYTES)
+#else
+#define IRIS_EXEC_OTA_BYTES 0U
+#endif
+#if CONFIG_ESP_IRIS_SYSTEM_UPDATE
+#define IRIS_EXEC_SYSTEM_BYTES IRIS_EXEC_MAX( \
+    56U + CONFIG_ESP_IRIS_SYSTEM_UPDATE_MANIFEST_BYTES + \
+        CONFIG_ESP_IRIS_SYSTEM_UPDATE_SIGNATURE_BYTES, \
+    24U + CONFIG_ESP_IRIS_SYSTEM_UPDATE_CHUNK_BYTES)
+#else
+#define IRIS_EXEC_SYSTEM_BYTES 0U
+#endif
+#define IRIS_EXEC_REQUEST_BYTES IRIS_EXEC_MAX(IRIS_EXEC_RPC_BYTES, \
+    IRIS_EXEC_MAX(IRIS_EXEC_OTA_BYTES, IRIS_EXEC_SYSTEM_BYTES))
+#define IRIS_EXEC_RESULT_BYTES (IRIS_RPC_RESPONSE_HEADER_SIZE + CONFIG_ESP_IRIS_RPC_BODY_BYTES)
+_Static_assert(IRIS_EXEC_REQUEST_BYTES <= ESP_IRIS_MAX_PAYLOAD_SIZE,
+               "slow service request exceeds protocol capacity");
+
+typedef struct {
+    uint32_t session_id;
+    iris_service_call_t result;
+    uint8_t request[IRIS_EXEC_REQUEST_BYTES];
+} iris_executor_work_t;
+
+static void executor_work_free(iris_executor_work_t *work)
+{
+    if (work == NULL) return;
+    free(work->result.payload);
+    free(work);
+}
+
 enum { IRIS_EXEC_IDLE, IRIS_EXEC_QUEUED, IRIS_EXEC_RUNNING, IRIS_EXEC_DONE, IRIS_EXEC_RESERVED, IRIS_EXEC_DRAINING };
 static struct {
     atomic_int stage;
@@ -12,10 +47,8 @@ static struct {
     atomic_bool deinit;
     atomic_bool ota_cancel;
     TaskHandle_t task;
-    iris_runtime_t *work;
+    iris_executor_work_t *work;
     esp_iris_wire_header_t header;
-    iris_decoded_frame_t completion;
-    bool completion_decoded;
     uint64_t received_us;
     esp_iris_ota_status_t ota_status;
     uint8_t ota_snapshot[25];
@@ -45,11 +78,22 @@ static void executor_request_ota_cancel(void)
 static uint32_t executor_allocated_bytes(void)
 {
     taskENTER_CRITICAL(&s_services_lock);
+#if !CONFIG_ESP_IRIS_SERVICE_CONTEXT_PSRAM
     const bool has_work = s_executor.work != NULL;
+#endif
     const bool has_task = s_executor.task != NULL;
     taskEXIT_CRITICAL(&s_services_lock);
-    return (has_work ? sizeof(*s_executor.work) : 0) +
-        (has_task ? CONFIG_ESP_IRIS_SERVICE_STACK_SIZE : 0);
+#if CONFIG_ESP_IRIS_SERVICE_CONTEXT_PSRAM
+    const uint32_t work_bytes = 0;
+#else
+    const uint32_t work_bytes = has_work ? sizeof(*s_executor.work) : 0;
+#endif
+    return work_bytes +
+        (has_task ? CONFIG_ESP_IRIS_SERVICE_STACK_SIZE : 0)
+#if !CONFIG_ESP_IRIS_SERVICE_CONTEXT_PSRAM && !CONFIG_ESP_IRIS_RPC_RESPONSE_PSRAM
+        + (s_executor.work != NULL ? IRIS_EXEC_RESULT_BYTES : 0)
+#endif
+        ;
 }
 
 static bool executor_ota_status(esp_iris_ota_status_t *out)
@@ -74,8 +118,8 @@ static void executor_snapshot(void)
     esp_iris_ota_status_t status = {0};
     iris_service_state_t *state = service_state(false);
     size_t label_size = 0;
-    if (valid_state(state)) {
-        iris_ota_t *ota = &state->ota;
+    if (valid_state(state) && state->ota != NULL) {
+        iris_ota_t *ota = state->ota;
         esp_iris_job_info_t info = {0};
         if (ota->job != NULL) {
             (void)esp_iris_job_get_info(ota->job, &info);
@@ -109,22 +153,22 @@ static void executor_run_one(void)
     if (!atomic_compare_exchange_strong(&s_executor.stage, &queued, IRIS_EXEC_RUNNING)) {
         return;
     }
-    iris_runtime_t *work = s_executor.work;
-    iris_decoded_frame_t frame = {.header = s_executor.header, .payload = work->rx_wire};
+    iris_executor_work_t *work = s_executor.work;
+    iris_decoded_frame_t frame = {.header = s_executor.header, .payload = work->request};
     if (!atomic_load(&s_executor.abandoned)) {
         if (frame.header.channel == ESP_IRIS_CHANNEL_CONTROL) {
-            if (!handle_rpc(work, &frame, s_executor.received_us)) {
-                (void)handle_job(work, &frame);
+            if (!handle_rpc(&work->result, &frame, s_executor.received_us)) {
+                (void)handle_job(&work->result, &frame);
             }
         } else if (frame.header.channel == ESP_IRIS_CHANNEL_SYSTEM_UPDATE) {
             /* Inventory shares the channel, but has a separate read-only provider. */
-            if (!iris_system_inventory_handle_frame(work, &frame) &&
-                !iris_system_update_handle_frame(work, &frame)) {
-                (void)iris_queue_error(work, frame.header.request_id,
+            if (!iris_system_inventory_handle_frame(&work->result, &frame) &&
+                !iris_system_update_handle_frame(&work->result, &frame)) {
+                (void)iris_service_error(&work->result, frame.header.request_id,
                     ESP_ERR_NOT_SUPPORTED, frame.header.channel, frame.header.type);
             }
         } else {
-            (void)handle_ota(work, &frame);
+            (void)handle_ota(&work->result, &frame);
         }
     }
     executor_snapshot();
@@ -160,14 +204,9 @@ static void executor_run_one(void)
         if (system_cancel) iris_system_update_poll_cancel();
         if (ota_cancel && valid_state(state)) ota_abort(state, ESP_ERR_INVALID_STATE);
         if (abandoned) {
-            services_session_end_now(work);
-            if (deinit) services_deinit_now(work);
-            state = service_state(false);
-            if (valid_state(state)) {
-                state->rpc_request_seen = false;
-                state->last_rpc_request_id = 0;
-            }
-            work->tx_wire_length = 0;
+            services_session_end_now();
+            if (deinit) services_deinit_now();
+            work->result.ready = false;
             cleaned = true;
         }
         executor_snapshot();
@@ -177,22 +216,27 @@ static void executor_run_one(void)
 
 static bool executor_reap_idle(TaskHandle_t task)
 {
-    iris_runtime_t *work = NULL;
+#if CONFIG_ESP_IRIS_SERVICE_PERSISTENT
+    /* Never publish a vacant task slot before FreeRTOS reclaims its stack.
+     * Retaining the single instance also bounds rapid stop/start residency. */
+    (void)task;
+    return false;
+#else
+    iris_executor_work_t *work = NULL;
     taskENTER_CRITICAL(&s_services_lock);
     if (atomic_load(&s_executor.stage) == IRIS_EXEC_IDLE &&
             s_executor.task == task) {
         work = s_executor.work;
         s_executor.work = NULL;
         s_executor.task = NULL;
-        s_executor.completion_decoded = false;
     }
     taskEXIT_CRITICAL(&s_services_lock);
     if (work == NULL) {
         return false;
     }
-    iris_runtime_wire_deinit(work);
-    free(work);
+    executor_work_free(work);
     return true;
+#endif
 }
 
 static void executor_worker(void *argument)
@@ -216,13 +260,24 @@ static esp_err_t executor_ensure(void)
 {
     bool work_created = false;
     if (s_executor.work == NULL) {
-        s_executor.work = heap_caps_calloc(1, sizeof(*s_executor.work), MALLOC_CAP_INTERNAL);
+        s_executor.work = heap_caps_calloc(1, sizeof(*s_executor.work),
+#if CONFIG_ESP_IRIS_SERVICE_CONTEXT_PSRAM
+                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
+                MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+#endif
         if (s_executor.work == NULL) return ESP_ERR_NO_MEM;
-        const esp_err_t wire_err = iris_runtime_wire_init(s_executor.work);
-        if (wire_err != ESP_OK) {
+        s_executor.work->result.capacity = IRIS_EXEC_RESULT_BYTES;
+        s_executor.work->result.payload = heap_caps_malloc(IRIS_EXEC_RESULT_BYTES,
+#if CONFIG_ESP_IRIS_SERVICE_CONTEXT_PSRAM || CONFIG_ESP_IRIS_RPC_RESPONSE_PSRAM
+                MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
+                MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+#endif
+        if (s_executor.work->result.payload == NULL) {
             free(s_executor.work);
             s_executor.work = NULL;
-            return wire_err;
+            return ESP_ERR_NO_MEM;
         }
         work_created = true;
     }
@@ -230,8 +285,7 @@ static esp_err_t executor_ensure(void)
         xTaskCreate(executor_worker, "iris-service", CONFIG_ESP_IRIS_SERVICE_STACK_SIZE,
                     NULL, CONFIG_ESP_IRIS_TASK_PRIORITY, &s_executor.task) != pdPASS) {
         if (work_created) {
-            iris_runtime_wire_deinit(s_executor.work);
-            free(s_executor.work);
+            executor_work_free(s_executor.work);
             s_executor.work = NULL;
         }
         return ESP_ERR_NO_MEM;
@@ -259,164 +313,14 @@ static bool executor_abandon(iris_runtime_t *runtime, bool deinit)
 
 void iris_services_deinit(iris_runtime_t *runtime)
 {
-    if (!executor_abandon(runtime, true)) services_deinit_now(runtime);
+    service_session_release(service_state(false));
+    if (!executor_abandon(runtime, true)) services_deinit_now();
 }
 
 void iris_services_session_end(iris_runtime_t *runtime)
 {
-    if (!executor_abandon(runtime, false)) services_session_end_now(runtime);
+    service_session_release(service_state(false));
+    if (!executor_abandon(runtime, false)) services_session_end_now();
 }
 
-static bool executor_dispatch(iris_runtime_t *runtime,
-                              const iris_decoded_frame_t *frame,
-                              uint64_t received_us)
-{
-    const esp_iris_wire_header_t *h = &frame->header;
-    const bool rpc = h->channel == ESP_IRIS_CHANNEL_CONTROL && h->type == ESP_IRIS_CONTROL_REQUEST;
-    const bool cancel = h->channel == ESP_IRIS_CHANNEL_CONTROL && h->type == ESP_IRIS_CONTROL_CANCEL;
-    const bool ota = h->channel == ESP_IRIS_CHANNEL_OTA;
-    const bool system_update = h->channel == ESP_IRIS_CHANNEL_SYSTEM_UPDATE;
-    const bool busy = executor_busy();
-    if (system_update && h->type == ESP_IRIS_SYSTEM_UPDATE_STATUS) {
-        return iris_system_update_handle_frame(runtime, frame);
-    }
-    if (busy) {
-        if (system_update && h->type == ESP_IRIS_SYSTEM_UPDATE_CANCEL) {
-            taskENTER_CRITICAL(&s_services_lock);
-            const esp_err_t err = atomic_load(&s_executor.stage) == IRIS_EXEC_DONE
-                ? ESP_ERR_INVALID_STATE
-                : iris_system_update_request_cancel(frame->payload, h->payload_size);
-            taskEXIT_CRITICAL(&s_services_lock);
-            if (err != ESP_OK) {
-                (void)iris_queue_error(runtime, h->request_id, err, h->channel, h->type);
-            } else {
-                iris_decoded_frame_t status = *frame;
-                status.header.type = ESP_IRIS_SYSTEM_UPDATE_STATUS;
-                status.header.payload_size = 0;
-                (void)iris_system_update_handle_frame(runtime, &status);
-            }
-            return true;
-        }
-#if CONFIG_ESP_IRIS_OTA
-        if (ota && h->type == ESP_IRIS_OTA_STATUS && h->payload_size == 0) {
-            uint8_t snapshot[25]; size_t size;
-            taskENTER_CRITICAL(&s_services_lock);
-            size = s_executor.ota_snapshot_size;
-            memcpy(snapshot, s_executor.ota_snapshot, sizeof(snapshot));
-            taskEXIT_CRITICAL(&s_services_lock);
-            (void)iris_queue_frame(runtime, h->channel, h->type, ESP_IRIS_FLAG_RESPONSE,
-                h->request_id, iris_get_le32(snapshot), snapshot, size);
-            return true;
-        }
-        if (ota && h->type == ESP_IRIS_OTA_CANCEL && h->payload_size == 0) {
-            taskENTER_CRITICAL(&s_services_lock);
-            const bool accepted = atomic_load(&s_executor.stage) != IRIS_EXEC_DONE;
-            if (accepted) executor_request_ota_cancel();
-            taskEXIT_CRITICAL(&s_services_lock);
-            if (!accepted) {
-                (void)iris_queue_error(runtime, h->request_id, ESP_ERR_INVALID_STATE, h->channel, h->type);
-                return true;
-            }
-            /* Acknowledges intent only: no STREAM_END until the worker stops. */
-            (void)iris_queue_frame(runtime, h->channel, ESP_IRIS_OTA_STATUS,
-                ESP_IRIS_FLAG_RESPONSE, h->request_id, h->stream_id, NULL, 0);
-            return true;
-        }
-#endif
-        if (cancel && h->payload_size == 4) {
-            iris_service_state_t *state = service_state(false);
-            uint8_t payload[16]; bool found = false;
-            taskENTER_CRITICAL(&s_services_lock);
-            struct esp_iris_job *job = find_job(state, iris_get_le32(frame->payload));
-            if (job != NULL && atomic_load(&s_executor.stage) != IRIS_EXEC_DONE) {
-                found = true;
-                if (job->info.state == ESP_IRIS_JOB_RUNNING) {
-                    job->info.cancel_requested = true;
-                    job->cancel_pending = true;
-                    job->event_pending = true;
-                }
-                job_encode(payload, &job->info);
-            }
-            taskEXIT_CRITICAL(&s_services_lock);
-            if (found) {
-                (void)iris_queue_frame(runtime, h->channel, ESP_IRIS_CONTROL_JOB_STATUS,
-                    ESP_IRIS_FLAG_RESPONSE, h->request_id, 0, payload, sizeof(payload));
-            } else {
-                (void)iris_queue_error(runtime, h->request_id, ESP_ERR_NOT_FOUND, h->channel, h->type);
-            }
-            return true;
-        }
-        if (h->channel == ESP_IRIS_CHANNEL_CONTROL && h->type == ESP_IRIS_CONTROL_JOB_QUERY) {
-            return handle_job(runtime, frame);
-        }
-        (void)iris_queue_error(runtime, h->request_id, ESP_ERR_INVALID_STATE, h->channel, h->type);
-        return true;
-    }
-    if (!rpc && !cancel && !ota && !system_update) return false;
-    taskENTER_CRITICAL(&s_services_lock);
-    const bool idle = atomic_load(&s_executor.stage) == IRIS_EXEC_IDLE;
-    if (idle) {
-        atomic_store(&s_executor.abandoned, false);
-        atomic_store(&s_executor.deinit, false);
-        atomic_store(&s_executor.ota_cancel, false);
-        atomic_store(&s_executor.stage, IRIS_EXEC_RESERVED);
-    }
-    taskEXIT_CRITICAL(&s_services_lock);
-    if (!idle) {
-        (void)iris_queue_error(runtime, h->request_id, ESP_ERR_INVALID_STATE, h->channel, h->type);
-        return true;
-    }
-    const esp_err_t err = executor_ensure();
-    if (err != ESP_OK) {
-        atomic_store(&s_executor.stage, IRIS_EXEC_IDLE);
-        (void)iris_queue_error(runtime, h->request_id, err, h->channel, h->type);
-        return true;
-    }
-    executor_snapshot();
-    s_executor.header = *h;
-    s_executor.completion_decoded = false;
-    s_executor.received_us = received_us;
-    s_executor.work->session_id = runtime->session_id;
-    s_executor.work->tx_wire_length = 0;
-    s_executor.work->tx_wire_offset = 0;
-    memcpy(s_executor.work->rx_wire, frame->payload, h->payload_size);
-    atomic_store(&s_executor.stage, IRIS_EXEC_QUEUED);
-    xTaskNotifyGive(s_executor.task);
-    return true;
-}
-
-static bool executor_queue_next(iris_runtime_t *runtime)
-{
-    if (runtime->tx_wire_length != 0) return false;
-    taskENTER_CRITICAL(&s_services_lock);
-    const bool ready = atomic_load(&s_executor.stage) == IRIS_EXEC_DONE;
-    if (ready) atomic_store(&s_executor.stage, IRIS_EXEC_DRAINING);
-    taskEXIT_CRITICAL(&s_services_lock);
-    if (!ready) return false;
-    iris_runtime_t *work = s_executor.work;
-    bool queued = false;
-    bool retry = false;
-    if (work->session_id == runtime->session_id && work->tx_wire_length != 0 &&
-        !atomic_load(&s_executor.abandoned)) {
-        if (!s_executor.completion_decoded) {
-            s_executor.completion_decoded = iris_frame_decode_in_place(
-                work->tx_wire, work->tx_wire_length - 1, &s_executor.completion) == ESP_OK;
-        }
-        if (s_executor.completion_decoded) {
-            esp_iris_wire_header_t *h = &s_executor.completion.header;
-            queued = iris_queue_frame(runtime, h->channel, h->type, h->flags,
-                h->request_id, h->stream_id, s_executor.completion.payload, h->payload_size) == ESP_OK;
-            retry = !queued;
-        } else {
-            ++runtime->invalid_frames;
-        }
-    }
-    taskENTER_CRITICAL(&s_services_lock);
-    const bool cleanup = atomic_load(&s_executor.abandoned);
-    if (!retry) work->tx_wire_length = 0;
-    atomic_store(&s_executor.stage, cleanup ? IRIS_EXEC_QUEUED :
-                 (retry ? IRIS_EXEC_DONE : IRIS_EXEC_IDLE));
-    taskEXIT_CRITICAL(&s_services_lock);
-    if (cleanup) xTaskNotifyGive(s_executor.task);
-    return queued;
-}
+#include "esp_iris_executor_dispatch.inc"

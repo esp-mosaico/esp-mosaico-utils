@@ -3,7 +3,11 @@
 unsigned uxTaskGetStackHighWaterMark2(void *p) { return 9999; }
 unsigned ulTaskNotifyTake(int b, unsigned n) { return 0; }
 void vTaskDelete(void *p) { }
-int xTaskCreate(void (*f)(void *),const char *n,unsigned s,void *p,unsigned pri,TaskHandle_t *t) { *t = (void *)1; return pdPASS; }
+static bool fail_task_create;
+int xTaskCreate(void (*f)(void *),const char *n,unsigned s,void *p,unsigned pri,TaskHandle_t *t) {
+    if (fail_task_create) return 0;
+    *t = (void *)1; return pdPASS;
+}
 TaskHandle_t xTaskGetCurrentTaskHandle(void) { return NULL; }
 void xTaskNotifyGive(TaskHandle_t t) { }
 unsigned xTaskGetTickCount(void) { return 0; }
@@ -48,7 +52,7 @@ void iris_system_update_poll_cancel(void) { }
 #endif
 bool iris_files_handle_frame(iris_runtime_t *r, const iris_decoded_frame_t *f) { return false; }
 #if !CONFIG_ESP_IRIS_SYSTEM_UPDATE
-bool iris_system_update_handle_frame(iris_runtime_t *r, const iris_decoded_frame_t *f) { return false; }
+bool iris_system_update_handle_frame(iris_service_call_t *r, const iris_decoded_frame_t *f) { return false; }
 #endif
 bool iris_files_queue_next(iris_runtime_t *r) { return false; }
 uint64_t iris_files_capabilities(void) { return 0; }

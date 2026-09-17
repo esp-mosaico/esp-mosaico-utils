@@ -16,10 +16,32 @@ esp_err_t esp_iris_memory_get_heap(esp_iris_heap_memory_t *out) {
     *out = (esp_iris_heap_memory_t){0};
     return ESP_OK;
 }
-void *heap_caps_calloc(size_t a, size_t b, unsigned caps) { (void)caps; return calloc(a,b); }
-void *heap_caps_malloc(size_t n, unsigned caps) { (void)caps; return malloc(n); }
+static unsigned spiram_calls, fail_spiram_call;
+static bool allocation_fails(unsigned caps) {
+    return (caps & MALLOC_CAP_SPIRAM) && ++spiram_calls == fail_spiram_call;
+}
+void *heap_caps_calloc(size_t a, size_t b, unsigned caps) {
+    return allocation_fails(caps) ? NULL : calloc(a,b);
+}
+void *heap_caps_malloc(size_t n, unsigned caps) {
+    return allocation_fails(caps) ? NULL : malloc(n);
+}
+void heap_caps_free(void *p) { free(p); }
 uint32_t esp_random(void) { static uint32_t id = 50; return ++id; }
 void esp_fill_random(void *p, size_t n) { memset(p, 0x5a, n); }
+
+static void test_release_contexts(iris_service_state_t *state)
+{
+    if (state == NULL) return;
+    service_context_free(state, state->session, sizeof(*state->session));
+    state->session = NULL;
+    service_context_free(state, state->streams, sizeof(*state->streams));
+    state->streams = NULL;
+#if CONFIG_ESP_IRIS_OTA
+    assert(state->ota == NULL);
+#endif
+}
+
 static size_t reported_size;
 static unsigned callback_calls;
 static esp_err_t callback_result;
@@ -29,6 +51,24 @@ static esp_err_t callback(const esp_iris_rpc_request_t *r, uint8_t *out,
     (void)r; (void)ctx; ++callback_calls; memset(out, 0xa5, cap);
     *size = reported_size; if (during_callback) during_callback(); return callback_result;
 }
+
+static bool test_handle_rpc(iris_runtime_t *runtime,
+                           const iris_decoded_frame_t *frame, uint64_t received_us)
+{
+    uint8_t payload[IRIS_EXEC_RESULT_BYTES];
+    iris_service_call_t call = {.payload = payload, .capacity = sizeof(payload)};
+    const esp_err_t admission = rpc_accept_request(frame);
+    bool handled = admission == ESP_OK ? handle_rpc(&call, frame, received_us)
+        : iris_service_error(&call, frame->header.request_id, admission,
+            frame->header.channel, frame->header.type) == ESP_OK;
+    if (call.ready) {
+        const esp_iris_wire_header_t *h = &call.response;
+        assert(iris_queue_frame(runtime, h->channel, h->type, h->flags,
+            h->request_id, h->stream_id, call.payload, h->payload_size) == ESP_OK);
+    }
+    return handled;
+}
+
 static void test_rpc_lengths(void) {
     iris_runtime_t rt = {0};
     iris_service_state_t state = { .magic = IRIS_SERVICE_STATE_MAGIC };
@@ -45,7 +85,7 @@ static void test_rpc_lengths(void) {
         for (size_t i = 0; i < sizeof(sizes)/sizeof(sizes[0]); ++i) {
             reported_size = sizes[i]; ++request.header.request_id;
             rt.tx_wire_length = 0;
-            assert(handle_rpc(&rt, &request, 0));
+            assert(test_handle_rpc(&rt, &request, 0));
             iris_decoded_frame_t response;
             assert(iris_frame_decode_in_place(rt.tx_wire,
                 rt.tx_wire_length - 1, &response) == ESP_OK);
@@ -55,7 +95,7 @@ static void test_rpc_lengths(void) {
                 (oversized ? ESP_ERR_INVALID_SIZE : callback_result));
         }
     }
-    s_services = NULL;
+    test_release_contexts(s_services); s_services = NULL;
 }
 static void append_control(uint8_t type, uint32_t request_id, const uint8_t *payload, size_t n) {
     esp_iris_wire_header_t h = {.channel = ESP_IRIS_CHANNEL_CONTROL,
@@ -135,7 +175,7 @@ static void test_replay_and_reopen(void) {
     frame.header.sequence = 8; frame.header.request_id = 12; payload[2] = 2;
     deliver(&rt, &frame); assert(callback_calls == 3); payload[2] = 1;
     /* Wrap acceptance and half-space rejection. */
-    state.last_rpc_request_id = UINT32_MAX; rt.rx_sequence[0] = UINT32_MAX;
+    state.session->last_rpc_request_id = UINT32_MAX; rt.rx_sequence[0] = UINT32_MAX;
     frame.header.request_id = 1; frame.header.sequence = 0;
     rt.tx_wire_length = 0; deliver(&rt, &frame); assert(callback_calls == 4);
     frame.header.request_id = UINT32_C(0x80000001); frame.header.sequence = 1;
@@ -147,12 +187,12 @@ static void test_replay_and_reopen(void) {
     rt.tx_wire_length = 0; deliver(&rt, &frame);
     const uint32_t new_session = rt.session_id;
     assert(new_session != 123 && new_session != 0 && !rt.hello_acked);
-    assert(!state.rpc_request_seen && !rt.rx_sequence_seen[0]);
+    assert((state.session == NULL || !state.session->rpc_request_seen) && !rt.rx_sequence_seen[0]);
     rt.tx_wire_length = 0; deliver(&rt, &frame); assert(rt.session_id == new_session);
     frame.header.session_id = new_session; frame.header.flags = 0;
     deliver(&rt, &frame); assert(rt.hello_acked);
     deliver(&rt, &frame); assert(rt.session_id == new_session && rt.hello_acked);
-    s_services = NULL;
+    test_release_contexts(s_services); s_services = NULL;
 }
 static void test_claim_timeout(void) {
     iris_runtime_t rt = {0};
@@ -250,13 +290,13 @@ static void test_executor_rpc(void) {
     abandon_in_callback = true; during_callback = slow_callback_hook;
     assert(executor_dispatch(&rt, &request, 0)); executor_run_one();
     assert(!executor_busy() && !executor_queue_next(&rt));
-    assert(callback_calls == 2 && !state.rpc_request_seen);
+    assert(callback_calls == 2 && (state.session == NULL || !state.session->rpc_request_seen));
     during_callback = NULL; rt.tx_wire_length = 0; request.header.request_id++;
     assert(executor_dispatch(&rt, &request, 0));
     iris_services_deinit(&rt); /* no unsafe task deletion or in-flight free */
     assert(executor_busy()); executor_run_one();
     assert(callback_calls == 2 && !executor_busy());
-    s_services = NULL; responsive_runtime = NULL;
+    test_release_contexts(s_services); s_services = NULL; responsive_runtime = NULL;
 }
 #if CONFIG_ESP_IRIS_OTA
 static void flash_hook(void) {
@@ -282,20 +322,20 @@ static void test_executor_ota(void) {
         request.header.payload_size = sizeof(begin); request.payload = begin;
         rt.tx_wire_length = 0;
         assert(executor_dispatch(&rt, &request, now_us)); executor_run_one();
-        assert(executor_queue_next(&rt) && state.ota.active);
+        assert(executor_queue_next(&rt) && (state.ota != NULL && state.ota->active));
         request.header.type = ESP_IRIS_OTA_DATA; request.header.payload_size = sizeof(data);
         request.payload = data; rt.tx_wire_length = 0;
         during_flash = mode == 0 ? flash_hook : NULL;
         assert(executor_dispatch(&rt, &request, now_us)); executor_run_one();
         assert(executor_queue_next(&rt));
-        if (mode == 0) { assert(!state.ota.active && flash_aborts == 1); continue; }
+        if (mode == 0) { assert(!(state.ota != NULL && state.ota->active) && flash_aborts == 1); continue; }
         request.header.type = ESP_IRIS_OTA_END; request.header.payload_size = 0;
         rt.tx_wire_length = 0; during_flash = mode == 1 ? flash_hook : NULL;
         assert(executor_dispatch(&rt, &request, now_us)); executor_run_one();
-        assert(executor_queue_next(&rt) && !state.ota.active);
+        assert(executor_queue_next(&rt) && !(state.ota != NULL && state.ota->active));
         assert(boot_selections == (mode == 2 ? 1U : 0U));
     }
-    assert(flash_writes == 3); during_flash = NULL; s_services = NULL; responsive_runtime = NULL;
+    assert(flash_writes == 3); during_flash = NULL; test_release_contexts(s_services); s_services = NULL; responsive_runtime = NULL;
 }
 #endif
 #if CONFIG_ESP_IRIS_SYSTEM_UPDATE
@@ -359,7 +399,7 @@ static void test_executor_system_update(void) {
         assert(system_commits == (cancelled == 1 ? 0U : 1U));
     }
     s_system_update = (iris_system_update_state_t){0};
-    s_services = NULL; responsive_runtime = NULL;
+    test_release_contexts(s_services); s_services = NULL; responsive_runtime = NULL;
 }
 #endif
 #if CONFIG_ESP_IRIS_SYSTEM_INVENTORY
@@ -477,8 +517,303 @@ static void test_executor_idle_reap(void) {
     atomic_store(&s_executor.stage, IRIS_EXEC_IDLE);
     assert(!executor_reap_idle((TaskHandle_t)(uintptr_t)2));
     assert(s_executor.work != NULL && s_executor.task != NULL);
+#if CONFIG_ESP_IRIS_SERVICE_PERSISTENT
+    iris_executor_work_t *same_work = s_executor.work;
+    assert(!executor_reap_idle((TaskHandle_t)(uintptr_t)1));
+    assert(executor_ensure() == ESP_OK);
+    assert(s_executor.work == same_work);
+    assert(s_executor.task == (TaskHandle_t)(uintptr_t)1);
+#else
     assert(executor_reap_idle((TaskHandle_t)(uintptr_t)1));
     assert(s_executor.work == NULL && s_executor.task == NULL);
+#endif
+}
+static void test_fragmented_rpc_during_media(void) {
+    iris_runtime_t rt = {.session_id = 600, .hello_acked = true};
+    iris_service_state_t state = {.magic = IRIS_SERVICE_STATE_MAGIC};
+    s_services = &state;
+    state.rpc[0] = (iris_rpc_entry_t){true, 1, 1, callback, NULL};
+    uint8_t media[64] = {0};
+    assert(service_streams(&state, true) != NULL);
+    state.streams->media[1] = (iris_media_slot_t){.active = true, .pending = true,
+        .data = media, .size = sizeof(media), .credit = UINT32_MAX};
+    uint8_t body[12 + CONFIG_ESP_IRIS_RPC_BODY_BYTES] = {1,0,1,0};
+    iris_put_le16(body + 8, CONFIG_ESP_IRIS_RPC_BODY_BYTES);
+    memset(body + 12, 0x5a, CONFIG_ESP_IRIS_RPC_BODY_BYTES);
+    esp_iris_wire_header_t header = {.channel = ESP_IRIS_CHANNEL_CONTROL,
+        .type = ESP_IRIS_CONTROL_REQUEST, .session_id = 600,
+        .sequence = 1, .request_id = 2000};
+    uint8_t wire[ESP_IRIS_MAX_WIRE_FRAME_SIZE], saved[ESP_IRIS_MAX_WIRE_FRAME_SIZE];
+    size_t length;
+    assert(iris_frame_encode(wire, sizeof(wire), &header, body, sizeof(body), &length) == ESP_OK);
+    reported_size = CONFIG_ESP_IRIS_RPC_BODY_BYTES; callback_result = ESP_OK;
+    for (size_t offset = 0; offset < length;) {
+        const size_t n = length - offset < 127 ? length - offset : 127;
+        const size_t consumed = feed_rx(&rt, wire + offset, n);
+        assert(consumed > 0); offset += consumed;
+        if (rt.rx_wire_length != 0) {
+            memcpy(saved, rt.rx_wire, rt.rx_wire_length);
+            assert(!queue_media(&rt, &state));
+            assert(memcmp(saved, rt.rx_wire, rt.rx_wire_length) == 0);
+        }
+    }
+    executor_run_one();
+    assert(executor_queue_next(&rt));
+    iris_decoded_frame_t response;
+    assert(iris_frame_decode_in_place(rt.tx_wire, rt.tx_wire_length - 1, &response) == ESP_OK);
+    assert(response.header.type == ESP_IRIS_CONTROL_RESPONSE);
+    assert(response.header.payload_size == sizeof(body));
+    assert(rt.invalid_frames == 0);
+    rt.tx_wire_length = 0;
+    assert(queue_media(&rt, &state)); /* media resumes after the RX frame */
+    test_release_contexts(s_services); s_services = NULL;
+}
+
+static esp_err_t owned_callback(const esp_iris_rpc_request_t *request,
+    uint8_t *out, size_t capacity, size_t *size, void *ctx)
+{
+    (void)ctx;
+    assert(request->payload_size == CONFIG_ESP_IRIS_RPC_BODY_BYTES);
+    memset(out, 0xa5, capacity);
+    /* Output and input must coexist: writing output cannot destroy input. */
+    for (size_t i = 0; i < request->payload_size; ++i) {
+        assert(request->payload[i] == 0x5a);
+    }
+    *size = capacity;
+    return ESP_OK;
+}
+
+static void test_owned_request_result(void)
+{
+    iris_runtime_t rt = {.session_id = 1234, .hello_acked = true};
+    iris_service_state_t state = {.magic = IRIS_SERVICE_STATE_MAGIC};
+    s_services = &state;
+    state.rpc[0] = (iris_rpc_entry_t){true, 1, 1, owned_callback, NULL};
+    uint8_t request[12 + CONFIG_ESP_IRIS_RPC_BODY_BYTES] = {1, 0, 1, 0};
+    iris_put_le16(request + 8, CONFIG_ESP_IRIS_RPC_BODY_BYTES);
+    memset(request + 12, 0x5a, CONFIG_ESP_IRIS_RPC_BODY_BYTES);
+    iris_decoded_frame_t frame = {.header = {
+        .channel = ESP_IRIS_CHANNEL_CONTROL, .type = ESP_IRIS_CONTROL_REQUEST,
+        .session_id = rt.session_id, .request_id = 100,
+        .payload_size = sizeof(request)}, .payload = request};
+    assert(executor_dispatch(&rt, &frame, 0));
+    memset(request, 0xcc, sizeof(request)); /* protocol scratch is reusable */
+    const uint32_t sequence = rt.sequence[ESP_IRIS_CHANNEL_CONTROL];
+    executor_run_one();
+    assert(rt.sequence[ESP_IRIS_CHANNEL_CONTROL] == sequence);
+    assert(s_executor.work->result.ready);
+    assert(s_executor.work->result.response.payload_size == sizeof(request));
+    assert(iris_get_le16(s_executor.work->result.payload) == 1);
+    for (size_t i = 12; i < sizeof(request); ++i) {
+        assert(s_executor.work->result.payload[i] == 0xa5);
+    }
+    rt.tx_wire_length = 1; /* TX backpressure must retain owned result */
+    assert(!executor_queue_next(&rt));
+    assert(atomic_load(&s_executor.stage) == IRIS_EXEC_DONE);
+    assert(s_executor.work->result.ready);
+    rt.tx_wire_length = 0;
+    assert(executor_queue_next(&rt));
+    assert(rt.sequence[ESP_IRIS_CHANNEL_CONTROL] == sequence + 1);
+    assert(!s_executor.work->result.ready);
+
+    /* A completed result cannot leak into a different session. */
+    rt.tx_wire_length = 0;
+    request[0] = request[2] = 1;
+    request[1] = request[3] = 0;
+    memset(request + 4, 0, 8);
+    iris_put_le16(request + 8, CONFIG_ESP_IRIS_RPC_BODY_BYTES);
+    memset(request + 12, 0x5a, CONFIG_ESP_IRIS_RPC_BODY_BYTES);
+    frame.header.request_id++;
+    assert(executor_dispatch(&rt, &frame, 0));
+    executor_run_one();
+    rt.session_id++;
+    assert(!executor_queue_next(&rt));
+    assert(atomic_load(&s_executor.stage) == IRIS_EXEC_IDLE);
+    assert(!s_executor.work->result.ready && rt.tx_wire_length == 0);
+
+    frame.header.payload_size = IRIS_EXEC_REQUEST_BYTES + 1;
+    assert(executor_dispatch(&rt, &frame, 0)); /* reject before copying */
+    assert(atomic_load(&s_executor.stage) == IRIS_EXEC_IDLE);
+    uint8_t largest[IRIS_EXEC_REQUEST_BYTES];
+    memset(largest, 0x5a, sizeof(largest));
+    frame.header.channel = ESP_IRIS_CHANNEL_OTA;
+    frame.header.type = 0xff;
+    frame.header.payload_size = sizeof(largest);
+    frame.payload = largest;
+    rt.tx_wire_length = 0;
+    assert(executor_dispatch(&rt, &frame, 0));
+    assert(memcmp(s_executor.work->request, largest, sizeof(largest)) == 0);
+    executor_run_one(); /* unsupported service type, but exact-capacity copy */
+    assert(executor_queue_next(&rt));
+    test_release_contexts(s_services); s_services = NULL;
+}
+
+static void test_service_lifetimes(void)
+{
+    assert(s_services == NULL);
+    iris_service_state_t *state = service_state(true);
+    assert(state != NULL && state->session == NULL && state->streams == NULL);
+#if CONFIG_ESP_IRIS_OTA
+    assert(state->ota == NULL);
+#endif
+    state->rpc[0] = (iris_rpc_entry_t){true, 1, 1, callback, NULL};
+    const uint32_t registration_bytes = state->allocated_bytes;
+    for (unsigned cycle = 0; cycle < 40; ++cycle) {
+        iris_runtime_t rt = {0};
+        iris_services_session_begin(&rt);
+        assert(state->session != NULL && state->streams == NULL);
+        assert(service_streams(state, true) != NULL);
+        /* A publisher pin prevents reclamation even after buffers close. */
+        iris_service_state_t *pin = media_state_acquire();
+        assert(pin == state);
+        maybe_release_streams(state);
+        assert(state->streams != NULL);
+        media_state_release(pin);
+        maybe_release_streams(state); /* protocol-task reclamation */
+        assert(state->streams == NULL);
+        service_session_release(state);
+        services_session_end_now();
+        assert(state->session == NULL && state->streams == NULL);
+        assert(state->allocated_bytes == registration_bytes);
+        assert(state->rpc[0].handler == callback);
+    }
+    state->rpc[0].used = false;
+    maybe_release_state(state);
+    assert(s_services == NULL);
+}
+
+
+static unsigned screen_ends;
+static esp_err_t test_screen_begin(const esp_iris_media_desc_t *requested,
+    esp_iris_media_desc_t *actual, uint32_t *total, void *ctx)
+{
+    (void)requested; (void)ctx;
+    *actual = (esp_iris_media_desc_t){.width = 16, .height = 16,
+        .stride = 32, .format = ESP_IRIS_PIXEL_FORMAT_RGB565};
+    *total = 512;
+    return ESP_OK;
+}
+static esp_err_t test_screen_read(uint32_t offset, uint8_t *out,
+    size_t capacity, size_t *size, void *ctx)
+{
+    (void)ctx;
+    *size = capacity < 512 - offset ? capacity : 512 - offset;
+    memset(out, 0xa5, *size);
+    return ESP_OK;
+}
+static void test_screen_end(void *ctx) { (void)ctx; screen_ends++; }
+
+static void test_media_context_lifecycle(void)
+{
+    iris_service_state_t state = {.magic = IRIS_SERVICE_STATE_MAGIC};
+    s_services = &state;
+    state.screen = (esp_iris_screen_backend_t){
+        test_screen_begin, test_screen_read, test_screen_end, NULL};
+    iris_runtime_t rt = {.session_id = 2222, .hello_acked = true};
+    uint8_t payload[20] = {0};
+    iris_put_le16(payload + 16, 5);
+    iris_decoded_frame_t frame = {.header = {
+        .channel = ESP_IRIS_CHANNEL_SCREEN, .session_id = rt.session_id,
+        .request_id = 1}, .payload = payload};
+    screen_ends = 0;
+    for (unsigned cycle = 0; cycle < 40; ++cycle) {
+        frame.header.type = ESP_IRIS_MEDIA_OPEN;
+        frame.header.payload_size = 16;
+        rt.tx_wire_length = 0;
+        assert(iris_services_handle_frame(&rt, &frame, 0));
+        assert(state.streams != NULL && state.streams->capture.active);
+        frame.header.type = ESP_IRIS_MEDIA_CLOSE;
+        frame.header.payload_size = 0;
+        rt.tx_wire_length = 0;
+        assert(iris_services_handle_frame(&rt, &frame, 0));
+        assert(state.streams == NULL);
+        rt.tx_wire_length = 0;
+        assert(iris_services_handle_frame(&rt, &frame, 0)); /* idempotent CLOSE */
+        assert(state.streams == NULL);
+        frame.header.type = ESP_IRIS_MEDIA_MIRROR_START;
+        frame.header.payload_size = 20;
+        rt.tx_wire_length = 0;
+        assert(iris_services_handle_frame(&rt, &frame, 0));
+        assert(state.streams != NULL && state.streams->media[0].active);
+        assert(state.streams->media[0].data != NULL);
+        frame.header.type = ESP_IRIS_MEDIA_MIRROR_STOP;
+        frame.header.payload_size = 0;
+        rt.tx_wire_length = 0;
+        assert(iris_services_handle_frame(&rt, &frame, 0));
+        assert(state.streams == NULL);
+        assert(!iris_services_credit(ESP_IRIS_CHANNEL_SCREEN, 1024));
+    }
+    assert(screen_ends == 80);
+    test_release_contexts(s_services); s_services = NULL;
+}
+
+
+static void test_reconnect_before_worker_cleanup(void)
+{
+    iris_service_state_t state = {.magic = IRIS_SERVICE_STATE_MAGIC};
+    s_services = &state;
+    state.rpc[0] = (iris_rpc_entry_t){true, 1, 1, callback, NULL};
+    iris_runtime_t rt = {.session_id = 3333, .hello_acked = true};
+    uint8_t payload[12] = {1, 0, 1, 0};
+    iris_decoded_frame_t frame = {.header = {
+        .channel = ESP_IRIS_CHANNEL_CONTROL, .type = ESP_IRIS_CONTROL_REQUEST,
+        .session_id = rt.session_id, .request_id = 1,
+        .payload_size = sizeof(payload)}, .payload = payload};
+    assert(executor_dispatch(&rt, &frame, 0));
+    iris_services_session_end(&rt);
+    assert(state.session == NULL && executor_busy());
+    rt.session_id++;
+    iris_services_session_begin(&rt);
+    iris_service_session_t *new_session = state.session;
+    assert(new_session != NULL && !new_session->rpc_request_seen);
+    executor_run_one(); /* old abandoned work must not free the new session */
+    assert(state.session == new_session && !executor_busy());
+    assert(!new_session->rpc_request_seen);
+    frame.header.session_id = rt.session_id;
+    reported_size = 0; callback_result = ESP_OK;
+    assert(executor_dispatch(&rt, &frame, 0));
+    executor_run_one();
+    assert(executor_queue_next(&rt));
+    assert(state.session == new_session && new_session->rpc_request_seen);
+    test_release_contexts(s_services); s_services = NULL;
+}
+
+static void test_external_allocation_failure(void) {
+#if CONFIG_ESP_IRIS_SERVICE_STATE_PSRAM && CONFIG_ESP_IRIS_RPC_RESPONSE_PSRAM
+    assert(s_services == NULL);
+    for (unsigned fail = 1; fail <= 1; ++fail) {
+        spiram_calls = 0; fail_spiram_call = fail;
+        assert(service_state(true) == NULL); /* no internal fallback */
+        assert(s_services == NULL);
+    }
+    fail_spiram_call = 0;
+    iris_service_state_t *state = service_state(true);
+    assert(state != NULL && state->allocated_bytes == 0);
+    for (unsigned context = 0; context < 2; ++context) {
+        spiram_calls = 0; fail_spiram_call = 1;
+        if (context == 0) assert(service_session(state, true) == NULL);
+        else assert(service_streams(state, true) == NULL);
+        assert(state->session == NULL && state->streams == NULL);
+        assert(state->allocated_bytes == 0);
+    }
+    fail_spiram_call = 0;
+    maybe_release_state(state);
+    assert(s_services == NULL);
+#endif
+#if CONFIG_ESP_IRIS_SERVICE_CONTEXT_PSRAM
+    executor_work_free(s_executor.work); s_executor.work = NULL; s_executor.task = NULL;
+    for (unsigned fail = 1; fail <= 2; ++fail) {
+        spiram_calls = 0; fail_spiram_call = fail;
+        assert(executor_ensure() == ESP_ERR_NO_MEM);
+        assert(s_executor.work == NULL && s_executor.task == NULL);
+    }
+    fail_spiram_call = 0;
+#endif
+    executor_work_free(s_executor.work); s_executor.work = NULL; s_executor.task = NULL;
+    fail_task_create = true;
+    assert(executor_ensure() == ESP_ERR_NO_MEM);
+    assert(s_executor.work == NULL && s_executor.task == NULL);
+    fail_task_create = false;
 }
 int main(void) {
     test_rpc_lengths(); test_coalesced_frames(); test_replay_and_reopen();
@@ -493,6 +828,12 @@ int main(void) {
     test_inventory_executor_dispatch();
 #endif
     test_unsupported_executor_channel_type();
+    test_fragmented_rpc_during_media();
+    test_owned_request_result();
+    test_service_lifetimes();
+    test_media_context_lifecycle();
+    test_reconnect_before_worker_cleanup();
     test_executor_idle_reap();
-    free(s_executor.work); return 0;
+    test_external_allocation_failure();
+    executor_work_free(s_executor.work); return 0;
 }

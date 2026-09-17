@@ -98,9 +98,17 @@ def test_gateway_failure_before_deadline_is_preserved():
         invoke([DeviceError("Gateway unavailable")])
 
 
-def test_malformed_code_is_rejected():
+@pytest.mark.parametrize("code", ["ABCDE-12345", "03827164", "038271", "abcd1234"])
+def test_server_code_is_returned_without_format_validation(code):
+    result, _, _ = invoke([wire(state="PAIRING", running=True, code=code,
+                              server_url="https://flash.example.com")])
+    assert result["bridge"]["code"] == code
+
+
+@pytest.mark.parametrize("code", [12345678, ["12345678"], {"value": "12345678"}])
+def test_non_string_code_is_rejected(code):
     with pytest.raises(DeviceError, match="invalid Bridge pairing code"):
-        invoke([wire(state="PAIRING", running=True, code="038271")])
+        invoke([wire(state="PAIRING", running=True, code=code)])
 
 
 def test_removed_cli_entries_are_rejected():

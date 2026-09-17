@@ -14,4 +14,5 @@ dependencies:
   joltwallet/littlefs:
     version: "^1.22.0"
   lvgl/lvgl:
-    version: ">=8,<10"
+    # esp_lvgl_adapter 0.6.2 uses headers deprecated by LVGL 9.6.
+    version: "==9.5.0"

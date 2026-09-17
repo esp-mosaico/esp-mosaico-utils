@@ -207,7 +207,7 @@ def read_bridge_code(arguments: Any, context: RunContext) -> dict[str, Any]:
             raise DeviceError("Recovery Bridge URL or board ID is not configured; rebuild with both settings.")
         code = snapshot.get("code")
         if state == "PAIRING" and code:
-            if not isinstance(code, str) or re.fullmatch(r"[A-Z0-9]{5}-[A-Z0-9]{5}", code) is None:
+            if not isinstance(code, str):
                 raise DeviceError("Recovery returned an invalid Bridge pairing code.")
             if not isinstance(snapshot.get("server_url"), str) or not snapshot["server_url"].startswith("https://"):
                 raise DeviceError("Recovery returned an invalid Bridge server URL.")

@@ -10,6 +10,7 @@
 #include "factory_system_metadata.h"
 #include "factory_system_update.h"
 #include "factory_ui.h"
+#include "factory_ui_input.h"
 #include "recovery_ota_support.h"
 #include "iris_screen_mirror.h"
 #include "nvs_flash.h"
@@ -38,6 +39,7 @@ void app_main(void)
     recovery_ota_support_start();
 
     ESP_ERROR_CHECK(factory_ui_start());
+    ESP_ERROR_CHECK(factory_ui_input_register());
     ESP_ERROR_CHECK(iris_screen_mirror_register());
 
 #if CONFIG_IRIS_FACTORY_NAND_SYSTEM_UPDATE && \

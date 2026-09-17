@@ -4,6 +4,7 @@
 #include <stddef.h>
 #include <stdatomic.h>
 #include <stdint.h>
+#include <string.h>
 
 #include "esp_iris.h"
 #include "esp_iris_codec.h"
@@ -162,6 +163,47 @@ typedef struct iris_runtime {
     esp_err_t crash_state_error;
 } iris_runtime_t;
 
+
+/* Slow services own business bytes only. Protocol/session sequencing, framing
+ * and transports belong exclusively to the protocol task. */
+typedef struct {
+    uint8_t *payload;
+    size_t capacity;
+    esp_iris_wire_header_t response;
+    bool ready;
+} iris_service_call_t;
+
+static inline esp_err_t iris_service_reply(
+    iris_service_call_t *call, uint8_t channel, uint8_t type, uint16_t flags,
+    uint32_t request_id, uint32_t stream_id,
+    const uint8_t *payload, size_t payload_size)
+{
+    if (call->ready) return ESP_ERR_INVALID_STATE;
+    if (payload_size > call->capacity ||
+        payload_size > ESP_IRIS_MAX_PAYLOAD_SIZE) return ESP_ERR_INVALID_SIZE;
+    if (payload_size != 0) memmove(call->payload, payload, payload_size);
+    call->response = (esp_iris_wire_header_t){
+        .channel = channel, .type = type, .flags = flags,
+        .request_id = request_id, .stream_id = stream_id,
+        .payload_size = payload_size,
+    };
+    call->ready = true;
+    return ESP_OK;
+}
+
+static inline esp_err_t iris_service_error(
+    iris_service_call_t *call, uint32_t request_id, esp_err_t code,
+    uint8_t channel, uint8_t type)
+{
+    uint8_t payload[8] = {0};
+    iris_put_le32(payload, (uint32_t)code);
+    payload[4] = channel;
+    payload[5] = type;
+    return iris_service_reply(call, ESP_IRIS_CHANNEL_CONTROL,
+        ESP_IRIS_CONTROL_ERROR, ESP_IRIS_FLAG_RESPONSE | ESP_IRIS_FLAG_ERROR,
+        request_id, 0, payload, sizeof(payload));
+}
+
 extern iris_runtime_t g_iris;
 esp_err_t iris_runtime_wire_init(iris_runtime_t *runtime);
 void iris_runtime_wire_deinit(iris_runtime_t *runtime);
@@ -203,12 +245,12 @@ esp_err_t iris_system_update_request_cancel(const uint8_t *operation_id, size_t 
 void iris_system_update_cancel_all(void);
 bool iris_system_update_cancel_pending(void);
 void iris_system_update_poll_cancel(void);
-bool iris_system_inventory_handle_frame(iris_runtime_t *runtime,
+bool iris_system_inventory_handle_frame(iris_service_call_t *runtime,
                                         const iris_decoded_frame_t *frame);
 uint64_t iris_system_inventory_capabilities(void);
 uint32_t iris_system_inventory_static_bytes(void);
 bool iris_system_inventory_registered(void);
-bool iris_system_update_handle_frame(iris_runtime_t *runtime,
+bool iris_system_update_handle_frame(iris_service_call_t *runtime,
                                      const iris_decoded_frame_t *frame);
 uint64_t iris_system_update_capabilities(void);
 uint32_t iris_system_update_static_bytes(void);
