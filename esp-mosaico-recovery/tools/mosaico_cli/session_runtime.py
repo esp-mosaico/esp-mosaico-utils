@@ -5,6 +5,7 @@ import contextlib
 import hashlib
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import time
@@ -53,6 +54,7 @@ class SessionScope:
     def __init__(self) -> None:
         self.arguments: Any = None
         self.sessions: dict[str, Any] = {}
+        self.records: dict[str, dict[str, Any]] = {}
         self.processes: list[tuple[subprocess.Popen, str, Path]] = []
         self.info: dict[str, Any] = {}
         self.owned_records: dict[Path, str] = {}
@@ -165,6 +167,7 @@ class SessionScope:
                 started = True
             result = GatewaySession(python, script, ("--url", record["url"]), None, started)
             self.sessions[project_key] = result
+            self.records[project_key] = dict(record)
             self.info = record
         selected = getattr(args, "device_id", None)
         endpoint = getattr(args, "endpoint", None)
@@ -180,6 +183,46 @@ class SessionScope:
             if not selected:
                 args.device_id = acquired["device"]["device_id"]
         return result
+
+    def finished_operation(self, session: Any, operation_id: str) -> dict[str, Any] | None:
+        """Read committed evidence after this local Gateway has stopped.
+
+        The owner may finish draining between a follower's status polls. Never
+        restart a Gateway or replay a write just to obtain its final result.
+        """
+        project_key = next((key for key, value in self.sessions.items() if value is session), None)
+        if project_key is None:
+            return None  # Remote profiles have no registered local store.
+        from iris_gateway.link import EndpointLock
+        from iris_gateway.store import GatewayStore
+
+        record = self.records[project_key]
+        root = state_root("esp-mosaico")
+        lock = EndpointLock("project:" + project_key, root=root / "ownership" / "locks")
+        # HTTP may close just before the Gateway releases its lifetime lock.
+        deadline = time.monotonic() + 2
+        try:
+            while True:
+                try:
+                    lock.acquire()
+                    break
+                except RuntimeError:
+                    if time.monotonic() >= deadline:
+                        return None
+                    time.sleep(0.05)
+            database = root / "project-sessions" / project_key / "state" / "gateway.sqlite3"
+            with contextlib.closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as connection:
+                connection.row_factory = sqlite3.Row
+                row = connection.execute("SELECT * FROM operations WHERE operation_id=?", (operation_id,)).fetchone()
+            if row is None or row["created_ns"] < record["created_ns"] or not row["finished_ns"]:
+                return None
+            if row["status"] not in {"succeeded", "failed", "cancelled", "interrupted", "outcome_unknown"}:
+                return None
+            return GatewayStore._operation_row(row)
+        except (OSError, sqlite3.Error, ValueError, KeyError):
+            return None
+        finally:
+            lock.close()
 
     def close(self) -> None:
         for process, url, connection_file in reversed(self.processes):

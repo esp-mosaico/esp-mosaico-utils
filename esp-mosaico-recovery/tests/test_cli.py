@@ -841,7 +841,7 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(build.call_args.kwargs["target"], "system-update-bundle")
         self.assertEqual(
             build.call_args.kwargs["definitions"],
-            {"ESP_IRIS_PYTHON": "/iris-python"},
+            {"ESP_IRIS_PYTHON": str(Path("/iris-python"))},
         )
         submit.assert_called_once_with(
             context,
@@ -1544,7 +1544,7 @@ class HostCompatibilityTests(unittest.TestCase):
             )
             completed = subprocess.CompletedProcess([], 0, exported, "")
             idf_python_probe = subprocess.CompletedProcess(
-                [], 0, f'["{python}", 3, 12]\n', ""
+                [], 0, json.dumps([str(python), 3, 12]) + "\n", ""
             )
             with ExitStack() as _contexts:
                 run = _contexts.enter_context(
@@ -1584,7 +1584,10 @@ class HostCompatibilityTests(unittest.TestCase):
                 },
             )
         self.assertEqual(selected, active)
-        self.assertEqual(probe.call_args_list[0].args[0], ["/idf-env/bin/python"])
+        self.assertEqual(
+            probe.call_args_list[0].args[0],
+            [str(virtual_environment_python(Path("/idf-env")))],
+        )
 
     def test_explicit_idf_python_environment_takes_priority(self) -> None:
         configured = Path("/configured/python")
@@ -2786,7 +2789,7 @@ class RecoveryCommandTests(unittest.TestCase):
             _emit_error(caught.exception, json_output=False, verbose=False)
         rendered = stderr.getvalue()
         self.assertIn("Failed to resolve component 'missing_component'", rendered)
-        self.assertIn("Log: /runs/raw.log", rendered)
+        self.assertIn(f"Log: {Path('/runs/raw.log')}", rendered)
 
     def test_busy_recovery_port_is_reported_without_retry(self) -> None:
         context = mock.Mock(repository=REPOSITORY, log_path=Path("run.log"))

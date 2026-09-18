@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
+import time
 from argparse import Namespace
 from pathlib import Path
 from unittest.mock import patch
@@ -109,3 +111,79 @@ def test_public_list_handles_passive_discovery_without_connected_devices(tmp_pat
     assert not list((tmp_path / "state").rglob("connection.json"))
     _print_device_table({"devices": [], "endpoints": [{"endpoint": "tcp:127.0.0.1:1234"}]}, False)
     assert "Endpoint: tcp:127.0.0.1:1234" in capsys.readouterr().out
+
+
+def test_follower_reads_committed_result_after_owner_exits(tmp_path, monkeypatch):
+    from mosaico_cli.gateway import _wait_gateway_operation
+    from mosaico_cli.session_runtime import CURRENT_SCOPE
+
+    monkeypatch.setattr("mosaico_cli.session_runtime.state_root", lambda name: tmp_path / "state" / name)
+    work = workspace(tmp_path)
+    script = work.esp_iris_path / "components/esp_iris/tools/esp_iris.py"
+    owner, follower = scope(tmp_path / "projects/a"), scope(tmp_path / "projects/a")
+    context = RunContext(work, "test", json_output=True)
+    with patch("mosaico_cli.runtime.resolve_idf_path", side_effect=EnvironmentError("no IDF needed")):
+        try:
+            owner.gateway(context, Path(sys.executable), script, "test-revision")
+            session = follower.gateway(context, Path(sys.executable), script, "test-revision")
+            from iris_gateway.store import GatewayStore
+
+            store = GatewayStore(owner.processes[0][2].parent / "state")
+            try:
+                accepted, _ = store.create_operation({
+                    "operation_id": "finished-install", "device_id": "test-device",
+                    "actor_type": "local", "actor_name": "test", "action": "firmware.ota",
+                    "status": "queued", "created_ns": time.time_ns(),
+                })
+                store.update_operation("finished-install", status="succeeded", finished_ns=time.time_ns(),
+                                       result_json={"healthy": True, "boot_id": 18446744073709551614})
+            finally:
+                store.close()
+            # A live owner, even one with a terminal operation, must not be bypassed.
+            assert follower.finished_operation(session, "finished-install") is None
+            owner.close()
+            token = CURRENT_SCOPE.set(follower)
+            try:
+                result = _wait_gateway_operation(context, session,
+                    result=subprocess.CompletedProcess([], 0, json.dumps({"operation": accepted})),
+                    started=time.monotonic(), timeout=15, action="Installation", progress_prefix="ota")
+            finally:
+                CURRENT_SCOPE.reset(token)
+            assert result["operation"]["status"] == "succeeded"
+            assert result["operation"]["result"]["healthy"] is True
+            assert result["operation"]["result"]["boot_id_text"] == "18446744073709551614"
+            assert not follower.processes  # No restarted Gateway and no replay.
+        finally:
+            owner.close()
+            follower.close()
+
+
+@pytest.mark.parametrize("status,created_ns,finished_ns,expected", [
+    ("succeeded", 11, 12, True),
+    ("failed", 11, 12, True),
+    ("reconnecting", 11, None, False),
+    ("succeeded", 9, 12, False),
+    ("succeeded", 11, None, False),
+])
+def test_finished_operation_requires_this_session_and_terminal_evidence(
+    tmp_path, monkeypatch, status, created_ns, finished_ns, expected,
+):
+    monkeypatch.syspath_prepend(str(TOOLS.parent / "ESP-Iris/components/esp_iris/tools"))
+    from iris_gateway.store import GatewayStore
+
+    monkeypatch.setattr("mosaico_cli.session_runtime.state_root", lambda name: tmp_path / name)
+    follower = SessionScope()
+    session = object()
+    follower.sessions["test-project"] = session
+    follower.records["test-project"] = {"created_ns": 10}
+    store = GatewayStore(tmp_path / "esp-mosaico/project-sessions/test-project/state")
+    try:
+        store.create_operation({"operation_id": "op", "device_id": "device", "actor_type": "local",
+                                "actor_name": "test", "action": "firmware.ota", "status": status,
+                                "created_ns": created_ns})
+        store.update_operation("op", finished_ns=finished_ns)
+    finally:
+        store.close()
+    assert (follower.finished_operation(session, "op") is not None) is expected
+    assert follower.finished_operation(session, "missing") is None
+    assert follower.finished_operation(object(), "op") is None

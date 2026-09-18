@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -182,6 +183,7 @@ def test_silent_endpoint_is_closed_after_hello_deadline(usb):
             with patch.object(SerialLink, "open", return_value=link):
                 await hub.add_usb(usb.device)
                 await until(lambda: link.closed)
+                await until(lambda: hub.list_endpoints()[0]["state"] == "retrying")
                 assert not hub.list_devices()
                 assert hub.list_endpoints()[0]["state"] == "retrying"
         finally:
@@ -193,7 +195,7 @@ def test_silent_endpoint_is_closed_after_hello_deadline(usb):
 def test_second_gateway_cannot_mutate_active_operations(tmp_path, usb):
     async def scenario():
         state = tmp_path / "state"
-        lock = EndpointLock("gateway-state:" + str(state.resolve()))
+        lock = EndpointLock("gateway-state:" + os.path.normcase(str(state.resolve())))
         lock.acquire()
         first = GatewayStore(state)
         try:

@@ -687,7 +687,16 @@ def _wait_gateway_operation(
             last_stage = stage
             last_bucket = bucket
         time.sleep(0.25)
-        current = gateway_json(context, session, "ota-status", operation_id)
+        try:
+            current = gateway_json(context, session, "ota-status", operation_id)
+        except DeviceError:
+            from .session_runtime import CURRENT_SCOPE
+
+            scope = CURRENT_SCOPE.get()
+            current = scope.finished_operation(session, operation_id) if scope is not None else None
+            if current is None:
+                raise
+            context.note(f"Gateway exited; read committed operation {operation_id} from this project session's store")
         operation = current.get("operation", current) if isinstance(current, dict) else {}
         if not isinstance(operation, dict):
             operation = {}
