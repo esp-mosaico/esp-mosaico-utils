@@ -919,10 +919,13 @@ def recover(arguments: Any, context: RunContext) -> dict[str, Any]:
             idf_path=idf_path,
             mac_reader=probe_unowned_rom_mac,
         )
-        if selected_hardware_mac or arguments.source == "current":
+        if selected_hardware_mac:
+            context.status(
+                f"device: recovery interface ready at {unowned_port} "
+                f"hardware_mac={selected_hardware_mac}"
+            )
+        elif arguments.source == "current":
             rom_hardware_mac = probe_unowned_rom_mac(unowned_port)
-            if selected_hardware_mac and rom_hardware_mac != selected_hardware_mac:
-                raise DeviceError("Selected ROM endpoint hardware MAC changed during probing.")
             selected_hardware_mac = rom_hardware_mac
             context.status(
                 f"device: recovery interface ready at {unowned_port} "

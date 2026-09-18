@@ -2414,6 +2414,71 @@ class RecoveryCommandTests(unittest.TestCase):
         )
         self.assertTrue(any(message.startswith("validation:") for message in messages))
 
+    def test_hardware_mac_dry_run_does_not_probe_selected_rom_twice(self) -> None:
+        arguments = argparse.Namespace(
+            model=None,
+            source="reviewed",
+            device_id=None,
+            hardware_mac="30:ed:a0:12:34:56",
+            recovery_port=None,
+            gateway_profile=None,
+            timeout=180,
+            dry_run=True,
+            yes=False,
+        )
+        context = mock.Mock(workspace=WORKSPACE, repository=REPOSITORY)
+        context.log_path = REPOSITORY / ".codex-runs" / "test.log"
+        session = GatewaySession(
+            Path("python"),
+            Path("iris"),
+            ("--url", "http://127.0.0.1:8443"),
+            None,
+            False,
+        )
+        with ExitStack() as contexts:
+            contexts.enter_context(
+                mock.patch(
+                    "mosaico_cli.commands.load_bundle",
+                    return_value={"version": "0.1", "images": {"recovery": {}}},
+                )
+            )
+            contexts.enter_context(
+                mock.patch(
+                    "mosaico_cli.commands.resolve_idf_path", return_value=Path("/idf")
+                )
+            )
+            contexts.enter_context(
+                mock.patch("mosaico_cli.commands.ensure_gateway", return_value=session)
+            )
+            contexts.enter_context(
+                mock.patch(
+                    "mosaico_cli.commands.connected_devices",
+                    return_value=[
+                        {"device_id": "device-a", "hardware_mac": "30:ed:a0:00:00:01"},
+                        {"device_id": "device-b", "hardware_mac": "30:ed:a0:00:00:02"},
+                    ],
+                )
+            )
+            candidate = contexts.enter_context(
+                mock.patch(
+                    "mosaico_cli.commands.provisioning_candidate",
+                    return_value="/dev/rom-selected",
+                )
+            )
+            redundant_probe = contexts.enter_context(
+                mock.patch("mosaico_cli.commands.read_rom_hardware_mac")
+            )
+            target = contexts.enter_context(
+                mock.patch("mosaico_cli.commands.run_idf_target")
+            )
+            result = recover(arguments, context)
+
+        self.assertEqual(result["status"], "dry_run")
+        self.assertEqual(result["hardware_mac"], "30:ed:a0:12:34:56")
+        candidate.assert_called_once()
+        redundant_probe.assert_not_called()
+        target.assert_not_called()
+
     def test_managed_recovery_uses_device_lease_without_stopping_gateway(self) -> None:
         arguments = SimpleNamespace(
             model=None,
