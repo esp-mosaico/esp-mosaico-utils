@@ -17,6 +17,7 @@ from .discovery import (
 )
 from .link import EndpointLock, Link, SerialLink, TcpLink
 from .mdns_discovery import IrisMdnsDevice, IrisMdnsDiscovery
+from .ownership import OwnershipRegistry
 from .protocol import ProtocolError, Transport
 from .session import DeviceSession
 from .system_update import SystemUpdateBundle
@@ -118,8 +119,11 @@ class IrisHub:
         reconnect_max_seconds: float = 5.0,
         event_sink: EventCallback | None = None,
         hello_timeout_seconds: float = 5.0,
+        ownership: OwnershipRegistry | None = None,
     ) -> None:
         self.instance_id = instance_id
+        self.ownership = ownership
+        self._candidates: dict[str, dict[str, Any]] = {}
         self.hello_timeout_seconds = hello_timeout_seconds
         self.reconnect_min_seconds = reconnect_min_seconds
         self.reconnect_max_seconds = reconnect_max_seconds
@@ -224,6 +228,8 @@ class IrisHub:
             return await self._open_usb(endpoint)
 
         self._add_supervisor(endpoint, opener, metadata=resolved, defer_lock=True)
+        if endpoint not in self._endpoint_states:
+            return
         if firmware_mode is None:
             lowered = port.lower()
             if "recovery" in lowered:
@@ -275,6 +281,8 @@ class IrisHub:
                 self._locks[endpoint] = lock
 
     async def _open_usb(self, endpoint: str) -> Link:
+        if self.ownership is not None:
+            self.ownership._require(endpoint)
         state = self._endpoint_states[endpoint]
         current = await to_thread(
             resolve_usb_port, str(state.get("lock_endpoint") or endpoint)
@@ -306,6 +314,25 @@ class IrisHub:
     ) -> None:
         if self._closing:
             raise RuntimeError("ESP-Iris Hub is closing")
+        if self.ownership is not None:
+            candidate = {"endpoint": endpoint, **(metadata or {}),
+                         "last_seen_ns": time.time_ns(), "present": True}
+            self._candidates[endpoint] = candidate
+            if not self.ownership.allowed(endpoint):
+                device_id = candidate.get("advertised_device_id")
+                # Descriptor serials are hints; HELLO still verifies identity.
+                if not device_id and candidate.get("serial_number"):
+                    matches = {item["device_id"] for item in self.ownership.claims()
+                               if item["owner"] == self.ownership.session_id
+                               and item["state"] == "owned" and item["device_id"]
+                               and item["metadata"].get("serial_number") == candidate["serial_number"]}
+                    if len(matches) == 1:
+                        device_id = matches.pop()
+                if device_id and self.ownership.allowed("device:" + str(device_id)):
+                    self.ownership.acquire(endpoint, candidate)
+                    self.ownership.bind(endpoint, str(device_id), verified=False)
+                else:
+                    return
         self._endpoint_configs[endpoint] = (opener, pairing_token)
         state = self._endpoint_states.setdefault(
             endpoint,
@@ -366,6 +393,10 @@ class IrisHub:
                     )
                 except (OSError, ImportError):
                     devices = []
+                if self.ownership is not None:
+                    for candidate in self._candidates.values():
+                        if candidate["endpoint"].startswith("usb:"):
+                            candidate["present"] = False
                 for device in devices:
                     product = device.product.lower()
                     firmware_mode = (
@@ -451,6 +482,7 @@ class IrisHub:
         endpoint = self._mdns_services.pop(service_name, None)
         if endpoint is None:
             return
+        self._candidates.pop(endpoint, None)
         state = self._endpoint_states.get(endpoint, {})
         device_id = state.get("advertised_device_id")
         if device_id is not None and self._mdns_devices.get(device_id) == service_name:
@@ -531,6 +563,8 @@ class IrisHub:
         endpoint = str(resolved["endpoint"])
         if not endpoint.startswith("usb:"):
             raise RuntimeError("host maintenance is supported only for local USB devices")
+        if self.ownership is not None:
+            self.ownership.acquire(endpoint, resolved)
         state = self._endpoint_states.get(endpoint)
         if state is None:
             raise RuntimeError("device endpoint state is unavailable")
@@ -541,6 +575,8 @@ class IrisHub:
         self._claim_usb(endpoint, state)
         state["resume_after_maintenance"] = endpoint in self._endpoint_tasks
         self._maintenance_endpoints.add(endpoint)
+        if self.ownership is not None:
+            self.ownership.maintenance(endpoint, True)
         task = self._endpoint_tasks.pop(endpoint, None)
         if task is not None:
             task.cancel()
@@ -579,6 +615,8 @@ class IrisHub:
             return
         if endpoint in self._maintenance_endpoints:
             return
+        if self.ownership is not None:
+            self.ownership.restore_maintenance(endpoint_state)
         quarantine = UsbQuarantine(endpoint_state)
         self._usb_quarantines[endpoint] = quarantine
         self._maintenance_endpoints.add(endpoint)
@@ -625,6 +663,8 @@ class IrisHub:
     async def resume_maintenance_endpoint(self, endpoint: str, *, restore_only: bool = False) -> None:
         if endpoint not in self._maintenance_endpoints:
             raise RuntimeError("device endpoint is not reserved for maintenance")
+        if self.ownership is not None:
+            self.ownership.maintenance(endpoint, False)
         if restore_only and not self._endpoint_states[endpoint].get("resume_after_maintenance", False):
             await self._remove_endpoint(endpoint)
             return
@@ -677,6 +717,8 @@ class IrisHub:
                     endpoint, "connecting", attempt=attempt, error=None
                 )
                 try:
+                    if self.ownership is not None:
+                        self.ownership._require(endpoint)
                     link = await opener()
                     self._set_endpoint_state(
                         endpoint, "handshaking", attempt=attempt, error=None
@@ -753,6 +795,12 @@ class IrisHub:
     async def _on_ready(self, session: DeviceSession) -> None:
         assert session.info is not None
         info = session.info
+        if self.ownership is not None:
+            try:
+                self.ownership.bind(session.link.endpoint, info.device_id)
+            except RuntimeError:
+                await session.close()
+                raise
         endpoint_state = self._endpoint_states[session.link.endpoint]
         advertised_device_id = endpoint_state.get("advertised_device_id")
         if (
@@ -851,7 +899,40 @@ class IrisHub:
         return result
 
     def list_endpoints(self) -> list[dict[str, Any]]:
-        return [self._endpoint_states[key].copy() for key in sorted(self._endpoint_states)]
+        remembered = {} if self.ownership is None else {
+            item["resource"]: {**item["metadata"], "endpoint": item["resource"], "present": False}
+            for item in self.ownership.claims() if not item["resource"].startswith("device:")
+        }
+        endpoints = {**remembered, **self._candidates, **self._endpoint_states}
+        result = [dict(endpoints[key]) for key in sorted(endpoints)]
+        if self.ownership is not None:
+            for item in result:
+                item["ownership"] = self.ownership.claim(item["endpoint"])
+                item.setdefault("state", "discovered")
+        return result
+
+    async def connect_owned(self, endpoint: str, metadata: dict[str, Any],
+                            *, pairing_token: str | None = None) -> None:
+        """Open an acquired endpoint, never a discovery wildcard."""
+        if self.ownership is None:
+            raise RuntimeError("project ownership is unavailable")
+        self.ownership._require(endpoint)
+        if endpoint.startswith("usb:"):
+            selector = endpoint if endpoint.startswith("usb:location=") else metadata.get("path", endpoint)
+            await self.add_usb(str(selector))
+        elif endpoint.startswith("tcp:"):
+            host, port = endpoint[4:].rsplit(":", 1)
+            await self.add_tcp(host, int(port), pairing_token=pairing_token, metadata=metadata)
+        else:
+            raise ValueError("unsupported project endpoint")
+
+    async def detach_owned(self, device_id: str) -> None:
+        """Cancel supervisors before releasing locks; preserve discovery hints."""
+        if self.ownership is None:
+            raise RuntimeError("project ownership is unavailable")
+        for claim in self.ownership.claims():
+            if claim["device_id"] == device_id and not claim["resource"].startswith("device:"):
+                await self._remove_endpoint(claim["resource"])
 
     def get(self, device_id: str) -> DeviceSession:
         try:

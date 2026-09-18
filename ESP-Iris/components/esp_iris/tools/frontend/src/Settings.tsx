@@ -1,11 +1,12 @@
 import { FormEvent, useEffect, useState } from "react";
 import { api, formatTime } from "./api";
 import PageHeading from "./PageHeading";
+import ProjectSession from "./ProjectSession";
 
 type Token = { token_id: string; name: string; scopes: string[]; created_ns: number; last_used_ns?: number; revoked_ns?: number; token?: string };
-type Props = { mode: "develop" | "observe"; demo: boolean; localAuthRequired: boolean; onOpenDocs: () => void };
+type Props = { mode: "develop" | "observe"; demo: boolean; localAuthRequired: boolean; projectSession?: boolean; onOpenDocs: () => void };
 
-export default function Settings({ mode, demo, localAuthRequired, onOpenDocs }: Props) {
+export default function Settings({ mode, demo, localAuthRequired, projectSession, onOpenDocs }: Props) {
   const [tokens, setTokens] = useState<Token[]>([]);
   const [name, setName] = useState("");
   const [tokenProfile, setTokenProfile] = useState("read");
@@ -62,6 +63,7 @@ export default function Settings({ mode, demo, localAuthRequired, onOpenDocs }: 
     <PageHeading title="设置" copy="管理网关凭据、数据和开发者资源。" />
     {message && <div className="inline-notice page-notice">{message}</div>}
     <div className="settings-grid">
+      {projectSession && <ProjectSession />}
       <section className="settings-section">
         <div className="panel-title"><span>访问认证</span></div>
         <dl className="settings-dl"><dt>本机访问</dt><dd>{localAuthRequired ? "需要开发口令或 Agent Token" : "当前免认证"}</dd><dt>远程访问</dt><dd>需要开发口令或具名 Agent Token</dd><dt>当前模式</dt><dd>{mode === "develop" ? "开发模式" : "观察模式"} · 在页面顶部切换</dd></dl>

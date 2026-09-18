@@ -31,6 +31,7 @@ export type DeviceStatus = Device & {
 };
 
 export type GatewayHealth = {
+  project_session?: { session_id: string; project_path: string } | null;
   system_update_trust_configured: boolean;
 };
 

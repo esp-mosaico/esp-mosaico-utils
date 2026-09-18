@@ -324,12 +324,19 @@ def list_devices(context: RunContext, gateway_profile: str | None) -> dict[str, 
     for device in devices:
         device["online"] = device.get("connected") is not False
         device["connection"] = device.get("transport_name") or device.get("transport")
+    from .session_runtime import CURRENT_SCOPE, request
+    project_scope = CURRENT_SCOPE.get()
+    discovered = (
+        request(session.connection_args[1], "/v1/project").get("endpoints", [])
+        if project_scope is not None and session.profile is None else []
+    )
     return {
         "command": "list",
         "status": "succeeded",
         "gateway_started": session.started_local,
         "gateway_profile": session.profile,
         "devices": devices,
+        "endpoints": discovered,
     }
 
 
