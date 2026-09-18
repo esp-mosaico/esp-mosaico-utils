@@ -38,6 +38,7 @@ from .gateway import (
     create_app,
 )
 from .hub import IrisHub
+from .link import EndpointLock
 from .security import DEFAULT_DEVELOPER_PASSWORD
 from .store import GatewayStore
 from .system_update import (
@@ -117,6 +118,15 @@ def _recover_interrupted(store: GatewayStore) -> None:
 
 async def _web(args: argparse.Namespace) -> None:
     state_dir = pathlib.Path(args.state_dir) if args.state_dir else _default_state_dir(args.instance_id)
+    lock = EndpointLock("gateway-state:" + os.path.normcase(str(state_dir.expanduser().resolve())))
+    try:
+        lock.acquire()
+        await _web_owned(args, state_dir.expanduser().resolve())
+    finally:
+        lock.close()
+
+
+async def _web_owned(args: argparse.Namespace, state_dir: pathlib.Path) -> None:
     store = GatewayStore(state_dir)
     _recover_interrupted(store)
     system_update_trust_key = None
@@ -162,12 +172,15 @@ async def _web(args: argparse.Namespace) -> None:
                 await hub.add_usb(port)
             for port in args.usb_serial_jtag:
                 await hub.add_usb(port, usb_serial_jtag=True)
-            if args.discover_usb:
+            explicit_endpoints = bool(args.usb or args.usb_serial_jtag or args.tcp)
+            discover_usb = args.discover_usb if args.discover_usb is not None else not explicit_endpoints
+            discover_mdns = args.discover_mdns if args.discover_mdns is not None else not explicit_endpoints
+            if discover_usb:
                 await hub.start_usb_discovery(
                     args.usb_discovery_interval,
                     include_usb_serial_jtag=args.discover_usb_serial_jtag,
                 )
-            if args.discover_mdns:
+            if discover_mdns:
                 await hub.start_mdns_discovery(pairing_token=args.pairing_token)
 
         context = None
@@ -813,7 +826,8 @@ def build_parser() -> argparse.ArgumentParser:
     web_parser.add_argument(
         "--usb-serial-jtag", action="append", default=[], metavar="PORT"
     )
-    web_parser.add_argument("--discover-usb", action=BooleanOptionalAction, default=True)
+    web_parser.add_argument("--discover-usb", action=BooleanOptionalAction, default=None,
+                            help="discover USB devices (default: enabled unless endpoints are explicit)")
     web_parser.add_argument(
         "--discover-usb-serial-jtag",
         action=BooleanOptionalAction,
@@ -824,7 +838,7 @@ def build_parser() -> argparse.ArgumentParser:
     web_parser.add_argument(
         "--discover-mdns",
         action=BooleanOptionalAction,
-        default=True,
+        default=None,
         help="automatically discover _esp-iris._tcp devices on the local network",
     )
     web_parser.add_argument("--listen", default="127.0.0.1")

@@ -15,10 +15,13 @@ def same_port(left: str, right: str) -> bool:
 def serial_jtag_candidate(requested: str) -> dict[str, Any]:
     from serial.tools import list_ports
 
-    candidates = [port for port in list_ports.comports()
-                  if port.vid == 0x303A and port.pid == 0x1001]
+    available = [port for port in list_ports.comports()
+                 if port.vid == 0x303A and port.pid == 0x1001]
+    candidates = [port for port in available if same_port(requested, str(port.device))]
+    if available and not candidates:
+        raise DeviceError("--recovery-port does not identify a connected USB Serial/JTAG interface.")
     if len(candidates) != 1:
-        raise SelectionError("--recovery-port requires exactly one connected USB Serial/JTAG 303A:1001 interface.")
+        raise SelectionError("--recovery-port must select exactly one connected USB Serial/JTAG 303A:1001 interface.")
     port = candidates[0]
     if not same_port(requested, str(port.device)):
         raise DeviceError("--recovery-port does not identify the unique USB Serial/JTAG 303A:1001 interface.")

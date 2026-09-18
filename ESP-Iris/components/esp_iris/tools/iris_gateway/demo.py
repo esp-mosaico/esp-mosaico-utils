@@ -858,7 +858,7 @@ class DemoHub:
     def reserve_maintenance_endpoint(self, endpoint_state: dict[str, Any]) -> None:
         self._maintenance_endpoints.add(str(endpoint_state["endpoint"]))
 
-    async def resume_maintenance_endpoint(self, endpoint: str) -> None:
+    async def resume_maintenance_endpoint(self, endpoint: str, *, restore_only: bool = False) -> None:
         if endpoint not in self._maintenance_endpoints:
             raise RuntimeError("device endpoint is not reserved for maintenance")
         self._maintenance_endpoints.remove(endpoint)

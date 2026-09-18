@@ -826,7 +826,10 @@ def recover(arguments: Any, context: RunContext) -> dict[str, Any]:
         if len(matches) == 1:
             prior_device = matches[0]
         else:
-            context.note("warning: requested device was not reachable through Gateway")
+            raise DeviceError(
+                "The requested Device ID is not reachable; refusing to select another ROM device. "
+                "Use --hardware-mac to explicitly identify an offline recovery target."
+            )
     elif selected_hardware_mac:
         matches = [
             item for item in devices
@@ -1102,6 +1105,8 @@ def recover(arguments: Any, context: RunContext) -> dict[str, Any]:
         raise
 
     verified_device_id = str(status.get("device_id") or prior_device_id or "")
+    if prior_device_id and verified_device_id != prior_device_id:
+        raise OperationError("Recovery returned a different Device ID than the selected target.")
     if not verified_device_id:
         raise OperationError(
             "Recovery is ready, but the Device ID could not be confirmed."

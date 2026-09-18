@@ -419,8 +419,8 @@ def ensure_gateway(context: RunContext, profile: str | None) -> GatewaySession:
                 # process created above and share the compatible winner.
                 process.terminate()
             return GatewaySession(python, script, local, None, started_local)
-        if process.poll() is not None:
-            break
+        # A concurrent starter may hold the state lock before its HTTP socket
+        # is ready. Keep probing the winner even if our child already exited.
         time.sleep(0.25)
     if process.poll() is None:
         process.terminate()

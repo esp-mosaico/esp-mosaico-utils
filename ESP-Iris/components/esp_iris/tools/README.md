@@ -91,8 +91,9 @@ python "$ESP_IRIS_COMPONENT_DIR/tools/esp_iris.py" web \
   --tcp 192.0.2.22:19772
 ```
 
-Automatic application CDC and mDNS discovery can add further devices while the
-Gateway is running. A device may wait on several configured transports, but a
+Automatic application CDC and mDNS discovery are enabled when no endpoints are
+specified. With explicit USB or TCP endpoints, enable additional discovery with
+`--discover-usb` and/or `--discover-mdns`. A device may wait on several configured transports, but a
 validated HELLO_ACK selects exactly one active session; it never maintains
 simultaneous USB and TCP sessions.
 
@@ -127,6 +128,27 @@ listens on `127.0.0.1:8443`, and serves the API and Workbench.
 python "$ESP_IRIS_COMPONENT_DIR/tools/esp_iris.py" web \
   --usb /dev/serial/by-id/usb-Espressif_ESP-Iris_...
 ```
+
+An explicit USB port may be absent at startup. The API and Workbench still
+start, and the port is retried until it can be resolved and exclusively owned.
+`GET /v1/endpoints` reports waiting, ambiguous, or owned-elsewhere conditions.
+Aliases and automatic discovery share one physical endpoint lock and session.
+
+Explicit `--usb` selection supports custom application VID/PID/product strings;
+automatic discovery retains its ESP-Iris descriptor filter. Every connection
+must complete the ESP-Iris handshake. Espressif `303A:1001` still requires the
+Serial/JTAG opt-in below, and `303A:0020` ROM download ports remain reserved for
+the maintenance workflow.
+
+Restored maintenance leases do not require their devices to be present for the
+Gateway to start. Saved physical locations are locked immediately; serial-only
+records wait for an unambiguous live match. A legacy record with insufficient
+identity stays `maintenance_unresolved`, and USB acquisitions that cannot be
+ruled out as conflicting are quarantined across Gateway processes. The API
+remains available to inspect the reservation or abort it with its original
+maintenance token. An unsuccessful completion before reattachment retains the
+quarantine and remains cancellable. Instances sharing these reservations must
+all run the updated ownership implementation.
 
 Application CDC0 carries framed ESP-Iris data, not a text console. Flash and
 monitor through a separate UART/Serial-JTAG interface or manually enter the ROM

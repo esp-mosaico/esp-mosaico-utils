@@ -3,19 +3,30 @@ from __future__ import annotations
 import asyncio
 import collections
 import contextlib
-import os
 import struct
 import time
 from collections.abc import AsyncIterator
 from typing import Any, Awaitable, Callable, Dict
 
-from .compat import remove_prefix, to_thread
-from .discovery import discover_iris_usb_devices
+from .compat import to_thread
+from .discovery import (
+    discover_iris_usb_devices,
+    iris_usb_allowed,
+    resolve_usb_port,
+    usb_endpoint,
+)
 from .link import EndpointLock, Link, SerialLink, TcpLink
 from .mdns_discovery import IrisMdnsDevice, IrisMdnsDiscovery
 from .protocol import ProtocolError, Transport
 from .session import DeviceSession
 from .system_update import SystemUpdateBundle
+from .usb_ownership import (
+    UsbEndpointBusy,
+    UsbQuarantine,
+    check_usb_quarantines,
+    reservation_selector,
+    usb_admission,
+)
 
 LinkOpener = Callable[[], Awaitable[Link]]
 EventCallback = Callable[[Dict[str, Any]], Awaitable[None]]
@@ -106,8 +117,10 @@ class IrisHub:
         reconnect_min_seconds: float = 0.25,
         reconnect_max_seconds: float = 5.0,
         event_sink: EventCallback | None = None,
+        hello_timeout_seconds: float = 5.0,
     ) -> None:
         self.instance_id = instance_id
+        self.hello_timeout_seconds = hello_timeout_seconds
         self.reconnect_min_seconds = reconnect_min_seconds
         self.reconnect_max_seconds = reconnect_max_seconds
         self._event_sink = event_sink
@@ -118,6 +131,9 @@ class IrisHub:
         self._endpoint_states: dict[str, dict[str, Any]] = {}
         self._endpoint_configs: dict[str, tuple[LinkOpener, str | None]] = {}
         self._maintenance_endpoints: set[str] = set()
+        self._pending_usb: dict[str, dict[str, Any]] = {}
+        self._usb_quarantines: dict[str, UsbQuarantine] = {}
+        self._usb_retry_task: asyncio.Task[None] | None = None
         self._discovery_task: asyncio.Task[None] | None = None
         self._mdns_discovery: IrisMdnsDiscovery | None = None
         self._mdns_services: dict[str, str] = {}
@@ -161,29 +177,53 @@ class IrisHub:
         *,
         usb_serial_jtag: bool = False,
         metadata: dict[str, Any] | None = None,
+        discovered: bool = False,
     ) -> None:
-        metadata = dict(metadata or {})
-        location = str(metadata.get("location") or "")
-        serial_number = str(metadata.get("serial_number") or "")
-        endpoint = (
-            f"usb:location={location}"
-            if location
-            else f"usb:serial={serial_number}"
-            if serial_number
-            else f"usb:{port}"
+        if self._closing:
+            raise RuntimeError("ESP-Iris Hub is closing")
+        # Keep the selector stable even when a previously dangling symlink
+        # starts resolving to a different tty path.
+        pending = "usb:pending=" + port
+        try:
+            resolved: dict[str, Any] = await to_thread(resolve_usb_port, port)
+        except OSError as exc:
+            prior = self._pending_usb.get(pending, {})
+            self._pending_usb[pending] = {
+                "port": port, "firmware_mode": firmware_mode,
+                "usb_serial_jtag": usb_serial_jtag or prior.get("usb_serial_jtag", False),
+                "discovered": discovered and prior.get("discovered", True),
+            }
+            self._endpoint_states[pending] = {
+                "endpoint": pending, "path": port, "state": "waiting",
+                "device_id": None, "error": str(exc),
+                "attempt": int(self._endpoint_states.get(pending, {}).get("attempt", 0)) + 1,
+                "updated_monotonic_ns": time.monotonic_ns(),
+            }
+            self._ensure_usb_retry()
+            return
+        prior = self._pending_usb.pop(pending, {})
+        discovered = discovered and prior.get("discovered", True)
+        usb_serial_jtag = usb_serial_jtag or prior.get("usb_serial_jtag", False)
+        self._endpoint_states.pop(pending, None)
+        endpoint = usb_endpoint(resolved)
+        # Restored leases retain their durable endpoint name, while all aliases
+        # still share the same physical lock and supervisor.
+        endpoint = next((key for key, state in self._endpoint_states.items()
+                         if state.get("lock_endpoint") == endpoint), endpoint)
+        previous = self._endpoint_states.get(endpoint, {})
+        if discovered and endpoint in self._maintenance_endpoints:
+            return
+        resolved["usb_selection"] = (
+            "explicit" if not discovered else previous.get("usb_selection", "discovery")
+        )
+        resolved["allow_serial_jtag"] = (
+            usb_serial_jtag or bool(previous.get("allow_serial_jtag"))
         )
 
         async def opener() -> Link:
-            current_port = str(
-                self._endpoint_states.get(endpoint, {}).get("path") or port
-            )
-            if usb_serial_jtag:
-                return await SerialLink.open(
-                    current_port, hupcl=False, endpoint=endpoint
-                )
-            return await SerialLink.open(current_port, endpoint=endpoint)
+            return await self._open_usb(endpoint)
 
-        self._add_supervisor(endpoint, opener, metadata=metadata)
+        self._add_supervisor(endpoint, opener, metadata=resolved, defer_lock=True)
         if firmware_mode is None:
             lowered = port.lower()
             if "recovery" in lowered:
@@ -197,7 +237,62 @@ class IrisHub:
             "firmware_mode", firmware_mode or "unknown"
         )
         self._endpoint_states[endpoint]["transport_name"] = (
-            "USB Serial/JTAG" if usb_serial_jtag else "USB Highspeed"
+            "USB Serial/JTAG" if resolved["pid"] == 0x1001 else "USB Highspeed"
+        )
+
+    def _ensure_usb_retry(self) -> None:
+        if self._usb_retry_task is None or self._usb_retry_task.done():
+            self._usb_retry_task = asyncio.create_task(self._retry_usb())
+
+    async def _retry_usb(self) -> None:
+        delay = max(0.01, self.reconnect_min_seconds)
+        while self._pending_usb or self._usb_quarantines:
+            # Resolve quarantines before discovery or explicit selectors can
+            # acquire a newly enumerated endpoint.
+            for endpoint in list(self._usb_quarantines):
+                self._resolve_usb_reservation(endpoint)
+            for options in list(self._pending_usb.values()):
+                await self.add_usb(**options)
+            await asyncio.sleep(delay)
+            delay = min(self.reconnect_max_seconds, max(delay * 2, 0.01))
+
+    def _claim_usb(self, endpoint: str, metadata: dict[str, Any]) -> None:
+        quarantine = self._usb_quarantines.get(endpoint)
+        with usb_admission() as root:
+            check_usb_quarantines(
+                root, metadata, ignore=quarantine.id if quarantine else None
+            )
+            if endpoint not in self._locks:
+                lock = EndpointLock(usb_endpoint(metadata))
+                try:
+                    lock.acquire()
+                except RuntimeError as exc:
+                    lock.close()
+                    raise UsbEndpointBusy(str(exc)) from exc
+                except BaseException:
+                    lock.close()
+                    raise
+                self._locks[endpoint] = lock
+
+    async def _open_usb(self, endpoint: str) -> Link:
+        state = self._endpoint_states[endpoint]
+        current = await to_thread(
+            resolve_usb_port, str(state.get("lock_endpoint") or endpoint)
+        )
+        allow_jtag = bool(state.get("allow_serial_jtag"))
+        if not iris_usb_allowed(
+            current, allow_serial_jtag=allow_jtag,
+            explicit=state.get("usb_selection") == "explicit",
+        ):
+            raise OSError("USB interface is not eligible for ESP-Iris; left unopened")
+        self._claim_usb(endpoint, current)
+        state.update(current)
+        state["transport_name"] = (
+            "USB Serial/JTAG" if current["pid"] == 0x1001 else "USB Highspeed"
+        )
+        return await SerialLink.open(
+            current["path"], endpoint=endpoint,
+            hupcl=False if current.get("pid") == 0x1001 else None,
         )
 
     def _add_supervisor(
@@ -207,6 +302,7 @@ class IrisHub:
         *,
         pairing_token: str | None = None,
         metadata: dict[str, Any] | None = None,
+        defer_lock: bool = False,
     ) -> None:
         if self._closing:
             raise RuntimeError("ESP-Iris Hub is closing")
@@ -226,15 +322,19 @@ class IrisHub:
         if endpoint in self._endpoint_tasks:
             return
         if endpoint in self._maintenance_endpoints:
-            state["state"] = "maintenance_detached"
+            state["state"] = (
+                "maintenance_unresolved" if endpoint in self._usb_quarantines
+                else "maintenance_detached"
+            )
             state["updated_monotonic_ns"] = time.monotonic_ns()
             return
-        if endpoint not in self._locks:
+        if endpoint not in self._locks and not defer_lock:
             lock = EndpointLock(endpoint)
             try:
                 lock.acquire()
-            except BaseException:
+            except BaseException as exc:
                 lock.close()
+                state.update(state="owned_elsewhere", error=str(exc))
                 raise
             self._locks[endpoint] = lock
         state.update(
@@ -273,13 +373,14 @@ class IrisHub:
                         if "normal" in product
                         else "unknown"
                     )
-                    with contextlib.suppress(RuntimeError):
+                    with contextlib.suppress(RuntimeError, OSError):
                         await self.add_usb(
                             device.path,
                             firmware_mode=firmware_mode,
                             usb_serial_jtag=(
                                 device.transport == "usb_serial_jtag"
                             ),
+                            discovered=True,
                             metadata={
                                 "path": device.path,
                                 "device_path": device.device,
@@ -375,6 +476,10 @@ class IrisHub:
         self._endpoint_states.pop(endpoint, None)
         self._endpoint_configs.pop(endpoint, None)
         self._maintenance_endpoints.discard(endpoint)
+        self._pending_usb.pop(endpoint, None)
+        quarantine = self._usb_quarantines.pop(endpoint, None)
+        if quarantine is not None:
+            quarantine.close()
 
     async def quiesce_device(self, device_id: str) -> dict[str, Any]:
         """Close one local USB session while retaining its cross-process lock."""
@@ -385,48 +490,19 @@ class IrisHub:
     def maintenance_endpoint(self, identifier: str) -> dict[str, Any]:
         """Resolve or register one physical endpoint without opening a session."""
 
-        resolved_identifier = os.path.realpath(identifier)
-        matches: list[dict[str, Any]] = []
-        for state in self._endpoint_states.values():
-            paths = [str(state.get(key) or "") for key in ("path", "device_path")]
-            if state.get("endpoint") == identifier or any(
-                path
-                and (
-                    path == identifier
-                    or os.path.realpath(path) == resolved_identifier
-                )
-                for path in paths
-            ):
-                matches.append(state)
-        if len(matches) > 1:
-            raise LookupError("maintenance endpoint is ambiguous")
-        if matches:
-            return matches[0].copy()
-
-        from serial.tools import list_ports
-
-        ports = [
-            port
-            for port in list_ports.comports()
-            if identifier == str(port.device)
-            or resolved_identifier == os.path.realpath(str(port.device))
-        ]
-        if len(ports) != 1:
-            raise LookupError(
-                "maintenance endpoint was not found"
-                if not ports
-                else "maintenance endpoint is ambiguous"
-            )
-        port = ports[0]
-        location = str(getattr(port, "location", None) or "")
-        serial_number = str(getattr(port, "serial_number", None) or "")
-        endpoint = (
-            f"usb:location={location}"
-            if location
-            else f"usb:serial={serial_number}"
-            if serial_number
-            else f"usb:{identifier}"
-        )
+        if identifier in self._pending_usb:
+            raise LookupError("USB selector is not yet bound to a physical endpoint")
+        if identifier in self._endpoint_states:
+            return self._endpoint_states[identifier].copy()
+        # A tty number can be reused at a different USB socket. Never match it
+        # against a historical device_path before resolving the live descriptor.
+        metadata = resolve_usb_port(identifier)
+        endpoint = usb_endpoint(metadata)
+        endpoint = next((key for key, state in self._endpoint_states.items()
+                         if state.get("lock_endpoint") == endpoint), endpoint)
+        if endpoint in self._endpoint_states:
+            self._endpoint_states[endpoint].update(metadata)
+            return self._endpoint_states[endpoint].copy()
         state = self._endpoint_states.setdefault(
             endpoint,
             {
@@ -438,23 +514,12 @@ class IrisHub:
                 "updated_monotonic_ns": time.monotonic_ns(),
             },
         )
-        state.update(
-            path=identifier,
-            device_path=str(port.device),
-            vid=getattr(port, "vid", None),
-            pid=getattr(port, "pid", None),
-            serial_number=serial_number,
-            product=str(getattr(port, "product", None) or ""),
-            location=location,
-            firmware_mode="unknown",
-            transport_name="USB Highspeed",
-        )
+        state.update(metadata)
+        state.update(firmware_mode="unknown", allow_serial_jtag=False,
+                     transport_name="USB Serial/JTAG" if metadata["pid"] == 0x1001 else "USB Highspeed")
 
         async def opener() -> Link:
-            current_port = str(
-                self._endpoint_states.get(endpoint, {}).get("path") or identifier
-            )
-            return await SerialLink.open(current_port, endpoint=endpoint)
+            return await self._open_usb(endpoint)
 
         self._endpoint_configs[endpoint] = (opener, None)
         return state.copy()
@@ -473,14 +538,8 @@ class IrisHub:
             raise RuntimeError("device endpoint is already reserved for maintenance")
         device_id = str(state.get("device_id") or "")
         session = self._devices.get(device_id) if device_id else None
-        if endpoint not in self._locks:
-            lock = EndpointLock(endpoint)
-            try:
-                lock.acquire()
-            except BaseException:
-                lock.close()
-                raise
-            self._locks[endpoint] = lock
+        self._claim_usb(endpoint, state)
+        state["resume_after_maintenance"] = endpoint in self._endpoint_tasks
         self._maintenance_endpoints.add(endpoint)
         task = self._endpoint_tasks.pop(endpoint, None)
         if task is not None:
@@ -518,34 +577,61 @@ class IrisHub:
         endpoint = str(endpoint_state["endpoint"])
         if not endpoint.startswith("usb:"):
             return
+        if endpoint in self._maintenance_endpoints:
+            return
+        quarantine = UsbQuarantine(endpoint_state)
+        self._usb_quarantines[endpoint] = quarantine
         self._maintenance_endpoints.add(endpoint)
         self._endpoint_states[endpoint] = {
             **endpoint_state,
-            "state": "maintenance_detached",
+            "state": "maintenance_unresolved",
+            "device_id": None,
             "updated_monotonic_ns": time.monotonic_ns(),
         }
-        if endpoint not in self._locks:
-            lock = EndpointLock(endpoint)
-            lock.acquire()
-            self._locks[endpoint] = lock
-        port = str(endpoint_state.get("path") or remove_prefix(endpoint, "usb:"))
-        usb_serial_jtag = endpoint_state.get("transport_name") == "USB Serial/JTAG"
+        # Legacy records do not authorize automatic adoption of a serial port.
+        self._endpoint_states[endpoint].setdefault("resume_after_maintenance", False)
+        self._endpoint_states[endpoint].setdefault("allow_serial_jtag", False)
 
         async def opener() -> Link:
-            current_port = str(
-                self._endpoint_states.get(endpoint, {}).get("path") or port
-            )
-            return await SerialLink.open(
-                current_port,
-                hupcl=False if usb_serial_jtag else None,
-                endpoint=endpoint,
-            )
+            return await self._open_usb(endpoint)
 
         self._endpoint_configs[endpoint] = (opener, None)
+        self._resolve_usb_reservation(endpoint)
+        if endpoint in self._usb_quarantines:
+            self._ensure_usb_retry()
 
-    async def resume_maintenance_endpoint(self, endpoint: str) -> None:
+    def _resolve_usb_reservation(self, endpoint: str) -> None:
+        state = self._endpoint_states[endpoint]
+        selector = reservation_selector(state)
+        try:
+            if selector is None:
+                raise OSError(
+                    "Saved USB identity is insufficient; cancel the maintenance "
+                    "lease before selecting the recovery endpoint again"
+                )
+            if selector.startswith("usb:location="):
+                # The canonical physical lock is meaningful even while absent.
+                metadata = {**state, "location": selector[len("usb:location="):]}
+            else:
+                metadata = resolve_usb_port(selector)
+            self._claim_usb(endpoint, metadata)
+        except (OSError, RuntimeError) as exc:
+            state.update(state="maintenance_unresolved", error=str(exc))
+            return
+        state.update(lock_endpoint=usb_endpoint(metadata),
+                     state="maintenance_detached", error=None)
+        self._usb_quarantines.pop(endpoint).close()
+
+    async def resume_maintenance_endpoint(self, endpoint: str, *, restore_only: bool = False) -> None:
         if endpoint not in self._maintenance_endpoints:
             raise RuntimeError("device endpoint is not reserved for maintenance")
+        if restore_only and not self._endpoint_states[endpoint].get("resume_after_maintenance", False):
+            await self._remove_endpoint(endpoint)
+            return
+        if endpoint in self._usb_quarantines:
+            self._resolve_usb_reservation(endpoint)
+            if endpoint in self._usb_quarantines:
+                raise RuntimeError(self._endpoint_states[endpoint]["error"])
         try:
             opener, pairing_token = self._endpoint_configs[endpoint]
         except KeyError as exc:
@@ -586,6 +672,7 @@ class IrisHub:
         try:
             while True:
                 attempt += 1
+                retry_state = "retrying"
                 self._set_endpoint_state(
                     endpoint, "connecting", attempt=attempt, error=None
                 )
@@ -601,12 +688,27 @@ class IrisHub:
                         on_media=self._on_media,
                         pairing_token=pairing_token,
                     )
-                    await active_session.run()
+                    run_task = asyncio.create_task(active_session.run())
+                    ready_task = asyncio.create_task(active_session.wait_ready(self.hello_timeout_seconds))
+                    try:
+                        done, _ = await asyncio.wait(
+                            (run_task, ready_task), return_when=asyncio.FIRST_COMPLETED
+                        )
+                        if ready_task in done:
+                            await ready_task
+                        await run_task
+                    finally:
+                        for task in (ready_task, run_task):
+                            if not task.done():
+                                task.cancel()
+                        await asyncio.gather(ready_task, run_task, return_exceptions=True)
                     failure = "link closed"
                 except asyncio.CancelledError:
                     raise
-                except (ConnectionError, OSError, ProtocolError, RuntimeError) as exc:
+                except (ConnectionError, OSError, ProtocolError, RuntimeError, asyncio.TimeoutError) as exc:
                     failure = str(exc)
+                    if isinstance(exc, UsbEndpointBusy):
+                        retry_state = "owned_elsewhere"
 
                 device_id = self._endpoint_states[endpoint].get("device_id")
                 if device_id:
@@ -632,8 +734,9 @@ class IrisHub:
                     ]:
                         self._mirror_states.pop(key, None)
                 active_session = None
+                self._endpoint_states[endpoint]["device_id"] = None
                 self._set_endpoint_state(
-                    endpoint, "retrying", attempt=attempt, error=failure
+                    endpoint, retry_state, attempt=attempt, error=failure
                 )
                 await asyncio.sleep(delay)
                 delay = min(self.reconnect_max_seconds, max(delay * 2, 0.001))
@@ -642,6 +745,7 @@ class IrisHub:
                 current = self._devices.get(active_session.info.device_id)
                 if current is active_session:
                     del self._devices[active_session.info.device_id]
+            self._endpoint_states[endpoint]["device_id"] = None
             self._set_endpoint_state(
                 endpoint, "stopped", attempt=attempt, error=None
             )
@@ -1057,6 +1161,12 @@ class IrisHub:
 
     async def close(self) -> None:
         self._closing = True
+        if self._usb_retry_task is not None:
+            self._usb_retry_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._usb_retry_task
+            self._usb_retry_task = None
+        self._pending_usb.clear()
         if self._mdns_discovery is not None:
             await self._mdns_discovery.close()
             self._mdns_discovery = None
@@ -1080,3 +1190,6 @@ class IrisHub:
         for lock in self._locks.values():
             lock.close()
         self._locks.clear()
+        for quarantine in self._usb_quarantines.values():
+            quarantine.close()
+        self._usb_quarantines.clear()
