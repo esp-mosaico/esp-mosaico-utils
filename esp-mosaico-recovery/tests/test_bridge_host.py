@@ -39,7 +39,7 @@ def test_bridge_worker_and_transaction_gates(tmp_path, kind):
     command = [cc, "-std=gnu11", "-g", "-Werror=implicit-function-declaration", "-Wno-deprecated-declarations",
                '-D{}="{}"'.format('BRIDGE_SOURCE' if kind == 'worker' else kind.upper() + '_SOURCE', source),
                "-I" + str(tmp_path), "-I" + str(FIXTURE), "-I" + str(headers[0].parent),
-               "-I" + str(BRIDGE / "include"), "-I" + str(ROOT / "firmware/recovery/main"),
+               "-I" + str(ROOT / "include"), "-I" + str(BRIDGE / "include"), "-I" + str(ROOT / "firmware/recovery/main"),
                "-I" + str(REPO / "ESP-Iris/components/esp_iris/include"),
                str(FIXTURE / ("main.c" if kind == "worker" else kind + ".c")), str(cjson_source), "-lcrypto", "-o", str(executable)]
     if backend:

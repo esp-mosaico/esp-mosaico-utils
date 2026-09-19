@@ -11,7 +11,9 @@ from .contracts import GatewayHub
 from .firmware import inspect_firmware_image
 from .operations import OperationManager, OperationOutcomeUnknown
 from .reconciliation import health_timeout
+from .recovery_transition import enter_recovery
 from .system_update import SystemUpdateBundle, SystemUpdateComponentKind
+from .update_acceptance import validate_updated_contract
 
 PreserveCoreDump = Callable[[str], Awaitable[Optional[Dict[str, Any]]]]
 ValidateIdentity = Callable[[Dict[str, Any], Dict[str, Any], str], Dict[str, str]]
@@ -46,43 +48,13 @@ async def run_system_update(
             progress_permille=20,
             coredump=preserved_coredump,
         )
-    if before.get("firmware_mode") != "recovery":
-        await operations.progress(
-            operation_id,
-            stage="entering_recovery",
-            progress_permille=30,
-            previous_boot_id=previous_boot,
-        )
-        try:
-            await hub.enter_recovery(device_id)
-        except (ConnectionError, OSError):
-            pass
-        deadline = asyncio.get_running_loop().time() + 30
-        recovery_status: dict[str, Any] | None = None
-        while asyncio.get_running_loop().time() < deadline:
-            await asyncio.sleep(0.25)
-            try:
-                candidate = await hub.status(device_id)
-            except (
-                ConnectionError,
-                OSError,
-                KeyError,
-                LookupError,
-                RuntimeError,
-            ):
-                continue
-            if (
-                candidate.get("firmware_mode") == "recovery"
-                and candidate.get("boot_id") != previous_boot
-            ):
-                recovery_status = candidate
-                break
-        if recovery_status is None:
-            raise OperationOutcomeUnknown(
-                "factory recovery did not reconnect for system update"
-            )
-    else:
-        recovery_status = before
+    async def transition_progress(stage: str, **fields: Any) -> None:
+        await operations.progress(operation_id, stage=stage, progress_permille={
+            "entering_recovery": 30, "waiting_recovery": 35, "recovery_connected": 40,
+        }[stage], **fields)
+
+    recovery_status = await enter_recovery(hub, device_id, before=before,
+                                          progress=transition_progress)
 
     writer_boot = recovery_status.get("boot_id")
     validate_update_compatibility(
@@ -194,6 +166,8 @@ async def run_system_update(
     finally:
         hub.unsubscribe(device_id, queue)
 
+    validate_updated_contract(status, device_id, bundle.chip_id, required_compatibility,
+                              role="recovery" if target_recovery is not None else "normal")
     if inventory_after.get("partition_table_sha256") != bundle.target_layout_sha256:
         raise RuntimeError("post-update partition-table SHA-256 does not match")
     if inventory_after.get("last_operation_id") != wire_operation_id.hex():

@@ -364,7 +364,7 @@ class ParserTests(unittest.TestCase):
 
     def test_user_visible_literals_are_english_only(self) -> None:
         han_character = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff]")
-        package = TOOL_ROOT / "tools" / "mosaico_cli"
+        package = TOOL_ROOT.parent / "mosaico-tools/tools/mosaico_cli"
         violations: list[str] = []
         for path in sorted(package.glob("*.py")):
             tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -736,33 +736,18 @@ class GatewayTests(unittest.TestCase):
         ), self.assertRaises(DeviceError):
             system_inventory(mock.Mock(), mock.Mock(), "device-a")
 
-    def test_enter_recovery_waits_through_rpc_disconnect(self) -> None:
+    def test_enter_recovery_delegates_transition_to_gateway(self) -> None:
         context = mock.Mock(log_path=Path("/runs/raw.log"))
         session = mock.Mock()
-        with ExitStack() as contexts:
-            request = contexts.enter_context(
-                mock.patch(
-                    "mosaico_cli.gateway.gateway_json",
-                    side_effect=[
-                        DeviceError("USB disconnected"),
-                        {"device": {"firmware_mode": "normal", "boot_id": 10}},
-                        {"device": {"firmware_mode": "recovery", "boot_id": 11}},
-                    ],
-                )
-            )
-            contexts.enter_context(mock.patch("mosaico_cli.gateway.time.sleep"))
-            status = enter_recovery_and_wait(
-                context,
-                session,
-                "device-a",
-                previous_boot_id=10,
-                timeout=30,
-            )
-
-        self.assertEqual(status["firmware_mode"], "recovery")
+        with mock.patch("mosaico_cli.gateway.gateway_json", side_effect=[
+            {"capabilities": ["recovery-transition/v1"]},
+            {"recovery": {"device_id": "device-a", "firmware_mode": "recovery", "boot_id": 11}},
+        ]) as request:
+            status = enter_recovery_and_wait(context, session, "device-a", previous_boot_id=10, timeout=30)
         self.assertEqual(status["boot_id"], 11)
-        self.assertEqual(request.call_args_list[0].args[2:], ("factory", "device-a"))
-        self.assertEqual(request.call_args_list[-1].args[2:], ("status", "device-a"))
+        self.assertEqual([call.args[2:] for call in request.call_args_list], [
+            ("health",), ("factory", "device-a", "--wait", "--wait-timeout", "30"),
+        ])
 
     def test_local_system_update_builds_and_submits_atomic_bundle(self) -> None:
         with ExitStack() as _contexts:
@@ -833,6 +818,7 @@ class GatewayTests(unittest.TestCase):
                     return_value={"operation": {"status": "succeeded"}},
                 )
             )
+            _contexts.enter_context(mock.patch("mosaico_cli.commands.inspect_bundle_plan", return_value={"components": []}))
             result = start_system_update(arguments, context)
 
         self.assertEqual(result["status"], "succeeded")
@@ -1165,6 +1151,7 @@ class GatewayTests(unittest.TestCase):
         )
         session = GatewaySession(Path("python"), Path("iris"), (), None, False)
         with ExitStack() as _contexts:
+            _contexts.enter_context(mock.patch("mosaico_cli.gateway.gateway_json", return_value={"capabilities": ["update-acceptance/v1"]}))
             _contexts.enter_context(self.assertRaises(OutcomeUnknownError))
             run_ota(
                 context,
@@ -1186,6 +1173,7 @@ class GatewayTests(unittest.TestCase):
         )
         session = GatewaySession(Path("python"), Path("iris"), (), None, False)
         with ExitStack() as _contexts:
+            _contexts.enter_context(mock.patch("mosaico_cli.gateway.gateway_json", return_value={"capabilities": ["update-acceptance/v1"]}))
             _contexts.enter_context(self.assertRaises(OperationError))
             run_ota(
                 context,
@@ -1231,7 +1219,7 @@ class GatewayTests(unittest.TestCase):
         session = GatewaySession(Path("python"), Path("iris"), (), None, False)
         with ExitStack() as _contexts:
             poll = _contexts.enter_context(
-                mock.patch("mosaico_cli.gateway.gateway_json", return_value=completed)
+                mock.patch("mosaico_cli.gateway.gateway_json", side_effect=[{"capabilities": ["update-acceptance/v1"]}, completed])
             )
             _contexts.enter_context(mock.patch("mosaico_cli.gateway.time.sleep"))
             result = run_ota(
@@ -1254,7 +1242,8 @@ class GatewayTests(unittest.TestCase):
             "recovery_abi": 1,
         })
         self.assertNotIn("--validation-mode", ota_argv)
-        poll.assert_called_once_with(context, session, "ota-status", "operation-1")
+        self.assertEqual(poll.call_count, 2)
+        poll.assert_called_with(context, session, "ota-status", "operation-1")
         messages = [call.args[0] for call in context.status.call_args_list]
         self.assertTrue(any("waiting_recovery" in message for message in messages))
         self.assertTrue(any("succeeded" in message for message in messages))
@@ -1291,7 +1280,7 @@ class GatewayTests(unittest.TestCase):
         session = GatewaySession(Path("python"), Path("iris"), (), None, False)
         with ExitStack() as _contexts:
             poll = _contexts.enter_context(
-                mock.patch("mosaico_cli.gateway.gateway_json", return_value=completed)
+                mock.patch("mosaico_cli.gateway.gateway_json", side_effect=[{"capabilities": ["update-acceptance/v1"]}, completed])
             )
             _contexts.enter_context(mock.patch("mosaico_cli.gateway.time.sleep"))
             result = run_system_update_bundle(
@@ -1309,7 +1298,8 @@ class GatewayTests(unittest.TestCase):
         compatibility = json.loads(argv[argv.index("--compatibility-json") + 1])
         self.assertEqual(compatibility["product_contract"], "esp-mosaico/v1")
         self.assertEqual(compatibility["recovery_abi"], 1)
-        poll.assert_called_once_with(
+        self.assertEqual(poll.call_count, 2)
+        poll.assert_called_with(
             context, session, "ota-status", "system-operation-1"
         )
         messages = [call.args[0] for call in context.status.call_args_list]
@@ -1340,7 +1330,7 @@ class GatewayTests(unittest.TestCase):
         session = GatewaySession(Path("python"), Path("iris"), (), None, False)
         with ExitStack() as contexts:
             contexts.enter_context(
-                mock.patch("mosaico_cli.gateway.gateway_json", return_value=failed)
+                mock.patch("mosaico_cli.gateway.gateway_json", side_effect=[{"capabilities": ["update-acceptance/v1"]}, failed])
             )
             contexts.enter_context(mock.patch("mosaico_cli.gateway.time.sleep"))
             caught = contexts.enter_context(self.assertRaises(OperationError))
@@ -1963,12 +1953,13 @@ class RecoveryCommandTests(unittest.TestCase):
                 )
                 inventory = _contexts.enter_context(
                     mock.patch(
-                        "mosaico_cli.commands.system_inventory",
+                        "mosaico_cli.gateway.system_inventory",
                         return_value={"partition_table_sha256": layout_sha256},
                     )
                 )
                 ota = _contexts.enter_context(
-                    mock.patch("mosaico_cli.commands.run_ota", return_value={})
+                    mock.patch("mosaico_cli.commands.run_ota", return_value={"result": {"recovery": {
+                        "device_id": "device", "recovery_version": "2.1.1-recovery", "boot_id": 123}}})
                 )
                 record = _contexts.enter_context(
                     mock.patch("mosaico_cli.commands.record_recovery_verification")
@@ -1976,10 +1967,10 @@ class RecoveryCommandTests(unittest.TestCase):
                 result = install(arguments, context)
             self.assertEqual(result["status"], "succeeded")
             record.assert_called_once_with("device", "2.1.1-recovery", 123)
-            inventory.assert_called_once_with(context, session, "device")
+            inventory.assert_not_called()
             ota.assert_called_once()
 
-    def test_install_enters_recovery_before_partition_preflight(self) -> None:
+    def test_install_submits_one_operation_with_recovery_preconditions(self) -> None:
         with ExitStack() as contexts:
             temporary = contexts.enter_context(tempfile.TemporaryDirectory())
             root = Path(temporary)
@@ -2067,7 +2058,7 @@ class RecoveryCommandTests(unittest.TestCase):
                 )
                 inventory = patches.enter_context(
                     mock.patch(
-                        "mosaico_cli.commands.system_inventory",
+                        "mosaico_cli.gateway.system_inventory",
                         side_effect=lambda *args, **kwargs: (
                             order.append("inventory")
                             or {"partition_table_sha256": layout_sha256}
@@ -2077,7 +2068,8 @@ class RecoveryCommandTests(unittest.TestCase):
                 ota = patches.enter_context(
                     mock.patch(
                         "mosaico_cli.commands.run_ota",
-                        side_effect=lambda *args, **kwargs: order.append("ota") or {},
+                        side_effect=lambda *args, **kwargs: order.append("ota") or {"result": {"recovery": {
+                            "device_id": "device", "recovery_version": "2.1.1-recovery", "boot_id": 11}}},
                     )
                 )
                 record = patches.enter_context(
@@ -2086,19 +2078,16 @@ class RecoveryCommandTests(unittest.TestCase):
                 result = install(arguments, context)
 
             self.assertEqual(result["status"], "succeeded")
-            self.assertEqual(order, ["recovery", "inventory", "ota"])
-            enter.assert_called_once_with(
-                context,
-                session,
-                "device",
-                previous_boot_id=10,
-                timeout=30,
-            )
-            inventory.assert_called_once_with(context, session, "device")
+            self.assertEqual(order, ["ota"])
+            enter.assert_not_called()
+            inventory.assert_not_called()
             ota.assert_called_once()
+            self.assertEqual(ota.call_args.kwargs["preconditions"], {
+                "recovery_version": "2.1.1-recovery", "partition_table_sha256": layout_sha256,
+            })
             record.assert_called_once_with("device", "2.1.1-recovery", 11)
 
-    def test_install_rejects_mismatched_partition_table_before_ota(self) -> None:
+    def test_install_propagates_gateway_precondition_failure(self) -> None:
         with ExitStack() as _contexts:
             temporary = _contexts.enter_context(tempfile.TemporaryDirectory())
             root = Path(temporary)
@@ -2120,7 +2109,8 @@ class RecoveryCommandTests(unittest.TestCase):
             arguments = SimpleNamespace(
                 project=str(project),
                 skip_build=True,
-                gateway_profile=None,
+                gateway_profile="remote",
+                endpoint="usb:location=1-8:1.0",
                 device_id=None,
                 validation="elf-sha256",
                 timeout=30,
@@ -2172,25 +2162,27 @@ class RecoveryCommandTests(unittest.TestCase):
                 )
                 patches.enter_context(
                     mock.patch(
-                        "mosaico_cli.commands.system_inventory",
+                        "mosaico_cli.gateway.system_inventory",
                         return_value={"partition_table_sha256": "00" * 32},
                     )
                 )
                 ota = patches.enter_context(
-                    mock.patch("mosaico_cli.commands.run_ota")
+                    mock.patch("mosaico_cli.commands.run_ota", side_effect=OperationError("partition table does not match", details={"result": {"result": {"failure": {"code": "partition_layout_mismatch", "current_sha256": "ab" * 32, "target_sha256": "cd" * 32, "write_started": False}}}}))
                 )
                 patches.enter_context(
                     mock.patch("mosaico_cli.commands.record_recovery_verification")
                 )
-                caught = patches.enter_context(self.assertRaises(DeviceError))
+                caught = patches.enter_context(self.assertRaises(OperationError))
                 install(arguments, context)
 
-            self.assertIn("does not match", str(caught.exception))
-            self.assertEqual(
-                caught.exception.details["actual_partition_table_sha256"],
-                "00" * 32,
-            )
-            ota.assert_not_called()
+            self.assertIn("iris system-update", str(caught.exception))
+            self.assertIn("--device-id device", caught.exception.details["suggested_command"])
+            self.assertIn("--gateway-profile remote", caught.exception.details["suggested_command"])
+            self.assertIn("--endpoint usb:location=1-8:1.0", caught.exception.details["suggested_command"])
+            self.assertFalse(caught.exception.details["write_started"])
+            ota.assert_called_once()
+            self.assertEqual(ota.call_args.kwargs["preconditions"]["partition_table_sha256"],
+                             partition_table_flash_sha256(partition_table))
 
     def test_registered_esp32s31_recovery_device_is_detected(self) -> None:
         port = SimpleNamespace(

@@ -15,7 +15,7 @@
 #include "factory_system_metadata.h"
 #include "psa/crypto.h"
 
-#define FACTORY_LAYOUT_VERSION 4U
+#define FACTORY_LAYOUT_VERSION MOSAICO_LAYOUT_VERSION
 #define FACTORY_HASH_CHUNK_BYTES 1024U
 
 static const char *TAG = "factory_inventory";

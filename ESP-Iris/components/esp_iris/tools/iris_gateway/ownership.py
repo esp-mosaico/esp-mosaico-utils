@@ -13,7 +13,8 @@ import pathlib
 import sqlite3
 import time
 import uuid
-from typing import Any, Iterator
+from collections.abc import Iterator
+from typing import Any
 
 from .link import EndpointLock
 
@@ -56,6 +57,9 @@ class OwnershipRegistry:
                 metadata TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS generations (
                 resource TEXT PRIMARY KEY, value INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS session_metadata (
+                session_id TEXT PRIMARY KEY, workspace_path TEXT NOT NULL,
+                lifecycle_capability TEXT NOT NULL, source_revision TEXT NOT NULL);
             PRAGMA user_version=1;
         """)
         self.session_id = ""
@@ -79,15 +83,7 @@ class OwnershipRegistry:
     def alive(self, session_id: str) -> bool:
         if session_id == self.session_id and self._live_lock is not None:
             return True
-        lock = self._lock(session_id)
-        try:
-            try:
-                lock.acquire()
-            except RuntimeError:
-                return True
-            return False
-        finally:
-            lock.close()
+        return EndpointLock.held("session:" + session_id, self.root / "locks")
 
     def register(self, session_id: str, project_id: str, project_path: str,
                  instance_id: str, url: str = "", *, persistent: bool = True) -> None:
@@ -113,11 +109,19 @@ class OwnershipRegistry:
         with self.transaction():
             self.db.execute("UPDATE sessions SET url=? WHERE session_id=?", (url, self.session_id))
 
+    def set_metadata(self, workspace_path: str, lifecycle_capability: str, source_revision: str) -> None:
+        # Keep sessions' seven-column layout readable/writable by older workspaces.
+        with self.transaction():
+            self.db.execute("INSERT OR REPLACE INTO session_metadata VALUES(?,?,?,?)",
+                            (self.session_id, workspace_path, lifecycle_capability, source_revision))
+
     def session(self, session_id: str) -> dict[str, Any]:
         row = self.db.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
         if row is None:
             raise KeyError(session_id)
-        return {**dict(row), "alive": self.alive(session_id), "capability": CAPABILITY}
+        metadata = self.db.execute("SELECT * FROM session_metadata WHERE session_id=?", (session_id,)).fetchone()
+        return {**dict(row), **(dict(metadata) if metadata else {}),
+                "alive": self.alive(session_id), "capability": CAPABILITY}
 
     def sessions(self) -> list[dict[str, Any]]:
         return [self.session(str(row[0])) for row in self.db.execute("SELECT session_id FROM sessions")]
@@ -178,10 +182,29 @@ class OwnershipRegistry:
                 ))
             self.db.execute("UPDATE claims SET device_id=? WHERE resource=?", (device_id, endpoint))
             if verified:
+                metadata = dict(endpoint_claim["metadata"])
+                metadata.pop("identity_probe", None)
+                self.db.execute("UPDATE claims SET metadata=? WHERE resource IN (?,?) AND owner=?",
+                                (json.dumps(metadata), endpoint, resource, self.session_id))
                 self.db.execute("INSERT OR REPLACE INTO identities VALUES(?,?,?)", (
-                    endpoint, device_id, json.dumps(endpoint_claim["metadata"]),
+                    endpoint, device_id, json.dumps(metadata),
                 ))
             self._remember_generations()
+
+    def release_attempt(self, endpoint: str, generation: int, *, remove_device: bool) -> None:
+        """Release only this failed attempt, after its physical session is closed."""
+        with self.transaction():
+            item = self.claim(endpoint)
+            if not item or (item["owner"], item["generation"], item["state"]) != (self.session_id, generation, "owned"):
+                return
+            self.db.execute("DELETE FROM claims WHERE resource=?", (endpoint,))
+            if remove_device and item["device_id"]:
+                remaining = self.db.execute(
+                    "SELECT 1 FROM claims WHERE owner=? AND device_id=? AND resource NOT LIKE 'device:%'",
+                    (self.session_id, item["device_id"])).fetchone()
+                if remaining is None:
+                    self.db.execute("DELETE FROM claims WHERE resource=? AND owner=? AND state='owned'",
+                                    ("device:" + item["device_id"], self.session_id))
 
     def _remember_generations(self) -> None:
         self.db.execute("""INSERT INTO generations SELECT resource, generation FROM claims WHERE 1
@@ -283,8 +306,10 @@ class OwnershipRegistry:
                     raise OwnershipConflict("transfer ID already describes a different request")
                 return previous
             target_session = self.session(target)
-            if target == self.session_id or not target_session["alive"] or not target_session["persistent"]:
-                raise OwnershipConflict("target must be a different live persistent project session")
+            if target == self.session_id or not target_session["alive"]:
+                raise OwnershipConflict("target must be a different live project session")
+            if not target_session.get("lifecycle_capability") and not target_session["persistent"]:
+                raise OwnershipConflict("legacy temporary sessions cannot receive transfers")
             self._require("device:" + device_id, ("owned",))
             endpoints = [item for item in self.claims()
                          if item["device_id"] == device_id and not item["resource"].startswith("device:")]

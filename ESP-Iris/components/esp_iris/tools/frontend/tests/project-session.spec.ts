@@ -23,6 +23,9 @@ test("project ownership requires an explicit claim and transfers to the selected
     }
     await route.fulfill({ json: {
       session: sessions[0], sessions, closing: false, transfers: [],
+      lifecycle: { state: "running", idle_remaining_seconds: null, idle_timeout_seconds: 10,
+        clients: [{ client_id: "client-run", kind: "run", command: "iris run", pid: 1234,
+          connected_ns: 1_700_000_000_000_000_000, last_seen_ns: 1_700_000_000_000_000_000 }], keepalive: { clients: 1 } },
       endpoints: [{ endpoint: "usb:location=test", state: "discovered", ownership: owner ? {
         owner, owner_alive: true, device_id: "00112233445566778899aabbccddeeff", state: "owned", transfer_id: null,
       } : null }],
@@ -35,6 +38,8 @@ test("project ownership requires an explicit claim and transfers to the selected
   }
   await page.getByRole("button", { name: "设置", exact: true }).click();
   await expect(page.getByText("项目会话与设备归属", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("网关使用者")).toContainText("iris run");
+  await expect(page.getByLabel("网关使用者")).toContainText("PID 1234");
   await expect(page.getByRole("button", { name: "连接到本项目" })).toBeVisible();
   expect(actions).toEqual([]);
   await page.getByRole("button", { name: "连接到本项目" }).click();

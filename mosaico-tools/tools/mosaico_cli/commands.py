@@ -7,6 +7,7 @@ import getpass
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -15,6 +16,7 @@ from queue import Empty, Queue
 from threading import Thread
 from typing import Any, TextIO
 
+from .bundle_plan import inspect_bundle_plan
 from .errors import (
     BuildError,
     DeviceError,
@@ -37,7 +39,6 @@ from .gateway import (
     run_ota,
     run_system_update_bundle,
     select_device,
-    system_inventory,
 )
 from .project import discover_artifacts, partition_table_flash_sha256, resolve_project
 from .recovery import (
@@ -220,7 +221,7 @@ def read_bridge_code(arguments: Any, context: RunContext) -> dict[str, Any]:
         if state in {"PAIRED", "PRECHECK", "WRITING", "VERIFYING", "COMMITTING"}:
             raise DeviceError("Bridge session is already paired or flashing; no new code was generated.")
         if state not in {"WAITING_NETWORK", "REGISTERING", "PAIRING"} or snapshot.get("running") is not True:
-            raise DeviceError("Bridge session ended: {}.".format(state))
+            raise DeviceError(f"Bridge session ended: {state}.")
         time.sleep(min(0.25, max(0, deadline - time.monotonic())))
 
 
@@ -531,8 +532,9 @@ def start_system_update(arguments: Any, context: RunContext) -> dict[str, Any]:
     else:
         project = resolve_project(context.workspace, project_argument, Path.cwd())
         context.status(f"project: {project}")
+        ensure_gateway(context, arguments.gateway_profile, select=False)
         if not skip_build:
-            context.status("system update: building ota_0 + ui_apps + system bundle")
+            context.status("system update: building application + declared resources + system bundle")
             iris_python, _ = ensure_iris_tools(context)
             run_idf_target(
                 context,
@@ -560,6 +562,7 @@ def start_system_update(arguments: Any, context: RunContext) -> dict[str, Any]:
         context.status(
             f"bundle: {bundle} ({bundle.stat().st_size} bytes)"
         )
+        bundle_plan = inspect_bundle_plan(context, bundle)
 
     context.status("gateway: connecting")
     session = ensure_gateway(context, arguments.gateway_profile)
@@ -597,6 +600,7 @@ def start_system_update(arguments: Any, context: RunContext) -> dict[str, Any]:
             "source": "bundle" if bundle_argument is not None else "local_build",
             "project": str(project) if project is not None else None,
             "bundle": str(bundle),
+            "write_plan": bundle_plan,
             "reused_build": reused_build,
             "gateway_started": session.started_local,
             "operation": operation,
@@ -639,6 +643,9 @@ def install(arguments: Any, context: RunContext) -> dict[str, Any]:
     workspace = context.workspace
     project = resolve_project(workspace, arguments.project, Path.cwd())
     context.status(f"project: {project}")
+    # Keep the project service available through a long build without opening
+    # an unselected device until the artifacts have passed validation.
+    ensure_gateway(context, arguments.gateway_profile, select=False)
     reused = bool(arguments.skip_build)
     if not reused:
         build_application(context, project)
@@ -685,87 +692,46 @@ def install(arguments: Any, context: RunContext) -> dict[str, Any]:
             "Run 'python mosaico.py recover' first. "
             f"Verification details: {json.dumps(verification, ensure_ascii=False)}"
         )
-    if status.get("firmware_mode") != "recovery":
-        context.status("recovery: entering retained Recovery")
-        status = enter_recovery_and_wait(
+    # Product requirements are data submitted with the operation. Iris owns
+    # transition, reconnect, live verification and writing as one state machine.
+    preconditions = {"recovery_version": recovery_version,
+                     "partition_table_sha256": expected_layout_sha256}
+    context.status(f"ota: starting recovery-first installation ({arguments.validation})")
+    try:
+        operation = run_ota(
             context,
             session,
-            device_id,
-            previous_boot_id=device.get("boot_id"),
+            device_id=device_id,
+            image=artifacts.image,
+            elf=artifacts.elf,
+            map_file=artifacts.map_file,
+            validation=arguments.validation,
             timeout=arguments.timeout,
+            preconditions=preconditions,
         )
-        recovery_verified, verification = recovery_verification_details(
-            device_id, status, recovery_version, workspace
-        )
-        context.note(
-            "live recovery verification: "
-            + json.dumps(verification, ensure_ascii=False, sort_keys=True)
-        )
-        if not recovery_verified:
-            raise RecoveryRequiredError(
-                "The device entered Recovery, but the live Recovery service did "
-                "not match the reviewed workspace bundle. Run "
-                "'python mosaico.py recover' first. "
-                f"Verification details: {json.dumps(verification, ensure_ascii=False)}"
-            )
-    if status.get("firmware_mode") == "recovery":
-        try:
-            record_recovery_verification(
-                device_id, recovery_version, status.get("boot_id")
-            )
-        except OSError as error:
-            # Live Recovery is authoritative for this install. Do not discard
-            # that proof merely because Windows briefly blocks the state file.
-            context.note(f"warning: could not refresh Recovery verification: {error}")
-    context.status("recovery: verified retained Recovery service")
-
-    context.status("partition table: verifying device layout")
-    try:
-        inventory = system_inventory(context, session, device_id)
-    except DeviceError as error:
-        raise DeviceError(
-            "Could not verify the device partition table; refusing to start OTA. "
-            "Run 'python mosaico.py recover' on the Gateway host, or apply an "
-            "authorized system update."
+    except OperationError as error:
+        failure = ((error.details.get("result") or {}).get("result") or {}).get("failure") or {}
+        if failure.get("code") != "partition_layout_mismatch":
+            raise
+        command = ["python3", "mosaico.py", "iris", "system-update", "--project", str(project),
+                   "--device-id", device_id]
+        if getattr(arguments, "endpoint", None):
+            command.extend(["--endpoint", arguments.endpoint])
+        if arguments.gateway_profile:
+            command.extend(["--gateway-profile", arguments.gateway_profile])
+        suggestion = shlex.join(command)
+        raise OperationError(
+            f"Partition layout differs (device={failure.get('current_sha256')}, "
+            f"build={failure.get('target_sha256')}). Install the project's intended layout with: {suggestion}",
+            details={**error.details, **failure, "suggested_command": suggestion},
         ) from error
-    actual_layout_sha256 = inventory["partition_table_sha256"]
-    context.note(
-        "partition table verification: "
-        + json.dumps(
-            {
-                "actual_sha256": actual_layout_sha256,
-                "expected_sha256": expected_layout_sha256,
-                "partition_table": str(artifacts.partition_table),
-            },
-            sort_keys=True,
-        )
-    )
-    if actual_layout_sha256 != expected_layout_sha256:
-        raise DeviceError(
-            "The device partition table does not match this application build; "
-            "refusing to start OTA. Apply an authorized system update or run "
-            "'python mosaico.py recover' on the Gateway host.",
-            details={
-                "actual_partition_table_sha256": actual_layout_sha256,
-                "expected_partition_table_sha256": expected_layout_sha256,
-                "partition_table": str(artifacts.partition_table),
-            },
-        )
-    context.status(
-        f"partition table: verified {actual_layout_sha256[:12]}"
-    )
-
-    context.status(f"ota: starting recovery-first installation ({arguments.validation})")
-    operation = run_ota(
-        context,
-        session,
-        device_id=device_id,
-        image=artifacts.image,
-        elf=artifacts.elf,
-        map_file=artifacts.map_file,
-        validation=arguments.validation,
-        timeout=arguments.timeout,
-    )
+    completed = operation.get("operation", operation)
+    evidence = (completed.get("result") or {}).get("recovery") or {}
+    if evidence.get("device_id") == device_id and evidence.get("recovery_version") == recovery_version:
+        try:
+            record_recovery_verification(device_id, recovery_version, evidence.get("boot_id"))
+        except OSError as error:
+            context.note(f"warning: could not refresh Recovery verification: {error}")
     context.status("validation: installed application is connected and healthy")
     return {
         "command": "install",

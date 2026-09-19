@@ -37,7 +37,7 @@ class ReenumeratingHub:
         if self.status_calls == 1:
             return {
                 "boot_id": 10,
-                "chip_target": "esp32s31", "firmware_mode": "normal",
+                "device_id": device_id, "chip_target": "esp32s31", "firmware_mode": "normal",
                 "project_name": "iris_get_started",
             }
         if self.status_calls == 2:
@@ -45,12 +45,12 @@ class ReenumeratingHub:
         if self.status_calls == 3:
             return {
                 "boot_id": 20,
-                "chip_target": "esp32s31", "firmware_mode": "recovery",
+                "device_id": device_id, "chip_target": "esp32s31", "firmware_mode": "recovery",
                 "project_name": "iris_get_started",
             }
         return {
             "boot_id": 30,
-            "chip_target": "esp32s31", "firmware_mode": "normal",
+            "device_id": device_id, "chip_target": "esp32s31", "firmware_mode": "normal",
             "project_name": "iris_get_started",
             "app_version": "1.0.2",
             "firmware_sha256": ELF_SHA256,
@@ -125,14 +125,14 @@ class ProjectPolicyHub:
         if self.updated:
             return {
                 "boot_id": 20,
-                "chip_target": "esp32s31", "firmware_mode": "normal",
+                "device_id": device_id, "chip_target": "esp32s31", "firmware_mode": "normal",
                 "project_name": self.target_project,
                 "app_version": self.target_version,
                 "firmware_sha256": ELF_SHA256,
             }
         result: dict[str, Any] = {
             "boot_id": 10,
-            "chip_target": "esp32s31", "firmware_mode": "normal",
+            "device_id": device_id, "chip_target": "esp32s31", "firmware_mode": "normal",
             "project_name": "old-project",
         }
         if self.required is not None:
@@ -159,12 +159,12 @@ class RestartRaceHub(ProjectPolicyHub):
         if self.status_calls == 1:
             return {
                 "boot_id": 10,
-                "chip_target": "esp32s31", "firmware_mode": "recovery",
+                "device_id": device_id, "chip_target": "esp32s31", "firmware_mode": "recovery",
                 "project_name": "esp_iris_ota",
             }
         return {
             "boot_id": 20,
-            "chip_target": "esp32s31", "firmware_mode": "normal",
+            "device_id": device_id, "chip_target": "esp32s31", "firmware_mode": "normal",
             "project_name": "esp_iris_ota",
             "app_version": "1.0.2",
             "firmware_sha256": ELF_SHA256,
@@ -199,7 +199,7 @@ class RecoveryWriteRaceHub(ReenumeratingHub):
         if self.status_calls == 1:
             return {
                 "boot_id": 10,
-                "chip_target": "esp32s31", "firmware_mode": "normal",
+                "device_id": device_id, "chip_target": "esp32s31", "firmware_mode": "normal",
                 "project_name": "iris_get_started",
             }
         if self.status_calls == 2:
@@ -207,12 +207,12 @@ class RecoveryWriteRaceHub(ReenumeratingHub):
         if self.status_calls == 3:
             return {
                 "boot_id": 20,
-                "chip_target": "esp32s31", "firmware_mode": "recovery",
+                "device_id": device_id, "chip_target": "esp32s31", "firmware_mode": "recovery",
                 "project_name": "iris_get_started",
             }
         return {
             "boot_id": 30,
-            "chip_target": "esp32s31", "firmware_mode": "normal",
+            "device_id": device_id, "chip_target": "esp32s31", "firmware_mode": "normal",
             "project_name": "iris_get_started",
             "app_version": "1.0.2",
             "firmware_sha256": ELF_SHA256,

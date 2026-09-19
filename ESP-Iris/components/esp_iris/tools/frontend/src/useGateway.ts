@@ -18,6 +18,7 @@ export function useGateway() {
   const [demo, setDemo] = useState(false);
   const [health, setHealth] = useState<GatewayHealth>({ system_update_trust_configured: false });
   const [error, setError] = useState<string>("");
+  const [connectionError, setConnectionError] = useState<string>("");
   const cursor = useRef(0);
 
   const refreshAuth = useCallback(async () => {
@@ -90,14 +91,17 @@ export function useGateway() {
     let closed = false;
     let socket: WebSocket | null = null;
     let refreshTimer: number | null = null;
+    let retryTimer: number | null = null;
     let retry = 500;
 
     const connect = () => {
       const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-      socket = new WebSocket(`${protocol}//${location.host}/v1/events/ws?cursor=${cursor.current}`);
-      socket.onopen = () => { retry = 500; };
+      if (closed) return;
+      socket = new WebSocket(`${protocol}//${location.host}/v1/events/ws?cursor=${cursor.current}&client=workbench`);
+      socket.onopen = () => { retry = 500; setConnectionError(""); };
       socket.onmessage = (message) => {
         const item = JSON.parse(message.data) as GatewayEvent;
+        if (item.kind === "project_client") return;
         if (item.event_id) cursor.current = Math.max(cursor.current, item.event_id);
         setEvents((current) => appendGatewayEvent(current, item));
         if (item.category === "operation") {
@@ -107,7 +111,8 @@ export function useGateway() {
       };
       socket.onclose = () => {
         if (!closed) {
-          window.setTimeout(connect, retry);
+          setConnectionError("工作台连接已断开；如网关已退出，请通过 CLI 重新启动并打开新地址。");
+          retryTimer = window.setTimeout(connect, retry);
           retry = nextReconnectDelay(retry);
         }
       };
@@ -116,6 +121,7 @@ export function useGateway() {
     return () => {
       closed = true;
       if (refreshTimer != null) window.clearTimeout(refreshTimer);
+      if (retryTimer != null) window.clearTimeout(retryTimer);
       socket?.close();
     };
   }, [auth?.authenticated, refresh]);
@@ -147,7 +153,7 @@ export function useGateway() {
     events,
     demo,
     health,
-    error,
+    error: connectionError || error,
     refresh,
     refreshStatus,
     removeDevice,

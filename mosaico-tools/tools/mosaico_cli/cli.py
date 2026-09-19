@@ -26,7 +26,7 @@ from .commands import (
     start_system_update,
 )
 from .doctor import diagnose_host, print_diagnosis
-from .errors import MosaicoError
+from .errors import MosaicoError, SelectionError
 from .runtime import RunContext
 from .scaffold import initialize_project
 from .workspace import load_workspace
@@ -36,6 +36,11 @@ TOOL_ROOT = Path(__file__).resolve().parents[2]
 
 class MosaicoArgumentParser(argparse.ArgumentParser):
     json_errors = False
+
+    def parse_args(self, args=None, namespace=None):
+        if self.prog == "mosaico.py":
+            args = _canonical_argv(_normalize_globals(list(sys.argv[1:] if args is None else args)))
+        return super().parse_args(args, namespace)
 
     def error(self, message: str) -> NoReturn:
         if self.json_errors:
@@ -98,6 +103,49 @@ def nand_manifest_path(value: str) -> str:
     return value
 
 
+# Legacy spellings remain accepted but are omitted from the public command tree.
+COMMAND_PATHS = {
+    "init": ("project", "init"),
+    "install": ("iris", "app-update"),
+    "system-update": ("iris", "system-update"),
+    "list": ("iris", "list"),
+    "monitor": ("iris", "logs"),
+    "memory": ("iris", "memory"),
+    "crash": ("iris", "crash"),
+    "rpc": ("iris", "rpc"),
+    "enter-recovery": ("iris", "test", "enter-recovery"),
+    "recovery-wifi": ("iris", "test", "recovery-wifi"),
+    "bridge-code": ("iris", "test", "bridge-code"),
+}
+
+
+def _canonical_argv(argv: Sequence[str]) -> list[str]:
+    result = list(argv)
+    index = 0
+    while index < len(result):
+        token = result[index]
+        if token == "--workspace":
+            index += 2
+            continue
+        if token.startswith("-"):
+            index += 1
+            continue
+        if token in COMMAND_PATHS:
+            result[index:index + 1] = COMMAND_PATHS[token]
+        elif token == "session":
+            result[index] = "iris"
+        elif token == "device":
+            result[index] = "iris"
+            if index + 1 < len(result):
+                action = result[index + 1]
+                if action == "transfer":
+                    result[index + 1:index + 2] = ["transfer", "start"]
+                elif action.startswith("transfer-"):
+                    result[index + 1:index + 2] = ["transfer", action[len("transfer-"):]]
+        break
+    return result
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = MosaicoArgumentParser(
         prog="mosaico.py",
@@ -105,7 +153,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
-        "--json", action="store_true", help="Emit stable JSON; monitor emits NDJSON"
+        "--json", action="store_true", help="Emit stable JSON; iris logs emits NDJSON"
     )
     parser.add_argument(
         "--verbose", action="store_true", help="Show internal stages and full log paths"
@@ -115,9 +163,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="Workspace directory or .mosaico.json path; discovered from cwd by default",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
-    commands = parser.add_subparsers(dest="command", required=True)
+    commands = parser.add_subparsers(dest="group", required=True)
+    project_parser = commands.add_parser("project", help="Create application projects")
+    project_commands = project_parser.add_subparsers(dest="project_action", required=True)
+    iris_parser = commands.add_parser("iris", help="Project Gateway and ESP-Iris device operations")
+    iris_commands = iris_parser.add_subparsers(dest="iris_action", required=True)
+    test_parser = iris_commands.add_parser("test", help="Test Recovery transitions, Wi-Fi and Bridge pairing")
+    test_commands = test_parser.add_subparsers(dest="test_action", required=True)
+    leaves = []
 
-    init_parser = commands.add_parser(
+    def command(name, **kwargs):
+        # Keep operation identifiers stable for evidence records and handlers.
+        path = COMMAND_PATHS.get(name, (name,))
+        if path[0] == "project":
+            parent = project_commands
+        elif path[:2] == ("iris", "test"):
+            parent = test_commands
+        elif path[0] == "iris":
+            parent = iris_commands
+        else:
+            parent = commands
+        child = parent.add_parser(path[-1], **kwargs)
+        child.set_defaults(command=name, public_command=" ".join(path))
+        leaves.append(child)
+        return child
+
+    init_parser = command(
         "init",
         help="Create an application from the workspace's template description",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -130,25 +201,25 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="Validate and list files without writing"
     )
 
-    commands.add_parser(
+    command(
         "doctor",
         help="Check the host environment without building or writing a device",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
-    install_parser = commands.add_parser(
+    install_parser = command(
         "install",
-        help="Install a normal application through ESP-Iris",
+        help="Install code-only firmware; requires an identical device partition table",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     install_parser.add_argument(
         "--project", help="ESP-IDF application path; selected automatically by default"
     )
     install_parser.add_argument(
-        "--device-id", help="Target Device ID; selected automatically when only one is available"
+        "--device-id", help="Target Device ID; omit for the sole connected/owned device or available USB device"
     )
     install_parser.add_argument(
-        "--gateway-profile", help="ESP-Iris profile; use the current profile by default"
+        "--gateway-profile", help="External ESP-Iris profile; use this project's local Gateway by default"
     )
     install_parser.add_argument(
         "--skip-build", action="store_true", help="Reuse a complete existing build"
@@ -163,9 +234,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--timeout", type=positive_timeout, default=600.0, help="Installation timeout in seconds"
     )
 
-    system_update_parser = commands.add_parser(
+    system_update_parser = command(
         "system-update",
-        help="Install a validated multi-image or Recovery self-update bundle",
+        help="Install application layout/resources together (preferred for new projects) or a Recovery bundle",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     system_update_source = system_update_parser.add_mutually_exclusive_group()
@@ -181,10 +252,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     system_update_parser.add_argument(
         "--device-id",
-        help="Target Device ID; selected automatically when only one is available",
+        help="Target Device ID; omit for the sole connected/owned device or available USB device",
     )
     system_update_parser.add_argument(
-        "--gateway-profile", help="ESP-Iris profile; use the current profile by default"
+        "--gateway-profile", help="External ESP-Iris profile; use this project's local Gateway by default"
     )
     system_update_parser.add_argument(
         "--project", help="ESP-IDF application path; selected automatically by default"
@@ -201,7 +272,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="System Update timeout in seconds",
     )
 
-    recover_parser = commands.add_parser(
+    recover_parser = command(
         "recover",
         help="Restore the device base firmware",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -234,13 +305,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="Check only; do not build or write firmware"
     )
 
-    enter_recovery_parser = commands.add_parser(
+    enter_recovery_parser = command(
         "enter-recovery",
         help="Enter retained Recovery without installing firmware",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     enter_recovery_parser.add_argument(
-        "--device-id", help="Target Device ID; selected automatically when only one is available"
+        "--device-id", help="Target Device ID; omit for the sole connected/owned device or available USB device"
     )
     enter_recovery_parser.add_argument(
         "--gateway-profile", help="ESP-Iris profile; use the local Gateway by default"
@@ -250,7 +321,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Recovery transition timeout in seconds",
     )
 
-    recovery_wifi_parser = commands.add_parser(
+    recovery_wifi_parser = command(
         "recovery-wifi",
         help="Configure Recovery Wi-Fi through the active USB session",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -259,7 +330,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--ssid", required=True, help="Wi-Fi SSID; password is read without echo"
     )
     recovery_wifi_parser.add_argument(
-        "--device-id", help="Target Device ID; selected automatically when only one is available"
+        "--device-id", help="Target Device ID; omit for the sole connected/owned device or available USB device"
     )
     recovery_wifi_parser.add_argument(
         "--gateway-profile", help="ESP-Iris profile; use the local Gateway by default"
@@ -269,13 +340,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Wi-Fi connection timeout in seconds",
     )
 
-    update_code_parser = commands.add_parser(
+    update_code_parser = command(
         "bridge-code",
         help="Open Recovery's Bridge download page and wait for its pairing code over USB",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     update_code_parser.add_argument(
-        "--device-id", help="Target Device ID; selected automatically when only one is available"
+        "--device-id", help="Target Device ID; omit for the sole connected/owned device or available USB device"
     )
     update_code_parser.add_argument(
         "--gateway-profile", help="ESP-Iris profile; use the local Gateway by default"
@@ -286,16 +357,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum wait for Wi-Fi and Bridge pairing code in seconds",
     )
 
-    monitor_parser = commands.add_parser(
+    monitor_parser = command(
         "monitor",
-        help="View retained ESP-Iris logs",
+        help="View retained ESP-Iris logs and follow new logs until interrupted",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     monitor_parser.add_argument(
-        "--device-id", help="Target Device ID; selected automatically when only one is available"
+        "--device-id", help="Target Device ID; omit for the sole connected/owned device or available USB device"
     )
     monitor_parser.add_argument(
-        "--gateway-profile", help="ESP-Iris profile; use the current profile by default"
+        "--gateway-profile", help="External ESP-Iris profile; use this project's local Gateway by default"
     )
     monitor_parser.add_argument(
         "--timeout", type=monitor_timeout, default=0.0,
@@ -315,7 +386,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable automatic log coloring",
     )
 
-    list_parser = commands.add_parser(
+    list_parser = command(
         "list",
         help="List devices visible through ESP-Iris",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -329,13 +400,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show endpoint, ESP-IDF version, session, and capabilities",
     )
 
-    memory_parser = commands.add_parser(
+    memory_parser = command(
         "memory",
         help="Read internal RAM, SPIRAM and each task's stack high-water mark",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     memory_parser.add_argument(
-        "--device-id", help="Target Device ID; selected automatically when only one is available"
+        "--device-id", help="Target Device ID; omit for the sole connected/owned device or available USB device"
     )
     memory_parser.add_argument(
         "--gateway-profile", help="ESP-Iris profile; use the local Gateway by default"
@@ -348,7 +419,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Seconds between polls when --follow is set",
     )
 
-    rpc_parser = commands.add_parser(
+    rpc_parser = command(
         "rpc",
         help="Invoke a raw application RPC through ESP-Iris",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -356,7 +427,7 @@ def build_parser() -> argparse.ArgumentParser:
     rpc_parser.add_argument("service_id", help="Numeric RPC service ID")
     rpc_parser.add_argument("method_id", help="Numeric RPC method ID")
     rpc_parser.add_argument(
-        "--device-id", help="Target Device ID; selected automatically when only one is available"
+        "--device-id", help="Target Device ID; omit for the sole connected/owned device or available USB device"
     )
     rpc_parser.add_argument(
         "--gateway-profile", help="ESP-Iris profile; use the local Gateway by default"
@@ -368,13 +439,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--deadline-ms", type=int, default=3000, help="RPC deadline in milliseconds"
     )
 
-    crash_parser = commands.add_parser(
+    crash_parser = command(
         "crash",
         help="Inspect and preserve retained crash evidence",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     crash_parser.add_argument(
-        "--device-id", help="Target Device ID; selected automatically when only one is available"
+        "--device-id", help="Target Device ID; omit for the sole connected/owned device or available USB device"
     )
     crash_parser.add_argument(
         "--gateway-profile", help="ESP-Iris profile; use the local Gateway by default"
@@ -385,23 +456,45 @@ def build_parser() -> argparse.ArgumentParser:
     crash_parser.add_argument(
         "--save-core", type=Path, help="Also save the raw Core Dump at this path"
     )
-    session_parser = commands.add_parser("session", help="Own a foreground project Gateway or inspect it")
-    session_actions = session_parser.add_subparsers(dest="session_action", required=True)
-    run_parser = session_actions.add_parser("run", help="Keep this project's Gateway alive until Ctrl-C")
-    status_parser = session_actions.add_parser("status", help="Show project sessions, ownership and discovery")
-    device_parser = commands.add_parser("device", help="Explicit device ownership and transfer")
-    device_actions = device_parser.add_subparsers(dest="device_action", required=True)
+    run_parser = iris_commands.add_parser("run", help="Hold a shared project Gateway client and try connecting its sole device; Ctrl-C releases this client")
+    run_parser.set_defaults(command="session", session_action="run", public_command="iris run")
+    status_parser = iris_commands.add_parser("status", help="Inspect this project's Gateway without starting it")
+    status_parser.set_defaults(command="session", session_action="status", public_command="iris status")
+    status_parser.add_argument("--all", dest="all_projects", action="store_true",
+                               help="Passively list same-user Gateways, clients and device ownership across workspaces")
+    transfer_parser = iris_commands.add_parser("transfer", help="Transfer device ownership between project sessions")
+    transfer_actions = transfer_parser.add_subparsers(dest="transfer_action", required=True)
     device_parsers = []
     for action in ("claim", "release", "reconcile", "transfer", "transfer-status", "transfer-abort", "transfer-accept", "transfer-reconcile"):
-        action_parser = device_actions.add_parser(action)
+        if action.startswith("transfer"):
+            verb = "start" if action == "transfer" else action[len("transfer-"):]
+            path = ("iris", "transfer", verb)
+            parent = transfer_actions
+            help_text = {
+                "start": "Transfer an idle device to another running project session",
+                "status": "Inspect an existing ownership transfer",
+                "accept": "Accept an offered ownership transfer",
+                "abort": "Abort a pending ownership transfer",
+                "reconcile": "Reconcile a transfer after its original sessions have stopped",
+            }[verb]
+        else:
+            path = ("iris", action)
+            parent = iris_commands
+            help_text = {
+                "claim": "Claim the selected or sole available device for this project's Gateway",
+                "release": "Release an idle device or endpoint; defaults to the sole owned device",
+                "reconcile": "Clear ordinary ownership left by a stopped session",
+            }[action]
+        action_parser = parent.add_parser(path[-1], help=help_text)
+        action_parser.set_defaults(command="device", device_action=action, public_command=" ".join(path))
         device_parsers.append(action_parser)
         if action == "transfer":
-            action_parser.add_argument("--device-id", required=True)
+            action_parser.add_argument("--device-id", help="Device to transfer; defaults to the sole owned device")
         elif action == "claim":
             action_parser.add_argument("--device-id")
             action_parser.add_argument("--endpoint")
         elif action in {"release", "reconcile"}:
-            selection = action_parser.add_mutually_exclusive_group(required=True)
+            selection = action_parser.add_mutually_exclusive_group(required=action == "reconcile")
             selection.add_argument("--device-id")
             selection.add_argument("--endpoint")
         if action == "transfer":
@@ -412,8 +505,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--device-id")
     run_parser.add_argument("--endpoint")
     run_parser.add_argument("--pairing-token-file", type=Path, help="Private file containing the TCP pairing token")
-    for child in [*commands.choices.values(), run_parser, status_parser, *device_parsers]:
-        if child in (init_parser, session_parser, device_parser) or child.prog.endswith(" doctor"):
+    for child in [*leaves, run_parser, status_parser, *device_parsers]:
+        if child is init_parser or child.prog.endswith(" doctor"):
             continue
         if "--project" not in child._option_string_actions:
             child.add_argument("--project", help="Project whose development session to use")
@@ -511,7 +604,7 @@ def _emit_error(error: MosaicoError, json_output: bool, verbose: bool) -> None:
         print(f"mosaico: {error}", file=sys.stderr)
         candidates = error.details.get("candidates")
         if isinstance(candidates, list) and candidates:
-            print("Available Device IDs:", file=sys.stderr)
+            print("Available device targets:", file=sys.stderr)
             for candidate in candidates:
                 print(f"  {candidate}", file=sys.stderr)
         diagnostic = error.details.get("diagnostic")
@@ -532,14 +625,14 @@ def _main(
     *,
     tool_root: Path | None = None,
 ) -> int:
-    raw = list(argv or sys.argv[1:])
+    raw = list(sys.argv[1:] if argv is None else argv)
     MosaicoArgumentParser.json_errors = "--json" in raw
     arguments = build_parser().parse_args(_normalize_globals(raw))
     from .session_runtime import CURRENT_SCOPE
     scope = CURRENT_SCOPE.get()
     if scope is not None:
         scope.arguments = arguments
-    if sys.version_info < (3, 8):
+    if sys.version_info < (3, 8):  # noqa: UP036 -- diagnose unsupported host interpreters
         message = "mosaico.py requires Python 3.8 or newer."
         if arguments.json:
             print(
@@ -671,7 +764,7 @@ def _main(
         print(json.dumps({"ok": True, **result}, ensure_ascii=False, sort_keys=True))
     else:
         status = result.get("status", "succeeded")
-        print(f"{arguments.command}: {status}")
+        print(f"{arguments.public_command}: {status}")
         if arguments.command == "bridge-code":
             authorization = result.get("bridge", {})
             print(f"Bridge pairing code: {authorization.get('code', '')}")
@@ -690,35 +783,69 @@ def _main(
 def _project_command(arguments: Any, context: RunContext) -> int:
     from .errors import DeviceError
     from .gateway import ensure_gateway
-    from .session_runtime import CURRENT_SCOPE, read_pairing_token, request
+    from .session_runtime import (
+        CURRENT_SCOPE,
+        acquire_device,
+        read_pairing_token,
+        request,
+    )
 
-    session = ensure_gateway(context, None)
+    if arguments.command == "session" and arguments.session_action == "status":
+        from .gateway_status import print_status, status
+        if arguments.all_projects and arguments.project:
+            raise SelectionError("--all and --project cannot be combined")
+        result = status(context.workspace, arguments.project, all_projects=arguments.all_projects)
+        if arguments.json:
+            print(json.dumps(result, ensure_ascii=False), flush=True)
+        else:
+            print_status(result)
+        return 0
+    start = arguments.command == "session" or getattr(arguments, "device_action", None) != "transfer-status"
+    session = ensure_gateway(context, None, start=start)
     url = session.connection_args[1]
     if arguments.command == "session":
+        if start and session.started_local and not (arguments.device_id or arguments.endpoint):
+            try:
+                acquire_device(url, arguments, context, allow_none=True)
+            except MosaicoError as error:
+                # Keep the foreground session available for explicit selection
+                # and diagnosis. Do not retry admission after a user releases it.
+                print(f"Gateway ready; automatic connection: {error}", file=sys.stderr)
+                for candidate in error.details.get("candidates", []):
+                    print(f"  {candidate}", file=sys.stderr)
         result = request(url, "/v1/project")
-        print(json.dumps(result, ensure_ascii=False, indent=None if arguments.json else 2))
-        if arguments.session_action == "run" and session.started_local:
+        result["running"] = True
+        if arguments.json:
+            print(json.dumps(result, ensure_ascii=False), flush=True)
+        else:
+            print(f"Project: {result['session']['project_path']}")
+            print("Shared client retained; Ctrl+C releases this client only.", flush=True)
+        if arguments.session_action == "run":
             print(f"Project Gateway: {url}  session={result['session']['session_id']}", file=sys.stderr)
             try:
                 while True:
                     time.sleep(0.5)
                     scope = CURRENT_SCOPE.get()
+                    if scope is not None:
+                        for lease in scope.leases.values():
+                            lease.check()
                     if scope is not None and any(process.poll() is not None for process, _, _ in scope.processes):
                         raise DeviceError("Project Gateway exited; inspect the project Gateway log")
             except KeyboardInterrupt:
                 pass
         return 0
     action = arguments.device_action
-    if session.started_local:
-        raise DeviceError("Start this project's foreground 'session run' before managing ownership")
     if action == "claim":
         pairing = read_pairing_token(arguments.pairing_token_file) if arguments.pairing_token_file else None
         result = request(url, "/v1/project/acquire", {
             "device_id": arguments.device_id, "endpoint": arguments.endpoint,
-            "pairing_token": pairing,
+            "pairing_token": pairing, "auto": not (arguments.device_id or arguments.endpoint),
         }, timeout=35)
     elif action == "release":
-        result = request(url, "/v1/project/release", {"device_id": arguments.device_id, "endpoint": arguments.endpoint})
+        result = request(url, "/v1/project/release", {
+            "device_id": arguments.device_id, "endpoint": arguments.endpoint,
+            "auto": not (arguments.device_id or arguments.endpoint),
+        })
     elif action == "reconcile":
         result = request(url, "/v1/project/reconcile", {"device_id": arguments.device_id, "endpoint": arguments.endpoint})
     elif action == "transfer":
@@ -727,11 +854,11 @@ def _project_command(arguments: Any, context: RunContext) -> int:
         try:
             result = request(url, "/v1/project/transfer", {
                 "device_id": arguments.device_id, "target_session_id": arguments.to_session,
-                "transfer_id": transfer_id,
+                "transfer_id": transfer_id, "auto": not arguments.device_id,
             }, timeout=40)
         except DeviceError as error:
             error.details["transfer_id"] = transfer_id
-            error.details["hint"] = "Query transfer-status; retry transfer-accept on the target. No automatic rollback occurred."
+            error.details["hint"] = "Query 'iris transfer status'; retry 'iris transfer accept' on the target. No automatic rollback occurred."
             raise
     elif action == "transfer-status":
         result = request(url, "/v1/project/transfers/" + arguments.transfer_id)

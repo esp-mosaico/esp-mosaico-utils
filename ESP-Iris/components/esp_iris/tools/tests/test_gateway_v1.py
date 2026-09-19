@@ -113,12 +113,15 @@ def test_ota_archives_complete_bundle_and_returns_queryable_operation(tmp_path) 
             artifact = (await uploaded.json())["artifact"]
             assert artifact["artifact_id"] == hashlib.sha256(elf).hexdigest()
 
+            preconditions = {"recovery_version": (await hub.status("demo-a1b2c3d4"))["app_version"],
+                             "partition_table_sha256": "00" * 32}
             accepted = await client.post(
                 "/v1/devices/demo-a1b2c3d4/ota",
                 json={
                     "artifact_id": artifact["artifact_id"],
                     "execution_mode": "recovery",
                     "compatibility": {"chip_target": "esp32s31"},
+                    "preconditions": preconditions,
                 },
                 headers={"X-Operation-ID": "ota-background"},
             )
@@ -132,8 +135,21 @@ def test_ota_archives_complete_bundle_and_returns_queryable_operation(tmp_path) 
                     break
                 await asyncio.sleep(0.01)
             assert operation is not None
-            assert operation["status"] == "succeeded"
+            assert operation["status"] == "succeeded", json.dumps(operation)
             assert operation["params"]["compatibility"] == {"chip_target": "esp32s31"}
+            assert operation["params"]["preconditions"] == preconditions
+            evidence = operation["result"]["recovery"]
+            assert evidence["device_id"] == "demo-a1b2c3d4"
+            assert evidence["recovery_version"] == preconditions["recovery_version"]
+            assert evidence["partition_table_sha256"] == preconditions["partition_table_sha256"]
+            changed_precondition = await client.post(
+                "/v1/devices/demo-a1b2c3d4/ota",
+                json={"artifact_id": artifact["artifact_id"], "execution_mode": "recovery",
+                      "compatibility": {"chip_target": "esp32s31"},
+                      "preconditions": {**preconditions, "partition_table_sha256": "ff" * 32}},
+                headers={"X-Operation-ID": "ota-background"},
+            )
+            assert changed_precondition.status == 409
             conflict = await client.post(
                 "/v1/devices/demo-a1b2c3d4/ota",
                 json={"artifact_id": artifact["artifact_id"], "execution_mode": "recovery",
@@ -373,7 +389,7 @@ def test_unsigned_system_update_closes_actual_inventory_loop(tmp_path) -> None:
                     break
                 await asyncio.sleep(0.01)
             assert operation is not None
-            assert operation["status"] == "succeeded", operation
+            assert operation["status"] == "succeeded", json.dumps(operation)
             assert operation["params"]["compatibility"] == {"chip_target": "esp32s31"}
             assert operation["result"]["validated"] is True
             assert (
@@ -464,7 +480,7 @@ def test_recovery_self_update_closes_recovery_identity_loop(tmp_path) -> None:
                     break
                 await asyncio.sleep(0.01)
             assert operation is not None
-            assert operation["status"] == "succeeded", operation
+            assert operation["status"] == "succeeded", json.dumps(operation)
             assert operation["result"]["recovery_validation"]["mode"] == (
                 "elf_sha256"
             )

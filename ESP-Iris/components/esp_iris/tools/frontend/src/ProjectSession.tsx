@@ -1,10 +1,13 @@
 import { useEffect, useState } from "react";
-import { api } from "./api";
+import { api, formatTime } from "./api";
 
 type Session = { session_id: string; project_path: string; alive: boolean };
 type Claim = { owner: string; owner_alive: boolean; device_id: string | null; state: string; transfer_id: string | null };
 type Endpoint = { endpoint: string; state: string; ownership: Claim | null };
-type Snapshot = { session: Session; sessions: Session[]; endpoints: Endpoint[]; closing: boolean; transfers: { transfer_id: string; target: string; state: string }[] };
+type Lifecycle = { state: string; idle_remaining_seconds: number | null; idle_timeout_seconds: number;
+  clients: { client_id: string; kind: string; command: string; pid: number | null; connected_ns: number; last_seen_ns: number }[];
+  keepalive: Record<string, number> };
+type Snapshot = { session: Session; sessions: Session[]; endpoints: Endpoint[]; closing: boolean; lifecycle?: Lifecycle; transfers: { transfer_id: string; target: string; state: string }[] };
 
 export default function ProjectSession() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -34,6 +37,17 @@ export default function ProjectSession() {
   return <section className="settings-section settings-wide">
     <div className="panel-title"><span>项目会话与设备归属</span></div>
     <dl className="settings-dl"><dt>项目</dt><dd>{snapshot.session.project_path}</dd><dt>会话</dt><dd>{self}</dd><dt>状态</dt><dd>{snapshot.closing ? "正在结束" : "运行中"}</dd></dl>
+    {snapshot.lifecycle && <div aria-label="网关使用者">
+      <div className="panel-title"><span>当前使用者</span></div>
+      {snapshot.lifecycle.clients.map((client) => <div className="project-endpoint" key={client.client_id}>
+        <strong>{client.command}</strong>
+        <p>{client.kind} · {client.client_id}{client.pid ? ` · PID ${client.pid}` : ""}</p>
+        <p>连接于 {formatTime(client.connected_ns)} · 最近保活 {formatTime(client.last_seen_ns)}</p>
+      </div>)}
+      {!snapshot.lifecycle.clients.length && <p>没有已登记的客户端。</p>}
+      <p className="section-copy">客户端离开且后台工作完成后，空闲 {snapshot.lifecycle.idle_timeout_seconds} 秒自动退出。通过 CLI 重新启动后可再次打开工作台。</p>
+      {snapshot.lifecycle.idle_remaining_seconds !== null && <p>退出倒计时：{snapshot.lifecycle.idle_remaining_seconds.toFixed(1)} 秒</p>}
+    </div>}
     <p className="section-copy">发现设备不会自动连接。明确连接后，本会话会在设备重启时自动重连；转让后由目标会话接管。</p>
     <label className="inline-form project-target"><span>转让目标</span><select aria-label="转让目标会话" value={target} onChange={(event) => setTarget(event.target.value)}><option value="">选择项目会话</option>{targets.map((item) => <option key={item.session_id} value={item.session_id}>{item.project_path} · {item.session_id.slice(0, 8)}</option>)}</select></label>
     {message && <p role="status" className="inline-notice">{message}</p>}

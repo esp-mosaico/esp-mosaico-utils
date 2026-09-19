@@ -3,12 +3,13 @@
 #include <string.h>
 #include "bsp/esp_mosaico.h"
 #include "esp_iris.h"
+#include "esp_iris_service_profiles.h"
 #include "lvgl.h"
 
 /* Same 12-byte little-endian pointer contract as the Gateway input adapter. */
-#define POINTER_SERVICE_ID 0x1001U
-#define POINTER_METHOD_ID 1U
-#define POINTER_MESSAGE_SIZE 12U
+#define POINTER_SERVICE_ID ESP_IRIS_POINTER_SERVICE_ID
+#define POINTER_METHOD_ID ESP_IRIS_POINTER_METHOD_ID
+#define POINTER_MESSAGE_SIZE ESP_IRIS_POINTER_MESSAGE_SIZE
 
 static lv_indev_t *s_pointer;
 static lv_point_t s_point;

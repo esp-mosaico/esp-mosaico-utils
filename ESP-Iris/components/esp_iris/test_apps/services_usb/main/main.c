@@ -1,4 +1,5 @@
 #include "esp_iris.h"
+#include "esp_iris_service_profiles.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -23,8 +24,8 @@
 #define TEST_MEDIA_METHOD 4U
 #define TEST_STOP_FOR_FLASH_METHOD 5U
 #define TEST_BOUNDARY_METHOD 6U
-#define POINTER_SERVICE_ID 0x1001U
-#define POINTER_METHOD_ID 1U
+#define POINTER_SERVICE_ID ESP_IRIS_POINTER_SERVICE_ID
+#define POINTER_METHOD_ID ESP_IRIS_POINTER_METHOD_ID
 #define FILE_MOUNT_PATH "/files"
 #define READ_ONLY_PATH FILE_MOUNT_PATH "/readonly"
 #define ATOMIC_MOUNT_PATH "/atomic"

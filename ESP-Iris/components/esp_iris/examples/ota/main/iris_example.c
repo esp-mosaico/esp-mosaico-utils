@@ -8,6 +8,7 @@
 #include "esp_app_desc.h"
 #include "esp_check.h"
 #include "esp_iris.h"
+#include "esp_iris_service_profiles.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
@@ -21,8 +22,8 @@
 #define OTA_STATE_METHOD_ID    1U
 #define OTA_ACCEPT_METHOD_ID   2U
 #define OTA_NVS_NAMESPACE      "iris_ota_demo"
-#define RECOVERY_SERVICE_ID    0x7FFFU
-#define ENTER_RECOVERY_METHOD  2U
+#define RECOVERY_SERVICE_ID    ESP_IRIS_RECOVERY_SERVICE_ID
+#define ENTER_RECOVERY_METHOD  ESP_IRIS_ENTER_RECOVERY_METHOD_ID
 
 #if CONFIG_ESP_IRIS_OTA_EXAMPLE_AUTO_ACCEPT
 #define OTA_AUTO_ACCEPT_VALUE 1

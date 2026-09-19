@@ -1,9 +1,9 @@
 # Workspace project template descriptions
 
-`mosaico.py init NAME` reads the JSON file selected by
+`mosaico.py project init NAME` reads the JSON file selected by
 `workspace.init_template` in the consuming workspace's `.mosaico.json`.
 Relative configuration paths resolve from the workspace root. The setting has
-no default: a workspace without it can use other commands, but `init` reports a
+no default: a workspace without it can use other commands, but `project init` reports a
 configuration error. A directory is not a template description.
 
 The workspace owns the application sources **and** the description. The tools
@@ -90,7 +90,7 @@ On Windows, the destination and referenced resources must share a drive.
 
 The optional `required` field is `file` or `directory`. It checks for that
 resource during preflight. Omit it for dependencies that may be downloaded or
-initialized later; the tool never does this automatically during `init`.
+initialized later; the tool never does this automatically during `project init`.
 
 Variables support `{{name|format}}`:
 

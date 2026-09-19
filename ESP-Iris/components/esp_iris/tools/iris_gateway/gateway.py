@@ -18,6 +18,7 @@ from typing import Any
 from aiohttp import BodyPartReader, WSMsgType, web
 
 from .boot_identity import boot_id_text
+from .client_lifecycle import CAPABILITY as LIFECYCLE_CAPABILITY
 from .compatibility import compatibility_expectation, validate_update_compatibility
 from .contracts import GatewayHub
 from .crashes import (
@@ -64,23 +65,33 @@ from .ota_validation import (
     _validate_ota_identity,
 )
 from .reconciliation import health_timeout, reconcile_operation, reconciliation_records
+from .recovery_transition import (
+    enter_recovery,
+    recovery_preconditions,
+    validate_recovery,
+)
 from .security import Actor, AuthManager
+from .source_identity import running_source
 from .store import GatewayStore
 from .system_update import (
     SystemUpdateBundle,
     load_system_update_bundle,
 )
 from .system_update_workflow import run_system_update
+from .update_acceptance import validate_updated_contract
 
 LOG_PATTERN = re.compile(r"^(?P<level>[EWIDV])\s+\((?P<stamp>\d+)\)\s+(?P<tag>[^:]+):\s?(?P<message>.*)$")
 CONSOLE_METHOD_NAME = "console.execute"
 CONSOLE_LINE_MAX_BYTES = 255
 GATEWAY_CLIENT_MAX_SIZE = 1024 * 1024 * 1024
-GATEWAY_API = {"major": 1, "minor": 1}
+GATEWAY_API = {"major": 1, "minor": 2}
 GATEWAY_CAPABILITIES = [
     "device-maintenance-lease/v1",
     "physical-endpoint-maintenance-lease/v1",
     "system-inventory/v1",
+    "recovery-preconditions/v1",
+    "update-acceptance/v1",
+    "recovery-transition/v1",
 ]
 ACTIVE_MAINTENANCE_STATES = {
     "detached",
@@ -104,6 +115,7 @@ class GatewayService:
         ota_health_timeout: float | None = None,
     ) -> None:
         self.store = store
+        self.source_identity = running_source()
         self.instance_id = instance_id
         self.demo = demo
         self.require_local_auth = require_local_auth
@@ -713,6 +725,7 @@ class GatewayService:
         execution_mode: str = "recovery",
         validation_mode: str = DEFAULT_OTA_VALIDATION_MODE,
         compatibility: dict[str, Any] | None = None,
+        preconditions: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         if execution_mode not in {"recovery", "application"}:
             raise ValueError("OTA execution mode must be recovery or application")
@@ -733,61 +746,22 @@ class GatewayService:
         previous_boot = before.get("boot_id")
         recovery_boot = None
         writer_status = before
-        if execution_mode == "recovery" and before.get("firmware_mode") != "recovery":
-            await self.operations.progress(
-                operation_id,
-                stage="entering_recovery",
-                progress_permille=25,
-                previous_boot_id=previous_boot,
-            )
-            try:
-                await self.device_hub.enter_recovery(device_id)
-            except (ConnectionError, OSError):
-                # Windows can remove the CDC endpoint while the recovery RPC
-                # write/response is still completing. The reconnect loop below
-                # is the authority on whether the request took effect.
-                pass
-            await self.operations.progress(
-                operation_id,
-                stage="waiting_recovery",
-                progress_permille=50,
-                previous_boot_id=previous_boot,
-            )
-            deadline = asyncio.get_running_loop().time() + 30
-            while asyncio.get_running_loop().time() < deadline:
-                await asyncio.sleep(0.25)
-                try:
-                    recovery_status = await self.device_hub.status(device_id)
-                except (
-                    ConnectionError,
-                    OSError,
-                    KeyError,
-                    LookupError,
-                    RuntimeError,
-                ):
-                    continue
-                if (
-                    recovery_status.get("firmware_mode") == "recovery"
-                    and recovery_status.get("boot_id") != previous_boot
-                ):
-                    recovery_boot = recovery_status.get("boot_id")
-                    writer_status = recovery_status
-                    break
-            if recovery_boot is None:
-                raise OperationOutcomeUnknown(
-                    "factory recovery restart was accepted but recovery did not reconnect within 30 seconds"
-                )
-            await self.operations.progress(
-                operation_id,
-                stage="recovery_connected",
-                progress_permille=75,
-                recovery_boot_id=recovery_boot,
-            )
+        if execution_mode == "recovery":
+            async def transition_progress(stage: str, **fields: Any) -> None:
+                await self.operations.progress(operation_id, stage=stage, progress_permille={
+                    "entering_recovery": 25, "waiting_recovery": 50, "recovery_connected": 75,
+                }[stage], **fields)
+
+            writer_status = await enter_recovery(self.device_hub, device_id, before=before,
+                                                 progress=transition_progress)
+            if before.get("firmware_mode") != "recovery":
+                recovery_boot = writer_status["boot_id"]
 
         validate_update_compatibility(
             writer_status, metadata.get("chip_id"), required_compatibility,
             recovery=execution_mode == "recovery",
         )
+        recovery_evidence = await validate_recovery(self.device_hub, device_id, writer_status, preconditions or {})
         last_device_progress = -10
 
         async def report_progress(progress: dict[str, Any]) -> None:
@@ -825,6 +799,7 @@ class GatewayService:
                 stage="preparing_ota",
                 progress_permille=90 if execution_mode == "recovery" else 0,
                 writer_boot_id=writer_boot,
+                recovery=recovery_evidence,
             )
             result = await self.device_hub.ota_update(
                 device_id,
@@ -846,6 +821,7 @@ class GatewayService:
                     raise OperationOutcomeUnknown("OTA HEALTHY result has no confirmed new boot")
                 if result.get("boot_id") is not None and result["boot_id"] != status["boot_id"]:
                     raise OperationOutcomeUnknown("OTA boot changed after HEALTHY result")
+                validate_updated_contract(status, device_id, metadata.get("chip_id"), required_compatibility)
                 validation = _validate_ota_identity(
                     status, metadata, validation_mode
                 )
@@ -855,6 +831,7 @@ class GatewayService:
                     "execution_mode": execution_mode,
                     "validation": validation,
                     "recovery_boot_id": recovery_boot,
+                    "recovery": recovery_evidence,
                 }
             assert queue is not None
             if result.get("completion_evidence") == "session_close":
@@ -902,6 +879,7 @@ class GatewayService:
                 raise OperationOutcomeUnknown(
                     f"OTA was written, but the final reconnect/healthy acceptance was not observed within {timeout:g} seconds"
                 )
+            validate_updated_contract(reconnected_status, device_id, metadata.get("chip_id"), required_compatibility)
             validation = _validate_ota_identity(reconnected_status, metadata, validation_mode)
             return {
                 **result,
@@ -911,6 +889,7 @@ class GatewayService:
                 "planned_restart_ms": delay,
                 "previous_boot_id": previous_boot,
                 "recovery_boot_id": recovery_boot,
+                "recovery": recovery_evidence,
                 "boot_id": new_boot,
                 "healthy": True,
             }
@@ -1059,12 +1038,16 @@ def create_app(service: GatewayService) -> web.Application:
                 "instance_id": service.instance_id,
                 "host_id": service.host_id,
                 "gateway_api": GATEWAY_API,
-                "capabilities": GATEWAY_CAPABILITIES + ([service.project.capability] if service.project else []),
+                "capabilities": GATEWAY_CAPABILITIES + ([service.project.capability] if service.project else [])
+                + ([LIFECYCLE_CAPABILITY] if service.project and service.project.shared else []),
+                "lifecycle": service.project.clients.snapshot(service.project.keepalive_reasons())
+                if service.project and service.project.shared else None,
                 "project_session": (
                     service.project.registry.session(service.project.registry.session_id)
                     if service.project is not None else None
                 ),
                 "esp_iris_version": "0.1.0",
+                "source": service.source_identity,
                 "esp_iris_revision": os.environ.get(
                     "ESP_IRIS_SOURCE_REVISION", "unknown"
                 ),
@@ -1302,21 +1285,17 @@ def create_app(service: GatewayService) -> web.Application:
     async def event_socket(request: web.Request) -> web.StreamResponse:
         cursor = int(request.query.get("cursor", "0"))
         device_id = request.query.get("device_id")
+        lease = None
+        if service.project and service.project.shared:
+            lease = service.project.clients.register({
+                "kind": "workbench" if request.query.get("client") == "workbench" else "cli",
+                "command": "Web Workbench" if request.query.get("client") == "workbench" else "event stream",
+            }, connected=True)
         queue = service.subscribe()
-        websocket = web.WebSocketResponse(heartbeat=20)
-        await websocket.prepare(request)
-        if cursor:
-            history, gap = service.store.events_after(
-                cursor, device_id=device_id, limit=3000
-            )
-        else:
-            history = service.store.latest_events(device_id=device_id, limit=3000)
-            gap = False
-        if gap:
-            await websocket.send_json({"kind": "history_gap", "reason": "requested cursor is outside retention"})
-        for item in history:
-            await websocket.send_json(item)
-        last_event_id = history[-1]["event_id"] if history else cursor
+        # Observe PONG frames for accurate last-seen diagnostics. aiohttp still
+        # owns heartbeat timeouts; project sockets reply to PING explicitly.
+        websocket = web.WebSocketResponse(heartbeat=5 if lease else 20, autoping=not bool(lease))
+        last_event_id = cursor
 
         async def forward() -> None:
             nonlocal last_event_id
@@ -1330,16 +1309,40 @@ def create_app(service: GatewayService) -> web.Application:
                 await websocket.send_json(item)
                 last_event_id = max(last_event_id, event_id)
 
-        task = asyncio.create_task(forward())
+        task = None
         try:
+            await websocket.prepare(request)
+            if cursor:
+                history, gap = service.store.events_after(cursor, device_id=device_id, limit=3000)
+            else:
+                history, gap = service.store.latest_events(device_id=device_id, limit=3000), False
+            if gap:
+                await websocket.send_json({"kind": "history_gap", "reason": "requested cursor is outside retention"})
+            for item in history:
+                await websocket.send_json(item)
+            last_event_id = history[-1]["event_id"] if history else cursor
+            if lease:
+                await websocket.send_json({"kind": "project_client", "client_id": lease["client_id"],
+                                           "session_id": service.project.registry.session_id})
+            task = asyncio.create_task(forward())
             async for message in websocket:
                 if message.type == WSMsgType.ERROR:
                     break
+                if message.type == WSMsgType.PING:
+                    await websocket.pong(message.data)
+                if lease:
+                    service.project.clients.renew(lease["client_id"], lease["lease_token"])
         finally:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-            service.unsubscribe(queue)
+            try:
+                if task is not None:
+                    task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+            finally:
+                # Request cancellation and a failed forwarder must both release
+                # the connected reference, which has no lease expiry fallback.
+                service.unsubscribe(queue)
+                if lease:
+                    service.project.clients.release(lease["client_id"], lease["lease_token"])
         return websocket
 
     async def operation_list(request: web.Request) -> web.Response:
@@ -1567,12 +1570,20 @@ def create_app(service: GatewayService) -> web.Application:
         device_id = service.resolve_device(request.match_info["device_id"])
         if not hasattr(service.device_hub, "enter_recovery"):
             raise RuntimeError("factory recovery is not supported by this device adapter")
+        body = await _json_body(request)
+        wait = body.get("wait", False)
+        timeout = body.get("timeout", 30)
+        if not isinstance(wait, bool):
+            raise TypeError("wait must be a boolean")
+        if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or not 0.1 <= timeout <= 30:
+            raise ValueError("timeout must be between 0.1 and 30 seconds")
         operation, result, _ = await service.operations.execute(
             device_id,
             _actor(request),
             "recovery.enter_factory",
-            {"target": "factory_recovery"},
-            lambda: service.device_hub.enter_recovery(device_id),
+            {"target": "factory_recovery", "wait": wait, "timeout": timeout},
+            lambda: enter_recovery(service.device_hub, device_id, timeout=timeout)
+            if wait else service.device_hub.enter_recovery(device_id),
             operation_id=request.headers.get("X-Operation-ID"),
         )
         return web.json_response({"operation": operation, "recovery": result})
@@ -1776,6 +1787,7 @@ def create_app(service: GatewayService) -> web.Application:
         body = await _json_body(request)
         artifact_id = str(body.get("artifact_id", ""))
         compatibility = compatibility_expectation(body.get("compatibility"))
+        preconditions = recovery_preconditions(body.get("preconditions"))
         execution_mode = str(body.get("execution_mode", execution_mode))
         validation_mode = _require_ota_validation_mode(
             str(body.get("validation_mode", DEFAULT_OTA_VALIDATION_MODE))
@@ -1798,6 +1810,7 @@ def create_app(service: GatewayService) -> web.Application:
                 "execution_mode": execution_mode,
                 "validation_mode": validation_mode,
                 "compatibility": compatibility,
+                "preconditions": preconditions,
             },
             lambda: service.closed_loop_ota(
                 device_id,
@@ -1807,6 +1820,7 @@ def create_app(service: GatewayService) -> web.Application:
                 execution_mode=execution_mode,
                 validation_mode=validation_mode,
                 compatibility=compatibility,
+                preconditions=preconditions,
             ),
             operation_id=operation_id,
         )
