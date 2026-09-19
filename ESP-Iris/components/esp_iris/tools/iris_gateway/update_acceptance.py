@@ -6,7 +6,7 @@ from typing import Any
 from .compatibility import validate_update_compatibility
 
 
-def validate_updated_contract(status: dict[str, Any], device_id: str, chip_id: int,
+def validate_updated_contract(status: dict[str, Any], device_id: str, chip_id: Any,
                               expectation: dict[str, Any], *, role: str = "normal") -> None:
     if status.get("device_id") != device_id:
         raise ValueError("post-update Device ID does not match the selected device")

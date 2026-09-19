@@ -3,14 +3,17 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .compat import to_thread
 from .discovery import discover_iris_usb_devices, iris_usb_allowed, usb_endpoint
 from .ownership import OwnershipConflict
 
+if TYPE_CHECKING:
+    from .project_gateway import ProjectGateway
 
-async def identity_candidates(project: Any, device_id: str) -> list[dict[str, Any]]:
+
+async def identity_candidates(project: ProjectGateway, device_id: str) -> list[dict[str, Any]]:
     candidates = {item["endpoint"]: dict(item) for item in project.registry.known_endpoints(device_id)}
     for item in project.hub.list_endpoints():
         if (item.get("advertised_device_id") == device_id
@@ -37,7 +40,7 @@ async def identity_candidates(project: Any, device_id: str) -> list[dict[str, An
         not item["endpoint"].startswith("usb:"), not item.get("present", False), item["endpoint"]))
 
 
-async def admit_candidates(project: Any, candidates: list[dict[str, Any]], device_id: str | None,
+async def admit_candidates(project: ProjectGateway, candidates: list[dict[str, Any]], device_id: str | None,
                            token: str | None, timeout: float) -> dict[str, Any]:
     registry, hub = project.registry, project.hub
     failures = []
@@ -73,7 +76,7 @@ async def admit_candidates(project: Any, candidates: list[dict[str, Any]], devic
                         if token is not None:
                             project.tokens[endpoint] = token
                         return item
-                state = next((item for item in hub.list_endpoints() if item["endpoint"] == endpoint), {})
+                state: dict[str, Any] = next((item for item in hub.list_endpoints() if item["endpoint"] == endpoint), {})
                 if state.get("error") and state.get("updated_monotonic_ns", 0) >= attempt_started_ns:
                     raise ConnectionError(str(state["error"]))
                 await asyncio.sleep(0.05)
