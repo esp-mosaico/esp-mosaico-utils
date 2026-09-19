@@ -31,6 +31,7 @@ class WorkspaceConfig:
     build_runner: Path
     devices: tuple[dict[str, Any], ...]
     init_template: Path | None = None
+    gateway_source_policy: str = "compatible"
 
     def resolve(self, value: str) -> Path:
         path = Path(value).expanduser()
@@ -39,7 +40,9 @@ class WorkspaceConfig:
     @property
     def recovery_project(self) -> Path:
         """Return the Recovery firmware source bundled with this tool version."""
-        return self.tool_root / "firmware" / "recovery"
+        recovery_root = (self.tool_root.parent / "esp-mosaico-recovery"
+                         if self.tool_root.name == "mosaico-tools" else self.tool_root)
+        return recovery_root / "firmware" / "recovery"
 
     @property
     def recovery_dir(self) -> Path:
@@ -139,6 +142,10 @@ def load_workspace(
         raise EnvironmentError("Every configured device must be an object.")
 
     root = config_path.parent.resolve()
+    gateway = _object(value.get("gateway", {}), "gateway")
+    source_policy = gateway.get("source_policy", "compatible")
+    if source_policy not in {"compatible", "exact"}:
+        raise EnvironmentError("gateway.source_policy must be compatible or exact")
 
     def workspace_path(raw: Any, name: str) -> Path:
         text = _string(raw, name)
@@ -180,6 +187,7 @@ def load_workspace(
         ),
         build_runner=build_runner,
         devices=tuple(dict(item) for item in devices_value),
+        gateway_source_policy=source_policy,
         init_template=(
             workspace_path(workspace["init_template"], "workspace.init_template")
             if "init_template" in workspace else None

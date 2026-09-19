@@ -21,6 +21,9 @@ def build_openapi(auth_required: bool) -> dict[str, Any]:
     }
     paths: dict[str, Any] = {
         "/v1/project": {"get": {"summary": "Local project session, discovery and shared ownership; project Gateways only"}},
+        "/v1/project/clients": {"post": {"summary": "Register an idempotent project client lease; requires current session_id"}},
+        "/v1/project/clients/{client_id}/renew": {"post": {"summary": "Renew a client lease using its private lease_token and session_id"}},
+        "/v1/project/clients/{client_id}/release": {"post": {"summary": "Release only this client's lease; does not stop the Gateway"}},
         "/v1/project/acquire": {"post": {"summary": "Explicitly acquire a device or discovered endpoint"}},
         "/v1/project/release": {"post": {"summary": "Release an idle owned device"}},
         "/v1/project/transfer": {"post": {"summary": "Transfer an idle device to a live local project session"}},
@@ -131,6 +134,14 @@ def build_openapi(auth_required: bool) -> dict[str, Any]:
                     "properties": {
                         "artifact_id": {"type": "string"},
                         "compatibility": compatibility_schema,
+                        "preconditions": {
+                            "type": "object", "additionalProperties": False,
+                            "description": "Checked on live Recovery before OTA BEGIN; bound to the operation ID.",
+                            "properties": {
+                                "recovery_version": {"type": "string", "minLength": 1, "maxLength": 64},
+                                "partition_table_sha256": {"type": "string", "pattern": "^[0-9a-fA-F]{64}$"},
+                            },
+                        },
                         "execution_mode": {
                             "type": "string",
                             "enum": ["recovery", "application"],
@@ -145,6 +156,14 @@ def build_openapi(auth_required: bool) -> dict[str, Any]:
                 }
             }
         },
+    }
+    paths["/v1/devices/{device_id}/factory-recovery"]["post"]["requestBody"] = {
+        "required": False,
+        "content": {"application/json": {"schema": {
+            "type": "object",
+            "properties": {"wait": {"type": "boolean", "default": False},
+                           "timeout": {"type": "number", "minimum": 0.1, "maximum": 30, "default": 30}},
+        }}},
     }
     paths["/v1/devices/{device_id}/system-update"]["post"]["requestBody"] = {
         "required": True,

@@ -183,6 +183,31 @@ class SerialLink(Link):
 class EndpointLock:
     """Cross-process advisory lock for one physical endpoint."""
 
+    @staticmethod
+    def held(endpoint: str, root: pathlib.Path) -> bool:
+        """Probe an existing lock without creating files or changing owner metadata."""
+        path = root / f"{hashlib.sha256(endpoint.encode()).hexdigest()}.lock"
+        try:
+            stream = path.open("r+b")
+        except FileNotFoundError:
+            return False
+        with stream:
+            if sys.platform == "win32":
+                import msvcrt
+                try:
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+                except OSError:
+                    return True
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                try:
+                    fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    return True
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+        return False
+
     def __init__(self, endpoint: str, *, root: pathlib.Path | None = None) -> None:
         digest = hashlib.sha256(endpoint.encode()).hexdigest()
         root = root or pathlib.Path(tempfile.gettempdir()) / "esp-iris-locks"

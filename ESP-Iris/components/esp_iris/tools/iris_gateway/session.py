@@ -801,6 +801,18 @@ class DeviceSession:
             "quality": quality,
         }
 
+    async def screen_description(self) -> dict[str, int]:
+        """Negotiate full-screen geometry without transferring pixel data."""
+        frame = await self._request(Channel.SCREEN, MediaType.OPEN,
+                                    self._encode_media_description({}))
+        try:
+            if frame.type != MediaType.OPENED or len(frame.payload) != 20:
+                raise ProtocolError("unexpected screen description OPEN response")
+            return self._decode_media_description(frame.payload)
+        finally:
+            with contextlib.suppress(Exception):
+                await self._request(Channel.SCREEN, MediaType.CLOSE)
+
     async def screenshot(
         self, description: dict[str, int] | None = None
     ) -> tuple[dict[str, int], bytes]:

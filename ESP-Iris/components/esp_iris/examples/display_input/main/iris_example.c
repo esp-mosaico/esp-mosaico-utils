@@ -3,14 +3,15 @@
 #include <stdio.h>
 
 #include "esp_iris.h"
+#include "esp_iris_service_profiles.h"
 
 #define DISPLAY_WIDTH        480U
 #define DISPLAY_HEIGHT       480U
 #define DISPLAY_STRIDE       (DISPLAY_WIDTH * 2U)
 #define DISPLAY_TOTAL_BYTES  (DISPLAY_STRIDE * DISPLAY_HEIGHT)
-#define POINTER_SERVICE_ID   0x1001U
-#define POINTER_METHOD_ID    1U
-#define POINTER_MESSAGE_SIZE 12U
+#define POINTER_SERVICE_ID   ESP_IRIS_POINTER_SERVICE_ID
+#define POINTER_METHOD_ID    ESP_IRIS_POINTER_METHOD_ID
+#define POINTER_MESSAGE_SIZE ESP_IRIS_POINTER_MESSAGE_SIZE
 
 static uint16_t synthetic_pixel(uint16_t x, uint16_t y)
 {

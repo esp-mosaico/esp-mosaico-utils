@@ -1,13 +1,12 @@
-"""Project-owned Gateway lifetimes. No detached global service is created."""
+"""Shared project Gateways with independently renewable client leases."""
 from __future__ import annotations
 
 import contextlib
-import hashlib
 import json
 import os
-import sqlite3
+import secrets
 import subprocess
-import sys
+import threading
 import time
 import uuid
 from contextvars import ContextVar
@@ -16,11 +15,59 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from .errors import DeviceError, EnvironmentError, GatewayNotRunningError, SelectionError
+from .errors import (
+    DeviceError,
+    EnvironmentError,
+    GatewayNotRunningError,
+    SelectionError,
+)
 from .host import state_root
+from .iris import host_api
 from .project import resolve_project
 
 CURRENT_SCOPE: ContextVar[Any] = ContextVar("mosaico_project_scope", default=None)
+LIFECYCLE_CAPABILITY = "project-client-lifecycle/v1"
+
+
+class GatewayDraining(DeviceError):
+    pass
+
+
+class ClientLease:
+    def __init__(self, url: str, record: dict[str, Any], args: Any) -> None:
+        self.url = url
+        self.body = {"session_id": record["session_id"], "client_id": str(uuid.uuid4()),
+                     "lease_token": secrets.token_hex(32), "pid": os.getpid(),
+                     "kind": "run" if getattr(args, "session_action", None) == "run" else "cli",
+                     "command": getattr(args, "public_command", None) or getattr(args, "command", "cli")}
+        result = request(url, "/v1/project/clients", self.body, timeout=3)
+        self.interval = float(result["renew_seconds"])
+        self.duration = float(result["lease_seconds"])
+        self.last_success = time.monotonic()
+        self.lost = False
+        self.stopped = threading.Event()
+        self.thread = threading.Thread(target=self._renew, daemon=True, name="mosaico-client-lease")
+        self.thread.start()
+
+    def _renew(self) -> None:
+        while not self.stopped.wait(self.interval):
+            try:
+                request(self.url, f"/v1/project/clients/{self.body['client_id']}/renew", self.body, timeout=2)
+                self.last_success = time.monotonic()
+            except DeviceError:
+                if time.monotonic() - self.last_success >= self.duration - self.interval:
+                    self.lost = True
+                    return
+
+    def check(self) -> None:
+        if self.lost:
+            raise DeviceError("Gateway client lease was lost; inspect the original operation before retrying. No write was replayed.")
+
+    def close(self) -> None:
+        self.stopped.set()
+        self.thread.join(timeout=3)
+        with contextlib.suppress(DeviceError):
+            request(self.url, f"/v1/project/clients/{self.body['client_id']}/release", self.body, timeout=2)
 
 
 def read_pairing_token(path: Path) -> str:
@@ -78,66 +125,75 @@ class SessionScope:
         self.records: dict[str, dict[str, Any]] = {}
         self.processes: list[tuple[subprocess.Popen, str, Path]] = []
         self.info: dict[str, Any] = {}
-        self.owned_records: dict[Path, str] = {}
+        self.leases: dict[str, ClientLease] = {}
+        self.admitted: set[str] = set()
+        self.local_projects: dict[str, Any] = {}
 
-    def gateway(self, context: Any, python: Path, script: Path, revision: str, *, start: bool = True) -> Any:
+    def gateway(self, context: Any, python: Path, script: Path, revision: str, *, start: bool = True,
+                select: bool = True) -> Any:
+        deadline = time.monotonic() + 20
+        while True:
+            try:
+                return self._gateway(context, python, script, revision, start=start, select=select)
+            except GatewayDraining:
+                if time.monotonic() >= deadline:
+                    raise DeviceError("Project Gateway is still draining; inspect 'iris status' and retry when it exits.")
+                time.sleep(0.1)
+
+    def _gateway(self, context: Any, python: Path, script: Path, revision: str, *, start: bool,
+                 select: bool) -> Any:
         from .gateway import GatewaySession, _require_compatible_gateway
 
         args = self.arguments
         project = resolve_project(context.workspace, getattr(args, "project", None), Path.cwd())
-        project_key = hashlib.sha256((str(context.workspace.root.resolve()) + "\0" + str(project)).encode()).hexdigest()
+        api = host_api(context.workspace)
+        local = api.LocalProject(state_root("esp-mosaico"), context.workspace.root, project)
+        expected_source = (api.source_identity(context.workspace.esp_iris_path)
+                           if context.workspace.gateway_source_policy == "exact" else None)
+        project_key = local.project_id
+        self.local_projects[project_key] = local
         if project_key in self.sessions:
+            if project_key in self.leases:
+                self.leases[project_key].check()
+            if select and start:
+                self._admit(project_key, self.records[project_key]["url"], context)
             return self.sessions[project_key]
-        directory = state_root("esp-mosaico") / "project-sessions" / project_key
+        directory = local.directory
         if not start and not directory.exists():
             raise GatewayNotRunningError("This project's Gateway is not running; start 'iris run' first.")
-        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        connection_file = directory / "connection.json"
-        # This module is dependency-free; the source Link lock imports no
-        # serial/network packages. Use the same cross-platform implementation.
-        sys.path.insert(0, str(script.parent))
-        from iris_gateway.link import EndpointLock
-
-        lock = EndpointLock("project-start:" + project_key, root=directory / "locks")
-        with contextlib.ExitStack() as cleanup:
-            cleanup.callback(lock.close)
-            lock.acquire(blocking=True)
+        connection_file = local.connection_file
+        with local.starting():
             existing = None
             try:
-                record = json.loads(connection_file.read_text(encoding="utf-8"))
+                record = local.connection()
                 health = request(record["url"], "/v1/health", timeout=2)
                 live = health.get("project_session") or {}
                 if (live.get("session_id"), live.get("project_id"), live.get("instance_id")) != (
                     record["session_id"], project_key, record["instance_id"],
                 ):
                     raise EnvironmentError("Project Gateway identity differs from the connection record")
-                _require_compatible_gateway(health, expected_revision=revision)
+                if start:
+                    _require_compatible_gateway(health, expected_source=expected_source)
                 existing = live
             except (OSError, ValueError, KeyError, DeviceError):
                 pass
             if existing:
-                inspecting = getattr(args, "session_action", None) == "status"
-                if not existing.get("persistent") and not inspecting:
-                    raise EnvironmentError("A temporary command owns this project session; wait for it to finish or use 'iris run' for shared development")
+                if start and LIFECYCLE_CAPABILITY not in health.get("capabilities", []):
+                    raise EnvironmentError("Existing Gateway uses the legacy owner lifetime; end its original session before using shared clients.")
+                if start and (health.get("lifecycle") or {}).get("state") == "draining":
+                    raise GatewayDraining("Gateway is draining")
                 record = existing
                 started = False
             else:
                 # A failed HTTP probe is not proof that the owner died. The
                 # Gateway holds this lock for its entire process lifetime.
-                live_lock = EndpointLock("project:" + project_key,
-                                         root=state_root("esp-mosaico") / "ownership" / "locks")
-                try:
-                    live_lock.acquire()
-                except RuntimeError as error:
-                    raise EnvironmentError("This project's Gateway is alive but unavailable; inspect its log before retrying") from error
-                finally:
-                    live_lock.close()
+                if local.running():
+                    raise EnvironmentError("This project's Gateway is alive but unavailable; inspect its log before retrying")
                 if not start:
                     raise GatewayNotRunningError("This project's Gateway is not running; start 'iris run' first.")
                 session_id = str(uuid.uuid4())
                 instance_id = "project-" + session_id
-                with contextlib.suppress(FileNotFoundError):
-                    connection_file.unlink()
+                local.discard_stopped_connection()
                 environment = os.environ.copy()
                 environment["ESP_IRIS_SOURCE_REVISION"] = revision
                 token_file = getattr(args, "pairing_token_file", None)
@@ -153,52 +209,78 @@ class SessionScope:
                     environment["ESP_IRIS_IDF_PYTHON"] = str(prepared.python)
                 except (EnvironmentError, HostEnvironmentError):
                     pass
-                log = (directory / "gateway.log").open("a", encoding="utf-8")
+                log = local.log_file.open("a", encoding="utf-8")
                 try:
                     process = subprocess.Popen([
                         str(python), str(script), "web", "--listen", "127.0.0.1", "--port", "0",
-                        "--instance-id", instance_id, "--state-dir", str(directory / "state"),
-                        "--project-session-id", session_id, "--project-id", project_key,
-                        "--project-path", str(project), "--project-connection-file", str(connection_file),
-                        "--ownership-dir", str(state_root("esp-mosaico") / "ownership"),
-                        "--owner-stdin", "--no-tls",
-                        *(["--project-persistent"] if getattr(args, "session_action", None) == "run" else []),
-                    ], stdin=subprocess.PIPE, stdout=log, stderr=subprocess.STDOUT,
+                        "--instance-id", instance_id, *local.launch_arguments(session_id), "--no-tls",
+                    ], stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                         env=environment, close_fds=True,
                         **({"start_new_session": True} if os.name != "nt" else {
-                            "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP,
+                            "creationflags": subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS,
                         }))
                 except OSError as error:
                     raise EnvironmentError(f"Could not launch this project's Gateway: {error}") from error
                 finally:
                     log.close()
                 self.processes.append((process, "", connection_file))
-                deadline = time.monotonic() + 20
-                while time.monotonic() < deadline:
-                    if process.poll() is not None:
-                        raise EnvironmentError(f"Project Gateway exited; inspect {directory / 'gateway.log'}")
-                    try:
-                        record = json.loads(connection_file.read_text(encoding="utf-8"))
-                        if record["session_id"] == session_id:
-                            health = request(record["url"], "/v1/health", timeout=2)
-                            _require_compatible_gateway(health, expected_revision=revision)
-                            break
-                    except (OSError, ValueError, KeyError, DeviceError):
-                        pass
-                    time.sleep(0.1)
-                else:
-                    raise EnvironmentError("Project Gateway startup timed out")
+                try:
+                    deadline = time.monotonic() + 20
+                    while time.monotonic() < deadline:
+                        if process.poll() is not None:
+                            raise EnvironmentError(f"Project Gateway exited; inspect {directory / 'gateway.log'}")
+                        try:
+                            record = local.connection()
+                            if record["session_id"] == session_id:
+                                health = request(record["url"], "/v1/health", timeout=2)
+                                _require_compatible_gateway(health, expected_source=expected_source)
+                                break
+                        except (OSError, ValueError, KeyError, DeviceError):
+                            pass
+                        time.sleep(0.1)
+                    else:
+                        raise EnvironmentError("Project Gateway startup timed out")
+                except BaseException:
+                    # Before publication no client can discover this launch,
+                    # and its HTTP idle watchdog may not have started. Reap
+                    # only our unpublished child; ready Gateways own lifetime.
+                    if not connection_file.exists() and process.poll() is None:
+                        process.terminate()
+                        try:
+                            process.wait(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            process.wait(timeout=3)
+                    raise
                 self.processes[-1] = (process, record["url"], connection_file)
-                self.owned_records[connection_file] = session_id
                 started = True
+            if start:
+                try:
+                    self.leases[project_key] = ClientLease(record["url"], record, args)
+                except DeviceError:
+                    # Only admission may retry; no business request has run yet.
+                    try:
+                        state = request(record["url"], "/v1/health", timeout=2)
+                    except DeviceError:
+                        raise GatewayDraining("Gateway exited during client admission")
+                    if (state.get("lifecycle") or {}).get("state") == "draining":
+                        raise GatewayDraining("Gateway started draining during client admission")
+                    raise
             result = GatewaySession(python, script, ("--url", record["url"]), None, started)
             self.sessions[project_key] = result
             self.records[project_key] = dict(record)
             self.info = record
         if start:
-            mode = "persistent" if getattr(args, "session_action", None) == "run" else "temporary"
-            action = f"created {mode}" if started else "reusing"
+            action = "created shared" if started else "reusing shared"
             context.status(f"gateway: project={project} {action} Gateway at {record['url']}")
+        if select and start:
+            self._admit(project_key, record["url"], context)
+        return result
+
+    def _admit(self, project_key: str, url: str, context: Any) -> None:
+        if project_key in self.admitted:
+            return
+        args = self.arguments
         selected = getattr(args, "device_id", None)
         endpoint = getattr(args, "endpoint", None)
         command = getattr(args, "command", "")
@@ -209,8 +291,8 @@ class SessionScope:
             "enter-recovery", "recovery-wifi", "bridge-code", "recover",
         } and not getattr(args, "hardware_mac", None)
         if command not in {"device", "list"} and (selected or endpoint or automatic):
-            acquire_device(record["url"], args, context, allow_none=command == "recover")
-        return result
+            acquire_device(url, args, context, allow_none=command == "recover")
+        self.admitted.add(project_key)
 
     def finished_operation(self, session: Any, operation_id: str) -> dict[str, Any] | None:
         """Read committed evidence after this local Gateway has stopped.
@@ -221,56 +303,10 @@ class SessionScope:
         project_key = next((key for key, value in self.sessions.items() if value is session), None)
         if project_key is None:
             return None  # Remote profiles have no registered local store.
-        from iris_gateway.link import EndpointLock
-        from iris_gateway.store import GatewayStore
-
-        record = self.records[project_key]
-        root = state_root("esp-mosaico")
-        lock = EndpointLock("project:" + project_key, root=root / "ownership" / "locks")
-        # HTTP may close just before the Gateway releases its lifetime lock.
-        deadline = time.monotonic() + 2
-        try:
-            while True:
-                try:
-                    lock.acquire()
-                    break
-                except RuntimeError:
-                    if time.monotonic() >= deadline:
-                        return None
-                    time.sleep(0.05)
-            database = root / "project-sessions" / project_key / "state" / "gateway.sqlite3"
-            with contextlib.closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as connection:
-                connection.row_factory = sqlite3.Row
-                row = connection.execute("SELECT * FROM operations WHERE operation_id=?", (operation_id,)).fetchone()
-            if row is None or row["created_ns"] < record["created_ns"] or not row["finished_ns"]:
-                return None
-            if row["status"] not in {"succeeded", "failed", "cancelled", "interrupted", "outcome_unknown"}:
-                return None
-            return GatewayStore._operation_row(row)
-        except (OSError, sqlite3.Error, ValueError, KeyError):
-            return None
-        finally:
-            lock.close()
+        local = self.local_projects.get(project_key)
+        return local.finished_operation(self.records[project_key], operation_id) if local else None
 
     def close(self) -> None:
-        for process, url, connection_file in reversed(self.processes):
-            if process.stdin:
-                process.stdin.close()
-            if process.poll() is None:
-                # EOF tells Gateway to drain even if this CLI is interrupted.
-                # Wait for it: a temporary command owns the entire workflow.
-                deadline = time.monotonic() + 915
-                while process.poll() is None and time.monotonic() < deadline:
-                    try:
-                        process.wait(timeout=0.2)
-                    except subprocess.TimeoutExpired:
-                        continue
-                    except KeyboardInterrupt:
-                        continue
-                if process.poll() is None:
-                    raise EnvironmentError("Project Gateway is still draining; inspect its operation and maintenance records")
-            if url:
-                with contextlib.suppress(OSError, ValueError):
-                    record = json.loads(connection_file.read_text(encoding="utf-8"))
-                    if record.get("session_id") == self.owned_records.get(connection_file):
-                        connection_file.unlink()
+        for lease in self.leases.values():
+            lease.close()
+        self.leases.clear()

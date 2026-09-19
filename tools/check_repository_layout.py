@@ -22,7 +22,7 @@ def main() -> int:
     required = (
         IRIS / "components" / "esp_iris" / "idf_component.yml",
         IRIS / "components" / "esp_iris" / "tools" / "system_update_bundle.py",
-        RECOVERY / "tools" / "mosaico_cli" / "__init__.py",
+        ROOT / "mosaico-tools" / "tools" / "mosaico_cli" / "__init__.py",
         RECOVERY / "firmware" / "recovery" / "prebuilt" / "recovery" / "manifest.json",
     )
     for path in required:
@@ -70,7 +70,7 @@ def main() -> int:
             fail("ESP-Iris Workbench root lock-package version is not 0.1.0")
             errors += 1
 
-    tools_version = (RECOVERY / "tools" / "mosaico_cli" / "__init__.py").read_text(
+    tools_version = (ROOT / "mosaico-tools" / "tools" / "mosaico_cli" / "__init__.py").read_text(
         encoding="utf-8"
     )
     if '__version__ = "0.1.0"' not in tools_version:

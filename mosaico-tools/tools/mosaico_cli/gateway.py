@@ -126,7 +126,7 @@ def ensure_iris_tools(context: RunContext) -> tuple[Path, Path]:
             )
         current = ""
     if not python.is_file():
-        if sys.version_info < (3, 8):
+        if sys.version_info < (3, 8):  # noqa: UP036 -- diagnose unsupported host interpreters
             raise EnvironmentError("ESP-Iris host runtime requires Python 3.8 or newer.")
         result = context.run(
             [sys.executable, "-m", "venv", environment_root], timeout=120
@@ -220,7 +220,7 @@ def _gateway_health(
 def _require_compatible_gateway(
     health: dict[str, Any] | None,
     *,
-    expected_revision: str | None = None,
+    expected_source: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     api = health.get("gateway_api") if isinstance(health, dict) else None
     capabilities = health.get("capabilities") if isinstance(health, dict) else None
@@ -231,33 +231,25 @@ def _require_compatible_gateway(
     if not isinstance(capabilities, list):
         raise EnvironmentError("The reachable ESP-Iris Gateway did not report capabilities.")
     assert isinstance(health, dict)
-    if (
-        expected_revision is not None
-        and health.get("esp_iris_revision") != expected_revision
-    ):
-        raise EnvironmentError(
-            "The local ESP-Iris Gateway does not match the pinned checkout revision; "
-            "it was not stopped."
-        )
+    if expected_source is not None:
+        actual = health.get("source")
+        if (not isinstance(actual, dict) or any(actual.get(key) != expected_source.get(key)
+                                               for key in ("algorithm", "fingerprint"))):
+            raise EnvironmentError(
+                "The local Iris Gateway source fingerprint differs under "
+                "gateway.source_policy=exact; it was not stopped."
+            )
     return health
 
 
 def _pinned_source_revision(source: Path) -> str:
-    try:
-        result = subprocess.run(
-            ["git", "-C", str(source), "rev-parse", "HEAD"],
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise EnvironmentError("Could not resolve the pinned ESP-Iris revision.") from error
-    revision = result.stdout.strip()
-    if result.returncode or not revision:
-        raise EnvironmentError("Could not resolve the pinned ESP-Iris revision.")
-    return revision
+    # Historical name retained for callers: this is provenance, not the
+    # compatibility boundary, and a source archive does not require Git.
+    from types import SimpleNamespace
+    from .iris import host_api
+
+    identity = host_api(SimpleNamespace(esp_iris_path=source)).source_identity(source)
+    return identity["git_revision"] or "sha256:" + identity["fingerprint"]
 
 
 def _is_local_session(session: GatewaySession) -> bool:
@@ -273,7 +265,8 @@ def _is_local_session(session: GatewaySession) -> bool:
     }
 
 
-def ensure_gateway(context: RunContext, profile: str | None, *, start: bool = True) -> GatewaySession:
+def ensure_gateway(context: RunContext, profile: str | None, *, start: bool = True,
+                   select: bool = True) -> GatewaySession:
     if start or profile:
         python, script = ensure_iris_tools(context)
     else:
@@ -292,7 +285,7 @@ def ensure_gateway(context: RunContext, profile: str | None, *, start: bool = Tr
     from .session_runtime import CURRENT_SCOPE
     scope = CURRENT_SCOPE.get()
     if scope is not None:
-        return scope.gateway(context, python, script, expected_revision, start=start)
+        return scope.gateway(context, python, script, expected_revision, start=start, select=select)
     raise EnvironmentError("Local Gateway operations require a project SessionScope; use mosaico.py or an explicit remote profile.")
 
 
@@ -305,6 +298,11 @@ def gateway_json(
     stdin_text: str | None = None,
     sensitive_output: bool = False,
 ) -> Any:
+    from .session_runtime import CURRENT_SCOPE
+    scope = CURRENT_SCOPE.get()
+    if scope is not None:
+        for lease in scope.leases.values():
+            lease.check()
     try:
         result = context.run(
             session.ctl_argv(*arguments),
@@ -366,51 +364,18 @@ def enter_recovery_and_wait(
 ) -> dict[str, Any]:
     """Enter retained Recovery and wait for the same device to reconnect."""
 
+    health = gateway_json(context, session, "health")
+    if "recovery-transition/v1" not in health.get("capabilities", []):
+        raise EnvironmentError("Gateway does not support the Recovery transition contract; update its host tools first")
     wait_timeout = min(max(timeout, 1), 30)
-    try:
-        gateway_json(
-            context,
-            session,
-            "factory",
-            device_id,
-            timeout=min(wait_timeout, 5),
-        )
-    except DeviceError:
-        # USB can disappear while Gateway is returning the accepted RPC. The
-        # reconnect observation below is authoritative for whether it worked.
-        pass
-
-    deadline = time.monotonic() + wait_timeout
-    while time.monotonic() < deadline:
-        try:
-            value = gateway_json(
-                context,
-                session,
-                "status",
-                device_id,
-                timeout=min(3, wait_timeout),
-            )
-        except DeviceError:
-            time.sleep(0.25)
-            continue
-        status = value.get("device", value) if isinstance(value, dict) else {}
-        boot_id = status.get("boot_id") if isinstance(status, dict) else None
-        if (
-            isinstance(status, dict)
-            and status.get("firmware_mode") == "recovery"
-            and (
-                previous_boot_id is None
-                or str(boot_id or "") != str(previous_boot_id)
-            )
-        ):
-            return status
-        time.sleep(0.25)
-
-    raise OperationError(
-        "The device accepted the Recovery transition but retained Recovery did "
-        "not reconnect with a new Boot ID within 30 seconds.",
-        details={"device_id": device_id, "log": str(context.log_path)},
-    )
+    value = gateway_json(context, session, "factory", device_id, "--wait",
+                         "--wait-timeout", str(wait_timeout), timeout=wait_timeout + 10)
+    status = value.get("recovery", {})
+    boot_id = status.get("boot_id")
+    if (status.get("device_id") != device_id or status.get("firmware_mode") != "recovery"
+            or boot_id in (None, "") or str(boot_id) == str(previous_boot_id)):
+        raise OperationError("Gateway did not confirm the selected device's Recovery transition")
+    return status
 
 
 def acquire_maintenance_lease(
@@ -750,8 +715,13 @@ def run_ota(
     map_file: Path,
     validation: str,
     timeout: float,
+    preconditions: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     del validation
+    if preconditions:
+        health = gateway_json(context, session, "health")
+        if "recovery-preconditions/v1" not in health.get("capabilities", []):
+            raise EnvironmentError("Gateway cannot enforce Recovery preconditions; update its host tools before installing")
     started = time.monotonic()
     try:
         result = context.run(
@@ -767,6 +737,7 @@ def run_ota(
                 "recovery",
                 "--compatibility-json",
                 MOSAICO_COMPATIBILITY_JSON,
+                "--preconditions-json", json.dumps(preconditions or {}),
             ),
             timeout=timeout,
         )

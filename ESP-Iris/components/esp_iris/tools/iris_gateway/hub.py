@@ -1164,9 +1164,8 @@ class IrisHub:
     ) -> dict[str, Any]:
         """Send one normalized begin/moves/end gesture through pointer RPC.
 
-        The gateway records the gesture as one operation while the protocol
-        adapter emits the bounded fixed-size pointer messages expected by the
-        template firmware.
+        The device's full-screen description selects the geometry. The optional
+        pointer/v1 profile owns the RPC IDs and fixed-size payload format.
         """
 
         begin = gesture.get("begin")
@@ -1177,18 +1176,24 @@ class IrisHub:
         if not isinstance(moves, list) or len(moves) > 2048:
             raise ValueError("gesture moves must contain at most 2048 points")
         sequence = int(time.monotonic_ns() & 0xFFFFFFFF)
+        from .service_profiles import POINTER_METHOD_ID, POINTER_SERVICE_ID
+
+        screen = await self.get(device_id).screen_description()
+        width, height = int(screen["width"]), int(screen["height"])
+        if not (1 <= width <= 32768 and 1 <= height <= 32768):
+            raise ValueError("device screen geometry exceeds the pointer/v1 coordinate range")
 
         def request(phase: int, point: dict[str, Any], value: int) -> bytes:
-            x = min(479, max(0, round(int(point.get("x", 0)) * 479 / 10000)))
-            y = min(479, max(0, round(int(point.get("y", 0)) * 479 / 10000)))
+            x = min(width - 1, max(0, round(int(point.get("x", 0)) * (width - 1) / 10000)))
+            y = min(height - 1, max(0, round(int(point.get("y", 0)) * (height - 1) / 10000)))
             return struct.pack("<BBhhHI", phase, 0, x, y, 0, value)
 
         points = [(0, begin), *((1, point) for point in moves), (2, end)]
         for index, (phase, point) in enumerate(points):
             response = await self.rpc(
                 device_id,
-                0x1001,
-                1,
+                POINTER_SERVICE_ID,
+                POINTER_METHOD_ID,
                 request(phase, point, (sequence + index) & 0xFFFFFFFF),
                 deadline_ms=1000,
             )
@@ -1202,7 +1207,9 @@ class IrisHub:
         }
 
     async def enter_recovery(self, device_id: str) -> dict[str, Any]:
-        await self.rpc(device_id, 0x7FFF, 2, b"", deadline_ms=2000)
+        from .service_profiles import ENTER_RECOVERY_METHOD_ID, RECOVERY_SERVICE_ID
+
+        await self.rpc(device_id, RECOVERY_SERVICE_ID, ENTER_RECOVERY_METHOD_ID, b"", deadline_ms=2000)
         return {
             "accepted": True,
             "restart_planned": True,

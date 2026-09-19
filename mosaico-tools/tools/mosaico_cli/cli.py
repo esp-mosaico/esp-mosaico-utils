@@ -26,7 +26,7 @@ from .commands import (
     start_system_update,
 )
 from .doctor import diagnose_host, print_diagnosis
-from .errors import MosaicoError
+from .errors import MosaicoError, SelectionError
 from .runtime import RunContext
 from .scaffold import initialize_project
 from .workspace import load_workspace
@@ -456,10 +456,12 @@ def build_parser() -> argparse.ArgumentParser:
     crash_parser.add_argument(
         "--save-core", type=Path, help="Also save the raw Core Dump at this path"
     )
-    run_parser = iris_commands.add_parser("run", help="Run this project's Gateway and try connecting its sole device; Ctrl-C to stop")
+    run_parser = iris_commands.add_parser("run", help="Hold a shared project Gateway client and try connecting its sole device; Ctrl-C releases this client")
     run_parser.set_defaults(command="session", session_action="run", public_command="iris run")
     status_parser = iris_commands.add_parser("status", help="Inspect this project's Gateway without starting it")
     status_parser.set_defaults(command="session", session_action="status", public_command="iris status")
+    status_parser.add_argument("--all", dest="all_projects", action="store_true",
+                               help="Passively list same-user Gateways, clients and device ownership across workspaces")
     transfer_parser = iris_commands.add_parser("transfer", help="Transfer device ownership between project sessions")
     transfer_actions = transfer_parser.add_subparsers(dest="transfer_action", required=True)
     device_parsers = []
@@ -630,7 +632,7 @@ def _main(
     scope = CURRENT_SCOPE.get()
     if scope is not None:
         scope.arguments = arguments
-    if sys.version_info < (3, 8):
+    if sys.version_info < (3, 8):  # noqa: UP036 -- diagnose unsupported host interpreters
         message = "mosaico.py requires Python 3.8 or newer."
         if arguments.json:
             print(
@@ -779,22 +781,27 @@ def _main(
 
 
 def _project_command(arguments: Any, context: RunContext) -> int:
-    from .errors import DeviceError, GatewayNotRunningError
+    from .errors import DeviceError
     from .gateway import ensure_gateway
-    from .session_runtime import CURRENT_SCOPE, acquire_device, read_pairing_token, request
+    from .session_runtime import (
+        CURRENT_SCOPE,
+        acquire_device,
+        read_pairing_token,
+        request,
+    )
 
-    start = arguments.command == "session" and arguments.session_action == "run"
-    try:
-        session = ensure_gateway(context, None, start=start)
-    except GatewayNotRunningError:
-        if arguments.command != "session" or arguments.session_action != "status":
-            raise
-        result = {"running": False, "session": None}
+    if arguments.command == "session" and arguments.session_action == "status":
+        from .gateway_status import print_status, status
+        if arguments.all_projects and arguments.project:
+            raise SelectionError("--all and --project cannot be combined")
+        result = status(context.workspace, arguments.project, all_projects=arguments.all_projects)
         if arguments.json:
-            print(json.dumps(result))
+            print(json.dumps(result, ensure_ascii=False), flush=True)
         else:
-            print("Project Gateway: not running. Start it with 'mosaico.py iris run'.")
+            print_status(result)
         return 0
+    start = arguments.command == "session" or getattr(arguments, "device_action", None) != "transfer-status"
+    session = ensure_gateway(context, None, start=start)
     url = session.connection_args[1]
     if arguments.command == "session":
         if start and session.started_local and not (arguments.device_id or arguments.endpoint):
@@ -808,21 +815,26 @@ def _project_command(arguments: Any, context: RunContext) -> int:
                     print(f"  {candidate}", file=sys.stderr)
         result = request(url, "/v1/project")
         result["running"] = True
-        print(json.dumps(result, ensure_ascii=False, indent=None if arguments.json else 2))
-        if arguments.session_action == "run" and session.started_local:
+        if arguments.json:
+            print(json.dumps(result, ensure_ascii=False), flush=True)
+        else:
+            print(f"Project: {result['session']['project_path']}")
+            print("Shared client retained; Ctrl+C releases this client only.", flush=True)
+        if arguments.session_action == "run":
             print(f"Project Gateway: {url}  session={result['session']['session_id']}", file=sys.stderr)
             try:
                 while True:
                     time.sleep(0.5)
                     scope = CURRENT_SCOPE.get()
+                    if scope is not None:
+                        for lease in scope.leases.values():
+                            lease.check()
                     if scope is not None and any(process.poll() is not None for process, _, _ in scope.processes):
                         raise DeviceError("Project Gateway exited; inspect the project Gateway log")
             except KeyboardInterrupt:
                 pass
         return 0
     action = arguments.device_action
-    if session.started_local:
-        raise DeviceError("Start this project's foreground 'iris run' before managing ownership")
     if action == "claim":
         pairing = read_pairing_token(arguments.pairing_token_file) if arguments.pairing_token_file else None
         result = request(url, "/v1/project/acquire", {

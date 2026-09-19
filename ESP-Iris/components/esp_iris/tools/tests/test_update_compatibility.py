@@ -29,7 +29,7 @@ def test_preflight_rejects_missing_or_mismatched_fields_before_any_mutation(
     key, bad, system_update, missing
 ) -> None:
     async def scenario() -> None:
-        status = {**CONTRACT, "firmware_mode": "normal", "boot_id": 1}
+        status = {**CONTRACT, "device_id": "device", "firmware_mode": "normal", "boot_id": 1}
         if missing:
             status.pop(key)
         else:
@@ -60,8 +60,8 @@ def test_preflight_rejects_missing_or_mismatched_fields_before_any_mutation(
 @pytest.mark.parametrize("system_update", [False, True])
 def test_recovery_must_preserve_normal_contract_before_writer(system_update) -> None:
     async def scenario() -> None:
-        before = {**CONTRACT, "firmware_mode": "normal", "boot_id": 1}
-        recovery = {**CONTRACT, "firmware_mode": "recovery", "boot_id": 2,
+        before = {**CONTRACT, "device_id": "device", "firmware_mode": "normal", "boot_id": 1}
+        recovery = {**CONTRACT, "device_id": "device", "firmware_mode": "recovery", "boot_id": 2,
                     "board_id": "different-board"}
         service = GatewayService.__new__(GatewayService)
         service.hub = AsyncMock()

@@ -202,10 +202,14 @@ def test_quiesce_endpoint_without_hello_identity_releases_physical_link() -> Non
     asyncio.run(scenario())
 
 
-def test_input_gesture_is_one_gateway_operation_with_fixed_pointer_rpc_frames() -> None:
+@pytest.mark.parametrize("width,height", [(480, 480), (320, 240), (800, 480)])
+def test_input_gesture_is_one_gateway_operation_with_fixed_pointer_rpc_frames(width, height) -> None:
     class PointerSession:
         def __init__(self) -> None:
             self.requests: list[tuple[int, int, bytes]] = []
+
+        async def screen_description(self):
+            return {"width": width, "height": height}
 
         async def rpc(
             self,
@@ -239,7 +243,7 @@ def test_input_gesture_is_one_gateway_operation_with_fixed_pointer_rpc_frames() 
         ]
         decoded = [struct.unpack("<BBhhHI", payload) for _, _, payload in session.requests]
         assert [item[0] for item in decoded] == [0, 1, 2]
-        assert [(item[2], item[3]) for item in decoded] == [(0, 0), (240, 240), (479, 479)]
+        assert [(item[2], item[3]) for item in decoded] == [(0, 0), (round((width - 1) / 2), round((height - 1) / 2)), (width - 1, height - 1)]
 
     asyncio.run(scenario())
 

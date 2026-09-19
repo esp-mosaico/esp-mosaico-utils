@@ -13,7 +13,8 @@ import pathlib
 import sqlite3
 import time
 import uuid
-from typing import Any, Iterator
+from collections.abc import Iterator
+from typing import Any
 
 from .link import EndpointLock
 
@@ -56,6 +57,9 @@ class OwnershipRegistry:
                 metadata TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS generations (
                 resource TEXT PRIMARY KEY, value INTEGER NOT NULL);
+            CREATE TABLE IF NOT EXISTS session_metadata (
+                session_id TEXT PRIMARY KEY, workspace_path TEXT NOT NULL,
+                lifecycle_capability TEXT NOT NULL, source_revision TEXT NOT NULL);
             PRAGMA user_version=1;
         """)
         self.session_id = ""
@@ -79,15 +83,7 @@ class OwnershipRegistry:
     def alive(self, session_id: str) -> bool:
         if session_id == self.session_id and self._live_lock is not None:
             return True
-        lock = self._lock(session_id)
-        try:
-            try:
-                lock.acquire()
-            except RuntimeError:
-                return True
-            return False
-        finally:
-            lock.close()
+        return EndpointLock.held("session:" + session_id, self.root / "locks")
 
     def register(self, session_id: str, project_id: str, project_path: str,
                  instance_id: str, url: str = "", *, persistent: bool = True) -> None:
@@ -113,11 +109,19 @@ class OwnershipRegistry:
         with self.transaction():
             self.db.execute("UPDATE sessions SET url=? WHERE session_id=?", (url, self.session_id))
 
+    def set_metadata(self, workspace_path: str, lifecycle_capability: str, source_revision: str) -> None:
+        # Keep sessions' seven-column layout readable/writable by older workspaces.
+        with self.transaction():
+            self.db.execute("INSERT OR REPLACE INTO session_metadata VALUES(?,?,?,?)",
+                            (self.session_id, workspace_path, lifecycle_capability, source_revision))
+
     def session(self, session_id: str) -> dict[str, Any]:
         row = self.db.execute("SELECT * FROM sessions WHERE session_id=?", (session_id,)).fetchone()
         if row is None:
             raise KeyError(session_id)
-        return {**dict(row), "alive": self.alive(session_id), "capability": CAPABILITY}
+        metadata = self.db.execute("SELECT * FROM session_metadata WHERE session_id=?", (session_id,)).fetchone()
+        return {**dict(row), **(dict(metadata) if metadata else {}),
+                "alive": self.alive(session_id), "capability": CAPABILITY}
 
     def sessions(self) -> list[dict[str, Any]]:
         return [self.session(str(row[0])) for row in self.db.execute("SELECT session_id FROM sessions")]
@@ -283,8 +287,10 @@ class OwnershipRegistry:
                     raise OwnershipConflict("transfer ID already describes a different request")
                 return previous
             target_session = self.session(target)
-            if target == self.session_id or not target_session["alive"] or not target_session["persistent"]:
-                raise OwnershipConflict("target must be a different live persistent project session")
+            if target == self.session_id or not target_session["alive"]:
+                raise OwnershipConflict("target must be a different live project session")
+            if not target_session.get("lifecycle_capability") and not target_session["persistent"]:
+                raise OwnershipConflict("legacy temporary sessions cannot receive transfers")
             self._require("device:" + device_id, ("owned",))
             endpoints = [item for item in self.claims()
                          if item["device_id"] == device_id and not item["resource"].startswith("device:")]

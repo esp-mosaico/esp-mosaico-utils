@@ -28,6 +28,7 @@ from aiohttp import (
 )
 
 from . import __version__
+from .client_lifecycle import CAPABILITY as LIFECYCLE_CAPABILITY
 from .compat import BooleanOptionalAction, remove_prefix
 from .compatibility import compatibility_expectation
 from .demo import DemoHub
@@ -42,6 +43,7 @@ from .hub import IrisHub
 from .link import EndpointLock
 from .ownership import OwnershipRegistry
 from .project_gateway import ProjectGateway
+from .recovery_transition import recovery_preconditions
 from .security import DEFAULT_DEVELOPER_PASSWORD
 from .store import GatewayStore
 from .system_update import (
@@ -161,20 +163,25 @@ async def _web_owned(args: argparse.Namespace, state_dir: pathlib.Path) -> None:
     stop = asyncio.Event()
     owner_task = None
     drain_task = None
+    idle_task = None
+    shared = getattr(args, "project_shared", False)
     project_session_id = getattr(args, "project_session_id", None)
     if project_session_id:
         if args.demo or not listener_is_loopback or not args.ownership_dir:
             raise ValueError("project sessions require a local real Gateway and ownership directory")
         registry = OwnershipRegistry(pathlib.Path(args.ownership_dir))
         registry.register(project_session_id, args.project_id, args.project_path, args.instance_id,
-                          persistent=args.project_persistent)
+                          persistent=shared or args.project_persistent)
+        if shared:
+            registry.set_metadata(args.project_workspace or "", LIFECYCLE_CAPABILITY,
+                                  os.environ.get("ESP_IRIS_SOURCE_REVISION", "unknown"))
     if args.demo:
         hub: Any = DemoHub(service.on_device_event)
     else:
         hub = IrisHub(instance_id=args.instance_id, event_sink=service.on_device_event, ownership=registry)
     service.attach_hub(hub)
     if registry is not None:
-        service.project = ProjectGateway(registry, service, hub, stop, pairing_token=args.pairing_token)
+        service.project = ProjectGateway(registry, service, hub, stop, pairing_token=args.pairing_token, shared=shared)
         drain_task = asyncio.create_task(service.project.drain())
     try:
         if args.demo:
@@ -242,12 +249,16 @@ async def _web_owned(args: argparse.Namespace, state_dir: pathlib.Path) -> None:
             bound_port = runner.addresses[0][1]
             url = f"{scheme}://{args.listen}:{bound_port}"
             registry.set_url(url)
+            if shared:
+                # Start the idle clock only after HTTP can admit its first client.
+                service.project.clients.idle_since = service.project.clients.clock()
+                idle_task = asyncio.create_task(service.project.idle_shutdown())
             if args.project_connection_file:
                 connection = pathlib.Path(args.project_connection_file)
                 temporary = connection.with_suffix(".tmp")
                 temporary.write_text(json.dumps(registry.session(str(project_session_id))), encoding="utf-8")
                 temporary.replace(connection)
-            if args.owner_stdin:
+            if args.owner_stdin and not shared:
                 loop = asyncio.get_running_loop()
                 lost_owner = asyncio.Event()
 
@@ -290,6 +301,9 @@ async def _web_owned(args: argparse.Namespace, state_dir: pathlib.Path) -> None:
         await stop.wait()
         await runner.cleanup()
     finally:
+        if idle_task is not None:
+            idle_task.cancel()
+            await asyncio.gather(idle_task, return_exceptions=True)
         if owner_task is not None:
             owner_task.cancel()
             await asyncio.gather(owner_task, return_exceptions=True)
@@ -299,6 +313,11 @@ async def _web_owned(args: argparse.Namespace, state_dir: pathlib.Path) -> None:
         await service.operations.close()
         await hub.close()
         if registry is not None:
+            if args.project_connection_file:
+                with contextlib.suppress(OSError, ValueError):
+                    connection = pathlib.Path(args.project_connection_file)
+                    if json.loads(connection.read_text()).get("session_id") == project_session_id:
+                        connection.unlink()
             registry.close(clean=not store.active_maintenance_leases() and not service.project.drain_timed_out)
         store.add_audit(
             "system", "gateway", "gateway.stopped", {"instance_id": args.instance_id}
@@ -647,6 +666,7 @@ async def _ctl(args: argparse.Namespace) -> int:
                 url = base + f"/v1/devices/{args.device}/factory-recovery"
                 async with session.post(
                     url,
+                    json={"wait": args.wait, "timeout": args.wait_timeout},
                     headers={"X-Operation-ID": str(uuid.uuid4())},
                     ssl=ssl_value,
                 ) as response:
@@ -673,6 +693,7 @@ async def _ctl(args: argparse.Namespace) -> int:
                             "execution_mode": args.execution_mode,
                             "validation_mode": args.validation_mode,
                             "compatibility": args.compatibility,
+                            "preconditions": args.preconditions,
                         },
                         headers={"X-Operation-ID": operation_id},
                         ssl=ssl_value,
@@ -908,6 +929,8 @@ def build_parser() -> argparse.ArgumentParser:
     web_parser.add_argument("--ownership-dir")
     web_parser.add_argument("--owner-stdin", action="store_true")
     web_parser.add_argument("--project-persistent", action="store_true")
+    web_parser.add_argument("--project-shared", action="store_true", help="Use shared client leases and 10-second idle shutdown")
+    web_parser.add_argument("--project-workspace")
     web_parser.add_argument("--password-file")
     web_parser.add_argument(
         "--require-local-auth",
@@ -994,6 +1017,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ota.add_argument("--wait", action="store_true")
     ota.add_argument("--interval", type=float, default=0.5)
+    ota.add_argument("--preconditions-json", dest="preconditions", default={},
+                     type=lambda value: recovery_preconditions(json.loads(value)),
+                     help="Required live Recovery version and partition table hash, checked before writing")
     system_update = commands.add_parser("system-update")
     system_update.add_argument("device")
     system_update.add_argument("bundle")
@@ -1051,6 +1077,8 @@ def build_parser() -> argparse.ArgumentParser:
     restart.add_argument("--delay-ms", type=int, default=250)
     factory = commands.add_parser("factory")
     factory.add_argument("device")
+    factory.add_argument("--wait", action="store_true", help="Wait for the same device in Recovery with a new Boot ID")
+    factory.add_argument("--wait-timeout", type=float, default=30)
     jobs = commands.add_parser("jobs")
     jobs.add_argument("device")
     jobs.add_argument("job_id", type=int)

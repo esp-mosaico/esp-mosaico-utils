@@ -12,7 +12,7 @@ idf_component_register(
         "factory_ui_input.c"
         "recovery_ota_support.c"
         "iris_screen_mirror.c"
-    INCLUDE_DIRS "."
+    INCLUDE_DIRS "." "../../../include"
     REQUIRES
         app_update
         bootloader_support

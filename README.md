@@ -9,9 +9,10 @@ history while recording the source revisions used for the migration.
 | Path | Product | Release line |
 | --- | --- | --- |
 | `ESP-Iris/` | ESP-Iris component, Developer Gateway, and Web Workbench | `0.1.x` |
-| `esp-mosaico-recovery/` | ESP-Mosaico CLI and retained Recovery firmware | `0.1.x` |
+| `mosaico-tools/` | ESP-Mosaico host CLI and build runner | `0.1.x` |
+| `esp-mosaico-recovery/` | Retained Recovery firmware and product ABI | `0.1` |
 
-The release version of `esp-mosaico-recovery` describes the host toolchain.
+The release version of `mosaico-tools` describes the host toolchain.
 The embedded Recovery firmware keeps its independent version. New source
 builds and the prebuilt bundle use `0.1`. The bundle
 retains its reviewed bootloader, partition table, and initial OTA data; its
@@ -30,6 +31,7 @@ from that checkout. For ESP-Mosaico-Vibe the intended layout is:
 ```text
 submodule/esp-mosaico-utils/
 ├── ESP-Iris/
+├── mosaico-tools/
 └── esp-mosaico-recovery/
 ```
 

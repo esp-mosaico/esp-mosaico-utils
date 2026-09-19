@@ -17,9 +17,13 @@ installed as a Python package.
 When launched through ESP-Mosaico's `mosaico.py`, the Gateway is owned by a
 project session: discovery is passive, acquisition is explicit, and only the
 current owner reconnects a device. Local `/v1/project` APIs report ownership
-and perform reserved, idempotent device transfers. The owning foreground
-session's pipe controls lifetime; HTTP clients cannot shut it down. Each project
-keeps separate records and follows its checkout's pinned source version.
+and perform reserved, idempotent device transfers. Shared project Gateways use independent client leases:
+CLI clients renew while their command runs, every `iris run` retains its own
+client, and each Web workbench event connection retains a client. With no
+clients and no active work, the service shuts down after 10 idle seconds.
+HTTP status queries do not retain clients; there is no stop endpoint. The
+legacy owner-pipe mode remains readable during migration. Each project
+keeps separate records; API/capability compatibility governs reuse. Exact source matching is optional.
 The standalone `esp_iris.py web` commands below retain their existing automatic
 connection behavior and do not participate in project ownership coordination.
 
@@ -427,3 +431,13 @@ idf.py -C components/esp_iris/examples/rpc_jobs -B build-ci build
 
 See the [component README](../README.md), [Chinese README](../README_zh.md), and
 [wire protocol](../protocol/spec.md) for the device-side integration contract.
+
+
+## Public host integration
+
+Use `iris_gateway.client` (API major 1) for local project coordination, passive
+registry snapshots and terminal operation evidence. Its standard-library-only
+API owns state layout and schema checks. Consumer products must not import
+`link`, `ownership` or `store` internals. See
+[component boundaries](../../../../docs/component-boundaries.md) for compatibility,
+source fingerprints, shared lifecycle and product Recovery preconditions.

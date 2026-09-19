@@ -6,8 +6,8 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 
-#define FACTORY_SYSTEM_UPDATE_NAMESPACE "update"
-#define FACTORY_SYSTEM_UPDATE_RESULT_KEY "last_result"
+#define FACTORY_SYSTEM_UPDATE_NAMESPACE MOSAICO_UPDATE_NAMESPACE
+#define FACTORY_SYSTEM_UPDATE_RESULT_KEY MOSAICO_UPDATE_RESULT_KEY
 
 esp_err_t factory_system_metadata_init(void)
 {

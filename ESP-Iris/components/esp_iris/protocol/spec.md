@@ -808,3 +808,32 @@ still owns work after the bounded stop deadline, stop returns TIMEOUT and
 contexts must remain valid; unregister/start reject until work is released.
 Completion draining retains unsent responses under TX backpressure and claims
 the slot exclusively against concurrent deferred cleanup.
+
+
+## Reserved optional RPC service profiles (v1)
+
+These profiles reserve service/method identifiers without changing the generic
+CONTROL REQUEST/RESPONSE envelope. Implementations opt in by registering the
+profile handler. The generic RPC capability does not imply profile support;
+unsupported methods return the normal RPC error. C consumers use
+`esp_iris_service_profiles.h`; host adapters use `service_profiles.py`.
+
+| Profile | Service | Method | Request | Successful response |
+| --- | --- | --- | --- | --- |
+| `pointer/v1` | `0x1001` | `1` | 12-byte pointer sample | 12-byte accepted sample |
+| `enter-recovery/v1` | `0x7fff` | `2` | Empty | Empty, followed by restart |
+
+The pointer sample is little-endian `<BBhhHI>`: phase u8 (0 begin, 1 move,
+2 end), reserved u8=0, x i16, y i16, reserved u16=0, sequence u32.
+Coordinates are display pixels, with origin at the top left. The host obtains
+full-screen width and height from SCREEN MEDIA.OPEN with the default description
+and closes the media handle after reading its description. Normalized host points
+0..10000 map to 0..width-1 and 0..height-1. Dimensions must fit positive signed
+16-bit coordinates. A product must not substitute a fixed panel size in the
+Gateway. Response coordinates may reflect device-side clamping.
+
+Enter-recovery schedules a restart into the firmware's declared recovery role;
+a successful RPC is acceptance, not proof of arrival. A host confirms the same
+Device ID, a new Boot ID and recovery role after reconnect. A lost response may
+be followed by observation but must not cause automatic replay of the RPC.
+The profile specifies no Mosaico partition, product version or persistent ABI.
