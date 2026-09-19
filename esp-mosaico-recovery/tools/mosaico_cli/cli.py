@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import time
+import uuid
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any, NoReturn
@@ -383,6 +385,46 @@ def build_parser() -> argparse.ArgumentParser:
     crash_parser.add_argument(
         "--save-core", type=Path, help="Also save the raw Core Dump at this path"
     )
+    session_parser = commands.add_parser("session", help="Own a foreground project Gateway or inspect it")
+    session_actions = session_parser.add_subparsers(dest="session_action", required=True)
+    run_parser = session_actions.add_parser("run", help="Keep this project's Gateway alive until Ctrl-C")
+    status_parser = session_actions.add_parser("status", help="Show project sessions, ownership and discovery")
+    device_parser = commands.add_parser("device", help="Explicit device ownership and transfer")
+    device_actions = device_parser.add_subparsers(dest="device_action", required=True)
+    device_parsers = []
+    for action in ("claim", "release", "reconcile", "transfer", "transfer-status", "transfer-abort", "transfer-accept", "transfer-reconcile"):
+        action_parser = device_actions.add_parser(action)
+        device_parsers.append(action_parser)
+        if action == "transfer":
+            action_parser.add_argument("--device-id", required=True)
+        elif action == "claim":
+            action_parser.add_argument("--device-id")
+            action_parser.add_argument("--endpoint")
+        elif action in {"release", "reconcile"}:
+            selection = action_parser.add_mutually_exclusive_group(required=True)
+            selection.add_argument("--device-id")
+            selection.add_argument("--endpoint")
+        if action == "transfer":
+            action_parser.add_argument("--to-session", required=True)
+            action_parser.add_argument("--transfer-id", help="Reuse this ID when retrying a transfer")
+        elif action.startswith("transfer-"):
+            action_parser.add_argument("--transfer-id", required=True)
+    run_parser.add_argument("--device-id")
+    run_parser.add_argument("--endpoint")
+    run_parser.add_argument("--pairing-token-file", type=Path, help="Private file containing the TCP pairing token")
+    for child in [*commands.choices.values(), run_parser, status_parser, *device_parsers]:
+        if child in (init_parser, session_parser, device_parser) or child.prog.endswith(" doctor"):
+            continue
+        if "--project" not in child._option_string_actions:
+            child.add_argument("--project", help="Project whose development session to use")
+        if child in device_parsers:
+            if child.prog.endswith(" claim"):
+                child.add_argument("--pairing-token-file", type=Path, help="Private TCP pairing token file")
+            continue
+        if child is not recover_parser and "--device-id" in child._option_string_actions and "--endpoint" not in child._option_string_actions:
+            child.add_argument("--endpoint", help="Explicit discovered endpoint for first identity handshake")
+        if "--device-id" in child._option_string_actions and "--pairing-token-file" not in child._option_string_actions:
+            child.add_argument("--pairing-token-file", type=Path, help="Private TCP pairing token file")
     return parser
 
 
@@ -438,12 +480,15 @@ def _print_device_table(result: dict[str, Any], details: bool) -> None:
         for item in result["devices"]
     ]
     widths = [
-        max(len(headers[index]), *(len(row[index]) for row in rows))
+        max([len(headers[index]), *(len(row[index]) for row in rows)])
         for index in range(len(fields))
     ]
     print("  ".join(headers[index].ljust(widths[index]) for index in range(len(fields))))
     for row in rows:
         print("  ".join(row[index].ljust(widths[index]) for index in range(len(fields))))
+    for endpoint in result.get("endpoints", []):
+        owner = (endpoint.get("ownership") or {}).get("owner", "unclaimed")
+        print(f"Endpoint: {endpoint['endpoint']}  state={endpoint.get('state', 'discovered')}  owner={owner}")
 
 
 def _emit_error(error: MosaicoError, json_output: bool, verbose: bool) -> None:
@@ -482,7 +527,7 @@ def _emit_error(error: MosaicoError, json_output: bool, verbose: bool) -> None:
             print(json.dumps(error.details, ensure_ascii=False, indent=2), file=sys.stderr)
 
 
-def main(
+def _main(
     argv: Sequence[str] | None = None,
     *,
     tool_root: Path | None = None,
@@ -490,6 +535,10 @@ def main(
     raw = list(argv or sys.argv[1:])
     MosaicoArgumentParser.json_errors = "--json" in raw
     arguments = build_parser().parse_args(_normalize_globals(raw))
+    from .session_runtime import CURRENT_SCOPE
+    scope = CURRENT_SCOPE.get()
+    if scope is not None:
+        scope.arguments = arguments
     if sys.version_info < (3, 8):
         message = "mosaico.py requires Python 3.8 or newer."
         if arguments.json:
@@ -515,6 +564,13 @@ def main(
     except MosaicoError as error:
         _emit_error(error, arguments.json, arguments.verbose)
         return error.exit_code
+
+    if arguments.command in {"session", "device"}:
+        try:
+            return _project_command(arguments, RunContext(workspace, arguments.command, arguments.verbose, arguments.json))
+        except MosaicoError as error:
+            _emit_error(error, arguments.json, arguments.verbose)
+            return error.exit_code
 
     if arguments.command == "init":
         try:
@@ -629,6 +685,81 @@ def main(
         if arguments.verbose:
             print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
+
+
+def _project_command(arguments: Any, context: RunContext) -> int:
+    from .errors import DeviceError
+    from .gateway import ensure_gateway
+    from .session_runtime import CURRENT_SCOPE, read_pairing_token, request
+
+    session = ensure_gateway(context, None)
+    url = session.connection_args[1]
+    if arguments.command == "session":
+        result = request(url, "/v1/project")
+        print(json.dumps(result, ensure_ascii=False, indent=None if arguments.json else 2))
+        if arguments.session_action == "run" and session.started_local:
+            print(f"Project Gateway: {url}  session={result['session']['session_id']}", file=sys.stderr)
+            try:
+                while True:
+                    time.sleep(0.5)
+                    scope = CURRENT_SCOPE.get()
+                    if scope is not None and any(process.poll() is not None for process, _, _ in scope.processes):
+                        raise DeviceError("Project Gateway exited; inspect the project Gateway log")
+            except KeyboardInterrupt:
+                pass
+        return 0
+    action = arguments.device_action
+    if session.started_local:
+        raise DeviceError("Start this project's foreground 'session run' before managing ownership")
+    if action == "claim":
+        pairing = read_pairing_token(arguments.pairing_token_file) if arguments.pairing_token_file else None
+        result = request(url, "/v1/project/acquire", {
+            "device_id": arguments.device_id, "endpoint": arguments.endpoint,
+            "pairing_token": pairing,
+        }, timeout=35)
+    elif action == "release":
+        result = request(url, "/v1/project/release", {"device_id": arguments.device_id, "endpoint": arguments.endpoint})
+    elif action == "reconcile":
+        result = request(url, "/v1/project/reconcile", {"device_id": arguments.device_id, "endpoint": arguments.endpoint})
+    elif action == "transfer":
+        transfer_id = arguments.transfer_id or str(uuid.uuid4())
+        context.status(f"transfer: {transfer_id}")
+        try:
+            result = request(url, "/v1/project/transfer", {
+                "device_id": arguments.device_id, "target_session_id": arguments.to_session,
+                "transfer_id": transfer_id,
+            }, timeout=40)
+        except DeviceError as error:
+            error.details["transfer_id"] = transfer_id
+            error.details["hint"] = "Query transfer-status; retry transfer-accept on the target. No automatic rollback occurred."
+            raise
+    elif action == "transfer-status":
+        result = request(url, "/v1/project/transfers/" + arguments.transfer_id)
+    else:
+        verb = {"transfer-abort": "abort", "transfer-accept": "accept", "transfer-reconcile": "reconcile-transfer"}[action]
+        result = request(url, "/v1/project/" + verb, {"transfer_id": arguments.transfer_id}, timeout=35)
+    print(json.dumps(result, ensure_ascii=False, indent=None if arguments.json else 2))
+    return 0
+
+
+def main(argv: Sequence[str] | None = None, *, tool_root: Path | None = None) -> int:
+    from .session_runtime import CURRENT_SCOPE, SessionScope
+    scope = SessionScope()
+    token = CURRENT_SCOPE.set(scope)
+    try:
+        result = _main(argv, tool_root=tool_root)
+    except KeyboardInterrupt:
+        result = 130
+    finally:
+        try:
+            scope.close()
+        except MosaicoError as error:
+            _emit_error(error, bool(getattr(scope.arguments, "json", False)),
+                        bool(getattr(scope.arguments, "verbose", False)))
+            result = error.exit_code
+        finally:
+            CURRENT_SCOPE.reset(token)
+    return result
 
 
 if __name__ == "__main__":

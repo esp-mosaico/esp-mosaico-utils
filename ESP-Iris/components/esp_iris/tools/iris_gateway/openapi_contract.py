@@ -20,6 +20,16 @@ def build_openapi(auth_required: bool) -> dict[str, Any]:
         "/v1/devices/{device_id}/mirror/stop": "Stop media mirror",
     }
     paths: dict[str, Any] = {
+        "/v1/project": {"get": {"summary": "Local project session, discovery and shared ownership; project Gateways only"}},
+        "/v1/project/acquire": {"post": {"summary": "Explicitly acquire a device or discovered endpoint"}},
+        "/v1/project/release": {"post": {"summary": "Release an idle owned device"}},
+        "/v1/project/transfer": {"post": {"summary": "Transfer an idle device to a live local project session"}},
+        "/v1/project/prepare": {"post": {"summary": "Reserve and release a device for a named receiving session"}},
+        "/v1/project/accept": {"post": {"summary": "Accept and validate a reserved transfer"}},
+        "/v1/project/abort": {"post": {"summary": "Explicit source rollback after target release"}},
+        "/v1/project/reconcile": {"post": {"summary": "Explicitly reconcile a dead owner's ordinary device claim"}},
+        "/v1/project/reconcile-transfer": {"post": {"summary": "Resolve an interrupted transfer after both sessions died"}},
+        "/v1/project/transfers/{transfer_id}": {"get": {"summary": "Read durable transfer state"}},
         "/v1/health": {"get": {"summary": "Gateway health"}},
         "/v1/auth/login": {"post": {"summary": "Developer password login"}},
         "/v1/devices": {"get": {"summary": "Connected and cached devices"}},

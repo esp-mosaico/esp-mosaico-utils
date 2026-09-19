@@ -41,7 +41,8 @@ export function useGateway() {
       setOperations(operationData.operations);
       setAudits(auditData.audits);
       setHealth(healthData);
-      setSelectedId((current) => deviceData.devices.some((device) => device.device_id === current) ? current : deviceData.devices[0]?.device_id || "");
+      setSelectedId((current) => deviceData.devices.some((device) => device.device_id === current)
+        ? current : (deviceData.devices.find((device) => device.connected !== false) || deviceData.devices[0])?.device_id || "");
       setError("");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -53,13 +54,18 @@ export function useGateway() {
       setStatus(null);
       return;
     }
+    const selected = devices.find((device) => device.device_id === selectedId);
+    if (selected?.connected === false) {
+      setStatus({ ...selected, stale: true, mode: mode.mode });
+      return;
+    }
     try {
       setStatus(await api<DeviceStatus>(`/v1/devices/${encodeURIComponent(selectedId)}`));
     } catch (reason) {
       setStatus(null);
       setError(reason instanceof Error ? reason.message : String(reason));
     }
-  }, [selectedId]);
+  }, [selectedId, devices, mode.mode]);
 
   useEffect(() => {
     refreshAuth().catch(() => setAuth({ required: true, configured: true, authenticated: false }));

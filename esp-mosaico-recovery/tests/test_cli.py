@@ -3,36 +3,34 @@ from __future__ import annotations
 import argparse
 import ast
 import base64
-from contextlib import ExitStack, redirect_stderr, redirect_stdout
-from dataclasses import replace
 import hashlib
 import io
 import json
-import os
-from pathlib import Path
 import re
-import shutil
 import subprocess
 import sys
 import tempfile
-from types import SimpleNamespace
 import unittest
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
+from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 TOOL_ROOT = Path(__file__).resolve().parents[1]
 REPOSITORY = TOOL_ROOT / "tests" / "fixtures" / "workspace"
 sys.path.insert(0, str(TOOL_ROOT / "tools"))
 
-from mosaico_cli.cli import (
-    _emit_error,
-    build_parser,
-    main,
-    _normalize_globals,
-)
 from mosaico_cli.build_progress import (
     BuildProgressReporter,
     decode_progress,
     encode_progress,
+)
+from mosaico_cli.cli import (
+    _emit_error,
+    _normalize_globals,
+    build_parser,
+    main,
 )
 from mosaico_cli.commands import (
     _device_status,
@@ -47,7 +45,6 @@ from mosaico_cli.commands import (
     monitor,
     monitor_memory,
     recover,
-    read_bridge_code,
     start_system_update,
 )
 from mosaico_cli.errors import (
@@ -56,19 +53,17 @@ from mosaico_cli.errors import (
     EnvironmentError,
     OperationError,
     OutcomeUnknownError,
-    RecoveryRequiredError,
     SelectionError,
 )
 from mosaico_cli.gateway import (
     GatewaySession,
-    _require_compatible_gateway,
-    _configured_local_url,
     _is_local_session,
+    _require_compatible_gateway,
     acquire_endpoint_maintenance_lease,
     acquire_maintenance_lease,
-    enter_recovery_and_wait,
     ensure_gateway,
     ensure_iris_tools,
+    enter_recovery_and_wait,
     iris_environment_root,
     locate_iris_tools,
     run_ota,
@@ -108,7 +103,6 @@ from mosaico_cli.runtime import (
     run_idf_target,
 )
 from mosaico_cli.workspace import WorkspaceConfig, load_workspace
-
 
 WORKSPACE = load_workspace(TOOL_ROOT, explicit=str(REPOSITORY))
 
@@ -847,7 +841,7 @@ class GatewayTests(unittest.TestCase):
         self.assertEqual(build.call_args.kwargs["target"], "system-update-bundle")
         self.assertEqual(
             build.call_args.kwargs["definitions"],
-            {"ESP_IRIS_PYTHON": "/iris-python"},
+            {"ESP_IRIS_PYTHON": str(Path("/iris-python"))},
         )
         submit.assert_called_once_with(
             context,
@@ -975,14 +969,7 @@ class GatewayTests(unittest.TestCase):
             selected.name, f"py{sys.version_info.major}.{sys.version_info.minor}"
         )
 
-    def test_local_gateway_url_can_use_an_isolated_loopback_port(self) -> None:
-        with mock.patch.dict(
-            os.environ,
-            {"MOSAICO_LOCAL_GATEWAY_URL": "http://127.0.0.1:18443"},
-        ):
-            self.assertEqual(
-                _configured_local_url(), ("http://127.0.0.1:18443", 18443)
-            )
+    def test_project_gateway_can_use_an_isolated_loopback_port(self) -> None:
         session = GatewaySession(
             Path("python"),
             Path("iris"),
@@ -1161,70 +1148,12 @@ class GatewayTests(unittest.TestCase):
         self.assertIn("maintenance-acquire-endpoint", acquire_call.args[0])
         self.assertTrue(acquire_call.kwargs["sensitive_output"])
 
-    def test_wrong_revision_local_gateway_is_not_stopped_or_replaced(self) -> None:
+    def test_local_gateway_requires_an_explicit_lifetime_owner(self) -> None:
         context = mock.Mock(workspace=WORKSPACE, repository=REPOSITORY)
-        with ExitStack() as _contexts:
-            _contexts.enter_context(
-                mock.patch(
-                    "mosaico_cli.gateway.ensure_iris_tools",
-                    return_value=(Path("python"), Path("iris")),
-                )
-            )
-            _contexts.enter_context(
-                mock.patch("mosaico_cli.gateway._probe", return_value=True)
-            )
-            _contexts.enter_context(
-                mock.patch(
-                    "mosaico_cli.gateway._gateway_health",
-                    return_value={
-                        "status": "ok",
-                        "instance_id": "older",
-                        "gateway_api": {"major": 1, "minor": 1},
-                        "capabilities": ["device-maintenance-lease/v1"],
-                        "esp_iris_revision": "wrong-revision",
-                    },
-                )
-            )
-            _contexts.enter_context(
-                mock.patch(
-                    "mosaico_cli.gateway._pinned_source_revision",
-                    return_value="pinned-revision",
-                )
-            )
-            start = _contexts.enter_context(
-                mock.patch("mosaico_cli.gateway.subprocess.Popen")
-            )
-            _contexts.enter_context(self.assertRaises(EnvironmentError))
-            ensure_gateway(context, None)
-        start.assert_not_called()
-
-    def test_unusable_running_local_gateway_is_not_replaced(self) -> None:
-        context = mock.Mock(workspace=WORKSPACE, repository=REPOSITORY)
-        with ExitStack() as _contexts:
-            _contexts.enter_context(
-                mock.patch(
-                    "mosaico_cli.gateway.ensure_iris_tools",
-                    return_value=(Path("python"), Path("iris")),
-                )
-            )
-            _contexts.enter_context(
-                mock.patch("mosaico_cli.gateway._probe", return_value=False)
-            )
-            _contexts.enter_context(
-                mock.patch(
-                    "mosaico_cli.gateway._pinned_source_revision",
-                    return_value="pinned-revision",
-                )
-            )
-            _contexts.enter_context(
-                mock.patch(
-                    "mosaico_cli.gateway._health_instance", return_value="existing"
-                )
-            )
-            start = _contexts.enter_context(
-                mock.patch("mosaico_cli.gateway.subprocess.Popen")
-            )
-            _contexts.enter_context(self.assertRaises(DeviceError))
+        with mock.patch("mosaico_cli.gateway.ensure_iris_tools", return_value=(Path("python"), Path("iris"))), \
+             mock.patch("mosaico_cli.gateway._pinned_source_revision", return_value="revision"), \
+             mock.patch("mosaico_cli.gateway.subprocess.Popen") as start, \
+             self.assertRaisesRegex(EnvironmentError, "SessionScope"):
             ensure_gateway(context, None)
         start.assert_not_called()
 
@@ -1615,7 +1544,7 @@ class HostCompatibilityTests(unittest.TestCase):
             )
             completed = subprocess.CompletedProcess([], 0, exported, "")
             idf_python_probe = subprocess.CompletedProcess(
-                [], 0, f'["{python}", 3, 12]\n', ""
+                [], 0, json.dumps([str(python), 3, 12]) + "\n", ""
             )
             with ExitStack() as _contexts:
                 run = _contexts.enter_context(
@@ -1655,7 +1584,10 @@ class HostCompatibilityTests(unittest.TestCase):
                 },
             )
         self.assertEqual(selected, active)
-        self.assertEqual(probe.call_args_list[0].args[0], ["/idf-env/bin/python"])
+        self.assertEqual(
+            probe.call_args_list[0].args[0],
+            [str(virtual_environment_python(Path("/idf-env")))],
+        )
 
     def test_explicit_idf_python_environment_takes_priority(self) -> None:
         configured = Path("/configured/python")
@@ -2482,6 +2414,71 @@ class RecoveryCommandTests(unittest.TestCase):
         )
         self.assertTrue(any(message.startswith("validation:") for message in messages))
 
+    def test_hardware_mac_dry_run_does_not_probe_selected_rom_twice(self) -> None:
+        arguments = argparse.Namespace(
+            model=None,
+            source="reviewed",
+            device_id=None,
+            hardware_mac="30:ed:a0:12:34:56",
+            recovery_port=None,
+            gateway_profile=None,
+            timeout=180,
+            dry_run=True,
+            yes=False,
+        )
+        context = mock.Mock(workspace=WORKSPACE, repository=REPOSITORY)
+        context.log_path = REPOSITORY / ".codex-runs" / "test.log"
+        session = GatewaySession(
+            Path("python"),
+            Path("iris"),
+            ("--url", "http://127.0.0.1:8443"),
+            None,
+            False,
+        )
+        with ExitStack() as contexts:
+            contexts.enter_context(
+                mock.patch(
+                    "mosaico_cli.commands.load_bundle",
+                    return_value={"version": "0.1", "images": {"recovery": {}}},
+                )
+            )
+            contexts.enter_context(
+                mock.patch(
+                    "mosaico_cli.commands.resolve_idf_path", return_value=Path("/idf")
+                )
+            )
+            contexts.enter_context(
+                mock.patch("mosaico_cli.commands.ensure_gateway", return_value=session)
+            )
+            contexts.enter_context(
+                mock.patch(
+                    "mosaico_cli.commands.connected_devices",
+                    return_value=[
+                        {"device_id": "device-a", "hardware_mac": "30:ed:a0:00:00:01"},
+                        {"device_id": "device-b", "hardware_mac": "30:ed:a0:00:00:02"},
+                    ],
+                )
+            )
+            candidate = contexts.enter_context(
+                mock.patch(
+                    "mosaico_cli.commands.provisioning_candidate",
+                    return_value="/dev/rom-selected",
+                )
+            )
+            redundant_probe = contexts.enter_context(
+                mock.patch("mosaico_cli.commands.read_rom_hardware_mac")
+            )
+            target = contexts.enter_context(
+                mock.patch("mosaico_cli.commands.run_idf_target")
+            )
+            result = recover(arguments, context)
+
+        self.assertEqual(result["status"], "dry_run")
+        self.assertEqual(result["hardware_mac"], "30:ed:a0:12:34:56")
+        candidate.assert_called_once()
+        redundant_probe.assert_not_called()
+        target.assert_not_called()
+
     def test_managed_recovery_uses_device_lease_without_stopping_gateway(self) -> None:
         arguments = SimpleNamespace(
             model=None,
@@ -2857,7 +2854,7 @@ class RecoveryCommandTests(unittest.TestCase):
             _emit_error(caught.exception, json_output=False, verbose=False)
         rendered = stderr.getvalue()
         self.assertIn("Failed to resolve component 'missing_component'", rendered)
-        self.assertIn("Log: /runs/raw.log", rendered)
+        self.assertIn(f"Log: {Path('/runs/raw.log')}", rendered)
 
     def test_busy_recovery_port_is_reported_without_retry(self) -> None:
         context = mock.Mock(repository=REPOSITORY, log_path=Path("run.log"))

@@ -324,12 +324,19 @@ def list_devices(context: RunContext, gateway_profile: str | None) -> dict[str, 
     for device in devices:
         device["online"] = device.get("connected") is not False
         device["connection"] = device.get("transport_name") or device.get("transport")
+    from .session_runtime import CURRENT_SCOPE, request
+    project_scope = CURRENT_SCOPE.get()
+    discovered = (
+        request(session.connection_args[1], "/v1/project").get("endpoints", [])
+        if project_scope is not None and session.profile is None else []
+    )
     return {
         "command": "list",
         "status": "succeeded",
         "gateway_started": session.started_local,
         "gateway_profile": session.profile,
         "devices": devices,
+        "endpoints": discovered,
     }
 
 
@@ -912,10 +919,13 @@ def recover(arguments: Any, context: RunContext) -> dict[str, Any]:
             idf_path=idf_path,
             mac_reader=probe_unowned_rom_mac,
         )
-        if selected_hardware_mac or arguments.source == "current":
+        if selected_hardware_mac:
+            context.status(
+                f"device: recovery interface ready at {unowned_port} "
+                f"hardware_mac={selected_hardware_mac}"
+            )
+        elif arguments.source == "current":
             rom_hardware_mac = probe_unowned_rom_mac(unowned_port)
-            if selected_hardware_mac and rom_hardware_mac != selected_hardware_mac:
-                raise DeviceError("Selected ROM endpoint hardware MAC changed during probing.")
             selected_hardware_mac = rom_hardware_mac
             context.status(
                 f"device: recovery interface ready at {unowned_port} "

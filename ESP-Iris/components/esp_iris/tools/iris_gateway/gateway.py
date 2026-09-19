@@ -129,6 +129,7 @@ class GatewayService:
         for lease in store.active_maintenance_leases():
             self.operations.restore_maintenance(str(lease["device_id"]))
         self.rpc_catalog = self._load_rpc_catalog()
+        self.project: Any = None
 
     def attach_hub(self, hub: GatewayHub) -> None:
         self.hub = hub
@@ -149,6 +150,8 @@ class GatewayService:
         return json.loads(path.read_text(encoding="utf-8"))
 
     async def on_device_event(self, event: dict[str, Any]) -> None:
+        if self.project is not None:
+            self.project.observe(event)
         item = dict(event)
         device_id = item.get("device_id")
         kind = str(item.get("kind", "device_event"))
@@ -1045,9 +1048,10 @@ def create_app(service: GatewayService) -> web.Application:
         finally:
             ACTOR_CONTEXT.reset(token)
 
-    app = web.Application(
-        middlewares=[errors, authentication], client_max_size=GATEWAY_CLIENT_MAX_SIZE
-    )
+    middlewares = [errors, authentication]
+    if service.project is not None:
+        middlewares.append(service.project.guard)
+    app = web.Application(middlewares=middlewares, client_max_size=GATEWAY_CLIENT_MAX_SIZE)
     async def health(request: web.Request) -> web.Response:
         return web.json_response(
             {
@@ -1055,7 +1059,11 @@ def create_app(service: GatewayService) -> web.Application:
                 "instance_id": service.instance_id,
                 "host_id": service.host_id,
                 "gateway_api": GATEWAY_API,
-                "capabilities": GATEWAY_CAPABILITIES,
+                "capabilities": GATEWAY_CAPABILITIES + ([service.project.capability] if service.project else []),
+                "project_session": (
+                    service.project.registry.session(service.project.registry.session_id)
+                    if service.project is not None else None
+                ),
                 "esp_iris_version": "0.1.0",
                 "esp_iris_revision": os.environ.get(
                     "ESP_IRIS_SOURCE_REVISION", "unknown"
@@ -1530,6 +1538,8 @@ def create_app(service: GatewayService) -> web.Application:
             operation_id=request.headers.get("X-Operation-ID"),
             serialized=cancel,
         )
+        if service.project is not None:
+            service.project.observe({"kind": "job", "device_id": device_id, **result})
         return web.json_response({"operation": operation, "job": result})
 
     async def restart(request: web.Request) -> web.Response:
@@ -1998,6 +2008,8 @@ def create_app(service: GatewayService) -> web.Application:
     app.router.add_put("/v1/auth/password", change_password)
     app.router.add_post("/v1/export", export)
     app.router.add_get("/v1/openapi.json", openapi)
+    if service.project is not None:
+        service.project.register_routes(app)
     app.router.add_route("*", "/v1/{path:.*}", api_not_found)
     app.router.add_get("/{path:.*}", spa)
     return app

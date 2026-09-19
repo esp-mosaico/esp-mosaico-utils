@@ -183,9 +183,9 @@ class SerialLink(Link):
 class EndpointLock:
     """Cross-process advisory lock for one physical endpoint."""
 
-    def __init__(self, endpoint: str) -> None:
+    def __init__(self, endpoint: str, *, root: pathlib.Path | None = None) -> None:
         digest = hashlib.sha256(endpoint.encode()).hexdigest()
-        root = pathlib.Path(tempfile.gettempdir()) / "esp-iris-locks"
+        root = root or pathlib.Path(tempfile.gettempdir()) / "esp-iris-locks"
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.path = root / f"{digest}.lock"
         self._file = self.path.open("a+b")

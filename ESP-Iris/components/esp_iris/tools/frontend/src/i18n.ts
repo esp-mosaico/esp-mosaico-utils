@@ -3,6 +3,22 @@ import { useLayoutEffect } from "react";
 export type UiLanguage = "zh" | "en";
 
 const translations: Record<string, string> = {
+  "项目会话与设备归属": "Project session and device ownership",
+  "项目": "Project",
+  "操作完成": "Operation completed",
+  "转让目标会话": "Receiving project session",
+  "会话": "Session",
+  "正在结束": "Draining",
+  "转让目标": "Transfer target",
+  "选择项目会话": "Select project session",
+  "连接到本项目": "Connect to this project",
+  "释放设备": "Release device",
+  "转让设备": "Transfer device",
+  "尝试接收转让": "Accept transfer",
+  "未分配": "Unclaimed",
+  "归属待核对": "Ownership requires reconciliation",
+  "尚未发现设备。": "No devices discovered yet.",
+  "发现设备不会自动连接。明确连接后，本会话会在设备重启时自动重连；转让后由目标会话接管。": "Discovery does not connect devices. Acquired devices reconnect after reboot; transferred devices belong to the receiving session.",
   "设备": "Devices",
   "记录": "Records",
   "设置": "Settings",

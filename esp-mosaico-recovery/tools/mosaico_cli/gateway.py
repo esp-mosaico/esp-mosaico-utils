@@ -2,20 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
-from urllib.error import URLError
 from urllib.parse import urlsplit
-from urllib.request import urlopen
-import uuid
 
 from .errors import (
     DeviceError,
@@ -25,16 +22,12 @@ from .errors import (
     SelectionError,
 )
 from .host import (
-    HostEnvironmentError,
-    prepare_idf_environment,
     state_root,
     virtual_environment_python,
 )
-from .runtime import RunContext, resolve_idf_path
+from .runtime import RunContext
 from .workspace import WorkspaceConfig, user_path
 
-
-LOCAL_URL = "http://127.0.0.1:8443"
 REQUIRED_GATEWAY_API_MAJOR = 1
 MAINTENANCE_CAPABILITY = "device-maintenance-lease/v1"
 ENDPOINT_MAINTENANCE_CAPABILITY = "physical-endpoint-maintenance-lease/v1"
@@ -46,10 +39,6 @@ MOSAICO_COMPATIBILITY_JSON = json.dumps({
     "layout_id": "mosaico-retained-recovery-2m-v1",
     "recovery_abi": 1,
 }, separators=(",", ":"))
-
-
-def _state_home() -> Path:
-    return state_root("esp-mosaico") / "gateway"
 
 
 def _python_major_minor(python: Path) -> tuple[int, int] | None:
@@ -271,40 +260,6 @@ def _pinned_source_revision(source: Path) -> str:
     return revision
 
 
-def _health_instance(url: str = LOCAL_URL) -> str | None:
-    try:
-        with urlopen(f"{url}/v1/health", timeout=2) as response:
-            value = json.loads(response.read().decode("utf-8"))
-    except (OSError, URLError, ValueError, json.JSONDecodeError):
-        return None
-    instance = value.get("instance_id") if isinstance(value, dict) else None
-    return str(instance) if instance else None
-
-
-def _configured_local_url() -> tuple[str, int]:
-    value = os.environ.get("MOSAICO_LOCAL_GATEWAY_URL", LOCAL_URL)
-    parsed = urlsplit(value)
-    if (
-        parsed.scheme != "http"
-        or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
-        or parsed.path not in {"", "/"}
-        or parsed.query
-        or parsed.fragment
-    ):
-        raise EnvironmentError(
-            "MOSAICO_LOCAL_GATEWAY_URL must be a loopback HTTP origin."
-        )
-    try:
-        port = parsed.port
-    except ValueError as error:
-        raise EnvironmentError(
-            "MOSAICO_LOCAL_GATEWAY_URL contains an invalid port."
-        ) from error
-    if port is None:
-        raise EnvironmentError("MOSAICO_LOCAL_GATEWAY_URL must include a port.")
-    return value.rstrip("/"), port
-
-
 def _is_local_session(session: GatewaySession) -> bool:
     if session.profile is not None or len(session.connection_args) != 2:
         return False
@@ -328,110 +283,11 @@ def ensure_gateway(context: RunContext, profile: str | None) -> GatewaySession:
         return GatewaySession(python, script, connection, profile, False)
 
     expected_revision = _pinned_source_revision(context.workspace.esp_iris_path)
-    local_url, local_port = _configured_local_url()
-    local = ("--url", local_url)
-    if _probe(context, python, script, local):
-        _require_compatible_gateway(
-            _gateway_health(context, python, script, local),
-            expected_revision=expected_revision,
-        )
-        return GatewaySession(python, script, local, None, False)
-
-    # A reachable process is shared host infrastructure.  Never replace it
-    # merely because this CLI cannot probe it: doing so would interrupt every
-    # device attached to that Gateway.
-    if _health_instance(local_url) is not None:
-        raise DeviceError(
-            "A local ESP-Iris Gateway is running but could not be used; it was not stopped."
-        )
-
-    state = _state_home()
-    state.mkdir(parents=True, exist_ok=True)
-
-    log_path = state / "gateway.log"
-    instance_id = f"mosaico-{uuid.uuid4().hex}"
-    try:
-        log_stream = log_path.open("a", encoding="utf-8")
-        popen_options: dict[str, Any] = {"close_fds": True}
-        if os.name == "nt":
-            popen_options["creationflags"] = getattr(
-                subprocess, "CREATE_NEW_PROCESS_GROUP", 0
-            )
-        else:
-            popen_options["start_new_session"] = True
-        gateway_environment = os.environ.copy()
-        gateway_environment["ESP_IRIS_SOURCE_REVISION"] = expected_revision
-        try:
-            idf_environment = prepare_idf_environment(
-                resolve_idf_path(
-                    context.workspace, context.workspace.default_project
-                ),
-                base_environment=gateway_environment,
-            )
-        except (EnvironmentError, HostEnvironmentError) as error:
-            context.status(
-                "gateway: ESP-IDF crash decoder unavailable: " + str(error)
-            )
-        else:
-            gateway_environment.update(idf_environment.values)
-            gateway_environment["ESP_IRIS_IDF_PATH"] = str(idf_environment.root)
-            gateway_environment["ESP_IRIS_IDF_PYTHON"] = str(
-                idf_environment.python
-            )
-        process = subprocess.Popen(
-            [
-                str(python),
-                str(script),
-                "web",
-                "--listen",
-                "127.0.0.1",
-                "--port",
-                str(local_port),
-                "--instance-id",
-                instance_id,
-                "--state-dir",
-                str(state / "state"),
-                "--no-tls",
-            ],
-            stdin=subprocess.DEVNULL,
-            stdout=log_stream,
-            stderr=subprocess.STDOUT,
-            env=gateway_environment,
-            **popen_options,
-        )
-        log_stream.close()
-    except OSError as error:
-        raise DeviceError(
-            "Could not start the local ESP-Iris Gateway.",
-            details={"gateway_log": str(log_path)},
-        ) from error
-
-    deadline = time.monotonic() + 20
-    while time.monotonic() < deadline:
-        health = _gateway_health(context, python, script, local)
-        if _probe(context, python, script, local) and health is not None:
-            _require_compatible_gateway(
-                health, expected_revision=expected_revision
-            )
-            started_local = health.get("instance_id") == instance_id
-            if not started_local and process.poll() is None:
-                # Another workspace won the startup race.  Stop only the
-                # process created above and share the compatible winner.
-                process.terminate()
-            return GatewaySession(python, script, local, None, started_local)
-        # A concurrent starter may hold the state lock before its HTTP socket
-        # is ready. Keep probing the winner even if our child already exited.
-        time.sleep(0.25)
-    if process.poll() is None:
-        process.terminate()
-        try:
-            process.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            process.kill()
-    raise DeviceError(
-        "The local ESP-Iris Gateway failed to start.",
-        details={"gateway_log": str(log_path)},
-    )
+    from .session_runtime import CURRENT_SCOPE
+    scope = CURRENT_SCOPE.get()
+    if scope is not None:
+        return scope.gateway(context, python, script, expected_revision)
+    raise EnvironmentError("Local Gateway operations require a project SessionScope; use mosaico.py or an explicit remote profile.")
 
 
 def gateway_json(
@@ -831,7 +687,16 @@ def _wait_gateway_operation(
             last_stage = stage
             last_bucket = bucket
         time.sleep(0.25)
-        current = gateway_json(context, session, "ota-status", operation_id)
+        try:
+            current = gateway_json(context, session, "ota-status", operation_id)
+        except DeviceError:
+            from .session_runtime import CURRENT_SCOPE
+
+            scope = CURRENT_SCOPE.get()
+            current = scope.finished_operation(session, operation_id) if scope is not None else None
+            if current is None:
+                raise
+            context.note(f"Gateway exited; read committed operation {operation_id} from this project session's store")
         operation = current.get("operation", current) if isinstance(current, dict) else {}
         if not isinstance(operation, dict):
             operation = {}

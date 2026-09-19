@@ -11,6 +11,7 @@ import pathlib
 import signal
 import ssl
 import sys
+import threading
 import uuid
 from collections.abc import Sequence
 from typing import Any
@@ -39,6 +40,8 @@ from .gateway import (
 )
 from .hub import IrisHub
 from .link import EndpointLock
+from .ownership import OwnershipRegistry
+from .project_gateway import ProjectGateway
 from .security import DEFAULT_DEVELOPER_PASSWORD
 from .store import GatewayStore
 from .system_update import (
@@ -154,11 +157,25 @@ async def _web_owned(args: argparse.Namespace, state_dir: pathlib.Path) -> None:
             "gateway-default" if default_password_selected else "gateway-first-run",
         )
 
+    registry = None
+    stop = asyncio.Event()
+    owner_task = None
+    drain_task = None
+    project_session_id = getattr(args, "project_session_id", None)
+    if project_session_id:
+        if args.demo or not listener_is_loopback or not args.ownership_dir:
+            raise ValueError("project sessions require a local real Gateway and ownership directory")
+        registry = OwnershipRegistry(pathlib.Path(args.ownership_dir))
+        registry.register(project_session_id, args.project_id, args.project_path, args.instance_id,
+                          persistent=args.project_persistent)
     if args.demo:
         hub: Any = DemoHub(service.on_device_event)
     else:
-        hub = IrisHub(instance_id=args.instance_id, event_sink=service.on_device_event)
+        hub = IrisHub(instance_id=args.instance_id, event_sink=service.on_device_event, ownership=registry)
     service.attach_hub(hub)
+    if registry is not None:
+        service.project = ProjectGateway(registry, service, hub, stop, pairing_token=args.pairing_token)
+        drain_task = asyncio.create_task(service.project.drain())
     try:
         if args.demo:
             await hub.start()
@@ -218,11 +235,35 @@ async def _web_owned(args: argparse.Namespace, state_dir: pathlib.Path) -> None:
             },
         )
 
-        runner = web.AppRunner(create_app(service))
+        runner = web.AppRunner(create_app(service), shutdown_timeout=5 if registry is not None else 60)
         await runner.setup()
         await web.TCPSite(runner, args.listen, args.port, ssl_context=context).start()
+        if registry is not None:
+            bound_port = runner.addresses[0][1]
+            url = f"{scheme}://{args.listen}:{bound_port}"
+            registry.set_url(url)
+            if args.project_connection_file:
+                connection = pathlib.Path(args.project_connection_file)
+                temporary = connection.with_suffix(".tmp")
+                temporary.write_text(json.dumps(registry.session(str(project_session_id))), encoding="utf-8")
+                temporary.replace(connection)
+            if args.owner_stdin:
+                loop = asyncio.get_running_loop()
+                lost_owner = asyncio.Event()
+
+                def watch_owner() -> None:
+                    sys.stdin.buffer.read()
+                    with contextlib.suppress(RuntimeError):
+                        loop.call_soon_threadsafe(lost_owner.set)
+
+                async def owner_lifetime() -> None:
+                    await lost_owner.wait()
+                    service.project.request_stop()
+
+                threading.Thread(target=watch_owner, daemon=True).start()
+                owner_task = asyncio.create_task(owner_lifetime())
         label = " [DEMO]" if args.demo else ""
-        print(f"ESP-Iris {args.instance_id}{label} listening at {scheme}://{args.listen}:{args.port}")
+        print(f"ESP-Iris {args.instance_id}{label} listening at {scheme}://{args.listen}:{runner.addresses[0][1]}")
         print(
             "Authentication: "
             f"local={'required' if service.require_local_auth else 'disabled'}, "
@@ -235,17 +276,30 @@ async def _web_owned(args: argparse.Namespace, state_dir: pathlib.Path) -> None:
         if service.auth.verify_password(DEFAULT_DEVELOPER_PASSWORD):
             print("WARNING: default developer password 'espressif' is active")
         print(f"State: {state_dir}")
-        stop = asyncio.Event()
         loop = asyncio.get_running_loop()
+        def request_stop() -> None:
+            if service.project is None:
+                stop.set()
+            else:
+                service.project.request_stop()
+
         for name in ("SIGINT", "SIGTERM"):
             if hasattr(signal, name):
                 with contextlib.suppress(NotImplementedError):
-                    loop.add_signal_handler(getattr(signal, name), stop.set)
+                    loop.add_signal_handler(getattr(signal, name), request_stop)
         await stop.wait()
         await runner.cleanup()
     finally:
+        if owner_task is not None:
+            owner_task.cancel()
+            await asyncio.gather(owner_task, return_exceptions=True)
+        if drain_task is not None:
+            drain_task.cancel()
+            await asyncio.gather(drain_task, return_exceptions=True)
         await service.operations.close()
         await hub.close()
+        if registry is not None:
+            registry.close(clean=not store.active_maintenance_leases() and not service.project.drain_timed_out)
         store.add_audit(
             "system", "gateway", "gateway.stopped", {"instance_id": args.instance_id}
         )
@@ -821,7 +875,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
     web_parser = subparsers.add_parser("web", help="run USB Hub, gateway, and frontend")
     web_parser.add_argument("--tcp", action="append", default=[], metavar="HOST[:PORT]")
-    web_parser.add_argument("--pairing-token")
+    web_parser.add_argument("--pairing-token", default=os.environ.get("ESP_IRIS_PAIRING_TOKEN"))
     web_parser.add_argument("--usb", action="append", default=[], metavar="PORT")
     web_parser.add_argument(
         "--usb-serial-jtag", action="append", default=[], metavar="PORT"
@@ -847,6 +901,13 @@ def build_parser() -> argparse.ArgumentParser:
     web_parser.add_argument("--ota-health-timeout", type=float,
                             help="override product HELLO health timeout, seconds (1..600)")
     web_parser.add_argument("--state-dir")
+    web_parser.add_argument("--project-session-id")
+    web_parser.add_argument("--project-id")
+    web_parser.add_argument("--project-path")
+    web_parser.add_argument("--project-connection-file")
+    web_parser.add_argument("--ownership-dir")
+    web_parser.add_argument("--owner-stdin", action="store_true")
+    web_parser.add_argument("--project-persistent", action="store_true")
     web_parser.add_argument("--password-file")
     web_parser.add_argument(
         "--require-local-auth",

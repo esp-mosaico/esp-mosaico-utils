@@ -14,6 +14,15 @@ operations are serialized per device; observers do not compete for events.
 The Gateway is source distributed with the ESP-IDF component. It is not
 installed as a Python package.
 
+When launched through ESP-Mosaico's `mosaico.py`, the Gateway is owned by a
+project session: discovery is passive, acquisition is explicit, and only the
+current owner reconnects a device. Local `/v1/project` APIs report ownership
+and perform reserved, idempotent device transfers. The owning foreground
+session's pipe controls lifetime; HTTP clients cannot shut it down. Each project
+keeps separate records and follows its checkout's pinned source version.
+The standalone `esp_iris.py web` commands below retain their existing automatic
+connection behavior and do not participate in project ownership coordination.
+
 ## Requirements
 
 - Python 3.8 or newer

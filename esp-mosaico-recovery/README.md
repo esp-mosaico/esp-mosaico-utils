@@ -5,6 +5,23 @@ operations. A firmware workspace pins the containing `esp-mosaico-utils`
 repository; the CLI package does not need to be installed into the user's
 Python environment.
 
+Local Gateways belong to project sessions. Keep one alive with
+`python mosaico.py session run --project <application>`; its printed URL opens
+the Web workbench. Other commands for that project reuse it, while separate
+projects get separate ports, databases, and logs. Ctrl-C in the owning terminal
+drains and closes its Gateway. Without a persistent session, a device command
+owns a temporary Gateway until it finishes.
+
+Discovery does not open unclaimed devices. Use `device claim --endpoint ...`
+in a persistent session, or explicitly select `--device-id` / `--endpoint` on
+an operation. Reboots retain the current ownership; a new project session does
+not inherit old connection history. `device transfer --device-id ...
+--to-session ...` hands an idle device to a live receiving session. Interrupted
+transfers retain a queryable `transfer_id`; use `transfer-status`,
+`transfer-accept`, `transfer-abort`, or `transfer-reconcile` under `device` to
+resolve them explicitly. Shared same-user SQLite records and OS locks coordinate
+ownership without a global service. Legacy or remote Gateways do not participate.
+
 The consuming repository owns a `.mosaico.json` file. All configured relative
 paths are resolved from the directory containing that file. Recovery firmware
 source and its reviewed bundle live under `firmware/recovery` and are resolved
