@@ -31,7 +31,7 @@ passed. Wi-Fi connected continuation and an actual Spark download remain
 unverified because network credentials were unavailable during validation.
 
 Use the consuming workspace's `mosaico.py recover` for complete base
-provisioning and `mosaico.py install` for normal applications. Do not copy one
+provisioning and `mosaico.py iris app-update` for normal applications. Do not copy one
 image independently or flash this Recovery image into an application OTA slot.
 Maintainers regenerate all images and the manifest atomically with the
 `update-recovery-prebuilt` target after candidate validation.

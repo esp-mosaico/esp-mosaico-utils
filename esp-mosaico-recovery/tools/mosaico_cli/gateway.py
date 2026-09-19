@@ -273,8 +273,14 @@ def _is_local_session(session: GatewaySession) -> bool:
     }
 
 
-def ensure_gateway(context: RunContext, profile: str | None) -> GatewaySession:
-    python, script = ensure_iris_tools(context)
+def ensure_gateway(context: RunContext, profile: str | None, *, start: bool = True) -> GatewaySession:
+    if start or profile:
+        python, script = ensure_iris_tools(context)
+    else:
+        # Status/ownership requests use HTTP only; never bootstrap a host venv
+        # just to find out that a project has no running Gateway.
+        python = Path(sys.executable)
+        script = context.workspace.esp_iris_path / "components/esp_iris/tools/esp_iris.py"
     if profile:
         connection = ("--profile", profile)
         if not _probe(context, python, script, connection):
@@ -286,7 +292,7 @@ def ensure_gateway(context: RunContext, profile: str | None) -> GatewaySession:
     from .session_runtime import CURRENT_SCOPE
     scope = CURRENT_SCOPE.get()
     if scope is not None:
-        return scope.gateway(context, python, script, expected_revision)
+        return scope.gateway(context, python, script, expected_revision, start=start)
     raise EnvironmentError("Local Gateway operations require a project SessionScope; use mosaico.py or an explicit remote profile.")
 
 

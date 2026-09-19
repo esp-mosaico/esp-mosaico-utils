@@ -28,26 +28,26 @@ Recovery 或普通应用时允许短暂黑屏，不保证 Logo 连续显示至�
 bootloader 默认仅保留 ERROR 日志，以适配 `0x2000` 到 `0x8000` 的 24 KiB
 固定空间。分区布局、OTA 选择、Recovery Boot 按键和恢复协议不变。维护者必须
 在更新源码后重新生成并校验 `prebuilt/recovery` 的完整包，不能只替换其中一个
-镜像；普通应用更新仍使用宿主 workspace 的 `mosaico.py install`。
+镜像；普通应用更新仍使用宿主 workspace 的 `mosaico.py iris app-update`。
 
 ## 用户命令
 
 在仓库根目录运行：
 
 ```sh
-python mosaico.py list
+python mosaico.py iris list
 python mosaico.py recover
-python mosaico.py install --project projects/<project>
-python mosaico.py monitor
+python mosaico.py iris app-update --project projects/<project>
+python mosaico.py iris logs
 ```
 
-- `list` 列出仓库适配的设备型号，不查询当前连接设备。
+- `iris list` 列出仓库适配的设备型号，不查询当前连接设备。
 - `recover` 初始化或恢复设备，默认使用仓库内经过评审的基础包；实时显示基础包
   校验、设备检测、ESP-IDF 构建/烧录、镜像哈希校验、重连和 Recovery 就绪验证。
-- `install` 构建并通过 ESP-Iris 安装普通应用；不会自动执行 `recover`。
-- `install` 默认实时显示构建、Recovery 切换、传输进度、重连和固件校验阶段；
+- `iris app-update` 构建并通过 ESP-Iris 安装普通应用；不会自动执行 `recover`。
+- `iris app-update` 默认实时显示构建、Recovery 切换、传输进度、重连和固件校验阶段；
   `--json` 模式保持稳定机器输出，详细过程仍保存在运行日志中。
-- `monitor` 先显示保留日志，再持续跟随；按 `Ctrl+C` 正常结束。
+- `iris logs` 先显示保留日志，再持续跟随；按 `Ctrl+C` 正常结束。
 
 Recovery 屏幕在普通 OTA 写入期间显示应用镜像接收进度、传输所有者和
 SHA-256 校验状态；完成后显示重启提示。System Update 继续复用同一进度页面。
@@ -58,7 +58,7 @@ SHA-256 校验状态；完成后显示重启提示。System Update 继续复用�
 
 ```sh
 idf.py -C firmware/recovery build recovery-self-update-bundle
-python mosaico.py system-update \
+python mosaico.py iris system-update \
   --bundle firmware/recovery/build/factory-recovery-update.irisfw
 ```
 
@@ -99,8 +99,8 @@ Recovery 支持 Gateway Web 工作台截图，以及 USB 会话下的交互输�
 处理按下、移动和抬起；TCP 会话不能通过此接口操作 Recovery 界面。
 
 ```sh
-python mosaico.py recovery-wifi --ssid SSID
-python mosaico.py bridge-code --device-id DEVICE_ID --timeout 60
+python mosaico.py iris test recovery-wifi --ssid SSID
+python mosaico.py iris test bridge-code --device-id DEVICE_ID --timeout 60
 ```
 
 USB 命令打开同一个页面并等待配对码；重复打开不换码。控制服务 `0x1202` 的
@@ -142,7 +142,7 @@ catalog 布局，最多列出 8 个完整 bundle；点击条目可先核对 rele
 启动指定路径：
 
 ```sh
-python mosaico.py system-update --device-id DEVICE_ID \
+python mosaico.py iris system-update --device-id DEVICE_ID \
   --manifest-path /nand/system-update/manifest.json
 ```
 
@@ -184,7 +184,7 @@ bootloader 暂存到 PSRAM，全部验证完成后统一提交。三种来源共
 ## 工程维护者
 
 普通用户不应直接调用底层构建或写入命令。Recovery 基础包和内部写入 target
-由 `mosaico.py recover` 管理；普通应用始终由 `mosaico.py install` 通过
+由 `mosaico.py recover` 管理；普通应用始终由 `mosaico.py iris app-update` 通过
 ESP-Iris 安装。评审包包含完整哈希与布局约束，只有通过构建校验和真机验收后
 才应发布。
 

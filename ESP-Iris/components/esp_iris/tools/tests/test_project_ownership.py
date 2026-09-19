@@ -131,7 +131,8 @@ sys.stdin.read()
         process.communicate(timeout=5)
 
 
-def test_discovery_reconnect_and_transfer_with_third_contender(tmp_path):
+@pytest.mark.parametrize("automatic", [False, True])
+def test_discovery_reconnect_and_transfer_with_third_contender(tmp_path, automatic):
     async def scenario():
         registries = [registry(tmp_path / "registry", name) for name in ("a", "b", "c")]
         stores = [GatewayStore(tmp_path / name) for name in ("a", "b", "c")]
@@ -185,6 +186,9 @@ def test_discovery_reconnect_and_transfer_with_third_contender(tmp_path):
                         await client.start_server()
                         reg.set_url(str(client.make_url("")).rstrip("/"))
                     body = {"device_id": D, "target_session_id": "a", "transfer_id": str(uuid.uuid4())}
+                    if automatic:
+                        body.pop("device_id")
+                        body["auto"] = True
                     response = await clients[1].post("/v1/project/transfer", json=body)
                     assert response.status == 200, await response.text()
                     result = await response.json()

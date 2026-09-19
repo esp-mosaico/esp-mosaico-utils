@@ -187,3 +187,70 @@ def test_finished_operation_requires_this_session_and_terminal_evidence(
     assert (follower.finished_operation(session, "op") is not None) is expected
     assert follower.finished_operation(session, "missing") is None
     assert follower.finished_operation(object(), "op") is None
+
+
+def test_status_without_gateway_does_not_bootstrap_or_spawn(tmp_path, monkeypatch, capsys):
+    from mosaico_cli.cli import main
+
+    monkeypatch.setattr("mosaico_cli.session_runtime.state_root", lambda name: tmp_path / "state" / name)
+    workspace(tmp_path)
+    monkeypatch.setattr("mosaico_cli.gateway._pinned_source_revision", lambda path: "test-revision")
+    with patch("mosaico_cli.gateway.ensure_iris_tools") as bootstrap, \
+            patch("mosaico_cli.session_runtime.subprocess.Popen") as spawn:
+        assert main(["--workspace", str(tmp_path), "iris", "status", "--json"], tool_root=TOOLS) == 0
+    assert json.loads(capsys.readouterr().out) == {"running": False, "session": None}
+    bootstrap.assert_not_called()
+    spawn.assert_not_called()
+    assert not (tmp_path / "state").exists()
+
+
+@pytest.mark.parametrize("action", [
+    ["claim", "--endpoint", "usb:location=1-2"],
+    ["release", "--device-id", "board"],
+    ["reconcile", "--device-id", "board"],
+    ["transfer", "start", "--device-id", "board", "--to-session", "other"],
+    ["transfer", "status", "--transfer-id", "t"],
+])
+def test_ownership_without_gateway_fails_without_creating_one(tmp_path, monkeypatch, capsys, action):
+    from mosaico_cli.cli import main
+
+    monkeypatch.setattr("mosaico_cli.session_runtime.state_root", lambda name: tmp_path / "state" / name)
+    workspace(tmp_path)
+    monkeypatch.setattr("mosaico_cli.gateway._pinned_source_revision", lambda path: "test-revision")
+    with patch("mosaico_cli.gateway.ensure_iris_tools") as bootstrap, \
+            patch("mosaico_cli.session_runtime.subprocess.Popen") as spawn:
+        assert main(["--workspace", str(tmp_path), "iris", *action, "--json"], tool_root=TOOLS) == 4
+    assert json.loads(capsys.readouterr().err)["error"] == "gateway_not_running"
+    bootstrap.assert_not_called()
+    spawn.assert_not_called()
+
+
+@pytest.mark.parametrize("persistent", [True, False])
+def test_status_observes_live_gateway_without_taking_its_lifetime(tmp_path, monkeypatch, capsys, persistent):
+    from mosaico_cli.cli import main
+
+    monkeypatch.setattr("mosaico_cli.session_runtime.state_root", lambda name: tmp_path / "state" / name)
+    work = workspace(tmp_path)
+    script = work.esp_iris_path / "components/esp_iris/tools/esp_iris.py"
+    owner = scope(tmp_path / "projects/a", persistent=persistent)
+    with patch("mosaico_cli.runtime.resolve_idf_path", side_effect=EnvironmentError("no IDF needed")), \
+            patch("mosaico_cli.gateway._pinned_source_revision", return_value="test-revision"):
+        try:
+            session = owner.gateway(RunContext(work, "test", json_output=True), Path(sys.executable), script, "test-revision")
+            with patch("mosaico_cli.gateway.ensure_iris_tools") as bootstrap, \
+                    patch("mosaico_cli.session_runtime.subprocess.Popen") as spawn:
+                assert main(["--workspace", str(tmp_path), "iris", "status", "--json"], tool_root=TOOLS) == 0
+            state = json.loads(capsys.readouterr().out)
+            assert state["running"] is True
+            assert state["session"]["persistent"] == persistent
+            bootstrap.assert_not_called()
+            spawn.assert_not_called()
+            assert owner.processes[0][0].poll() is None
+            assert request(session.connection_args[1], "/v1/health")["project_session"]["session_id"] == state["session"]["session_id"]
+        finally:
+            owner.close()
+        # A stopped session's retained state also must not trigger startup.
+        with patch("mosaico_cli.session_runtime.subprocess.Popen") as spawn:
+            assert main(["--workspace", str(tmp_path), "iris", "status", "--json"], tool_root=TOOLS) == 0
+        assert json.loads(capsys.readouterr().out)["running"] is False
+        spawn.assert_not_called()

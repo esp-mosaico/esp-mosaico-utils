@@ -31,6 +31,10 @@ class DeviceError(MosaicoError):
     category = "device_unavailable"
 
 
+class GatewayNotRunningError(DeviceError):
+    category = "gateway_not_running"
+
+
 class RecoveryRequiredError(DeviceError):
     category = "recovery_required"
 

@@ -16,7 +16,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-from .errors import DeviceError, EnvironmentError
+from .errors import DeviceError, EnvironmentError, GatewayNotRunningError, SelectionError
 from .host import state_root
 from .project import resolve_project
 
@@ -45,9 +45,30 @@ def request(url: str, path: str, body: dict[str, Any] | None = None,
             details = json.loads(error.read())
         except (ValueError, OSError):
             details = {}
+        remote_error = details.get("error") if isinstance(details, dict) else None
+        if isinstance(remote_error, dict) and remote_error.get("code") == "selection_error":
+            raise SelectionError(remote_error.get("message", "Select a device."),
+                                 details=remote_error.get("details", {})) from error
         raise DeviceError(f"Project Gateway rejected the request: {details or error.reason}") from error
     except (URLError, OSError, ValueError) as error:
         raise DeviceError(f"Project Gateway is unavailable: {error}") from error
+
+
+def acquire_device(url: str, arguments: Any, context: Any, *, allow_none: bool = False) -> dict[str, Any] | None:
+    """Resolve and pin one live device for the rest of this command."""
+    selected = getattr(arguments, "device_id", None)
+    endpoint = getattr(arguments, "endpoint", None)
+    body = {"device_id": selected, "endpoint": endpoint,
+            "auto": not (selected or endpoint), "allow_none": allow_none}
+    token_file = getattr(arguments, "pairing_token_file", None)
+    if token_file:
+        body["pairing_token"] = read_pairing_token(Path(token_file))
+    device = request(url, "/v1/project/acquire", body, timeout=35)["device"]
+    if device is not None:
+        arguments.device_id = device["device_id"]
+        context.status(f"device: {'selected' if selected or endpoint else 'automatically selected'} "
+                       f"{device['device_id']} endpoint={device.get('endpoint', '')}")
+    return device
 
 
 class SessionScope:
@@ -59,7 +80,7 @@ class SessionScope:
         self.info: dict[str, Any] = {}
         self.owned_records: dict[Path, str] = {}
 
-    def gateway(self, context: Any, python: Path, script: Path, revision: str) -> Any:
+    def gateway(self, context: Any, python: Path, script: Path, revision: str, *, start: bool = True) -> Any:
         from .gateway import GatewaySession, _require_compatible_gateway
 
         args = self.arguments
@@ -68,6 +89,8 @@ class SessionScope:
         if project_key in self.sessions:
             return self.sessions[project_key]
         directory = state_root("esp-mosaico") / "project-sessions" / project_key
+        if not start and not directory.exists():
+            raise GatewayNotRunningError("This project's Gateway is not running; start 'iris run' first.")
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         connection_file = directory / "connection.json"
         # This module is dependency-free; the source Link lock imports no
@@ -93,8 +116,9 @@ class SessionScope:
             except (OSError, ValueError, KeyError, DeviceError):
                 pass
             if existing:
-                if not existing.get("persistent"):
-                    raise EnvironmentError("A temporary command owns this project session; wait for it to finish or use 'session run' for shared development")
+                inspecting = getattr(args, "session_action", None) == "status"
+                if not existing.get("persistent") and not inspecting:
+                    raise EnvironmentError("A temporary command owns this project session; wait for it to finish or use 'iris run' for shared development")
                 record = existing
                 started = False
             else:
@@ -108,6 +132,8 @@ class SessionScope:
                     raise EnvironmentError("This project's Gateway is alive but unavailable; inspect its log before retrying") from error
                 finally:
                     live_lock.close()
+                if not start:
+                    raise GatewayNotRunningError("This project's Gateway is not running; start 'iris run' first.")
                 session_id = str(uuid.uuid4())
                 instance_id = "project-" + session_id
                 with contextlib.suppress(FileNotFoundError):
@@ -169,19 +195,21 @@ class SessionScope:
             self.sessions[project_key] = result
             self.records[project_key] = dict(record)
             self.info = record
+        if start:
+            mode = "persistent" if getattr(args, "session_action", None) == "run" else "temporary"
+            action = f"created {mode}" if started else "reusing"
+            context.status(f"gateway: project={project} {action} Gateway at {record['url']}")
         selected = getattr(args, "device_id", None)
         endpoint = getattr(args, "endpoint", None)
         command = getattr(args, "command", "")
-        # Transfer/release inspect existing ownership; acquiring implicitly
-        # would defeat their explicit state transitions.
-        if (selected or endpoint) and command not in {"device", "list"}:
-            body = {"device_id": selected, "endpoint": endpoint}
-            token_file = getattr(args, "pairing_token_file", None)
-            if token_file:
-                body["pairing_token"] = read_pairing_token(Path(token_file))
-            acquired = request(record["url"], "/v1/project/acquire", body, timeout=35)
-            if not selected:
-                args.device_id = acquired["device"]["device_id"]
+        # Discovery/status stay passive. Ownership management has separate
+        # selection rules. A ROM hardware MAC is never an implicit USB selector.
+        automatic = command in {
+            "monitor", "memory", "crash", "rpc", "install", "system-update",
+            "enter-recovery", "recovery-wifi", "bridge-code", "recover",
+        } and not getattr(args, "hardware_mac", None)
+        if command not in {"device", "list"} and (selected or endpoint or automatic):
+            acquire_device(record["url"], args, context, allow_none=command == "recover")
         return result
 
     def finished_operation(self, session: Any, operation_id: str) -> dict[str, Any] | None:
