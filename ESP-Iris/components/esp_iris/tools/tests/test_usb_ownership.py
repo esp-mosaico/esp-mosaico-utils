@@ -182,8 +182,10 @@ def test_silent_endpoint_is_closed_after_hello_deadline(usb):
         try:
             with patch.object(SerialLink, "open", return_value=link):
                 await hub.add_usb(usb.device)
-                await until(lambda: link.closed)
-                await until(lambda: hub.list_endpoints()[0]["state"] == "retrying")
+                # Link closure precedes supervisor cleanup and the retry state update.
+                await until(
+                    lambda: link.closed and hub.list_endpoints()[0]["state"] == "retrying"
+                )
                 assert not hub.list_devices()
                 assert hub.list_endpoints()[0]["state"] == "retrying"
         finally:
@@ -194,7 +196,7 @@ def test_silent_endpoint_is_closed_after_hello_deadline(usb):
 
 def test_second_gateway_cannot_mutate_active_operations(tmp_path, usb):
     async def scenario():
-        state = tmp_path / "state"
+        state = tmp_path / "State"
         lock = EndpointLock("gateway-state:" + os.path.normcase(str(state.resolve())))
         lock.acquire()
         first = GatewayStore(state)
@@ -214,7 +216,7 @@ def test_second_gateway_cannot_mutate_active_operations(tmp_path, usb):
                 ["web", "--state-dir", str(state), "--demo"]
             )
             with pytest.raises(RuntimeError, match="owned by another"):
-                await _web(args)
+                await asyncio.wait_for(_web(args), timeout=2)
             assert first.operation("ota")["status"] == "transferring"
         finally:
             first.close()
