@@ -125,3 +125,28 @@ def test_maintenance_barrier_drains_one_device_and_rejects_later_work(tmp_path) 
         store.close()
 
     asyncio.run(scenario())
+
+
+def test_rejected_precondition_retains_structured_failure(tmp_path):
+    from iris_gateway.operations import OperationRejected
+
+    async def scenario():
+        store = GatewayStore(tmp_path)
+        events = []
+        async def sink(event):
+            events.append(event)
+        async def reject():
+            raise OperationRejected("layout mismatch", code="partition_layout_mismatch",
+                                    current_sha256="ab" * 32, target_sha256="cd" * 32, write_started=False)
+        manager = OperationManager(store, sink)
+        try:
+            with pytest.raises(OperationRejected):
+                await manager.execute("device", Actor("agent", "test"), "ota", {}, reject, operation_id="mismatch")
+            operation = store.operation("mismatch")
+            assert operation["status"] == "failed"
+            assert operation["result"]["failure"]["code"] == "partition_layout_mismatch"
+            assert operation["result"]["failure"]["write_started"] is False
+            assert events[-1]["operation"] == operation
+        finally:
+            store.close()
+    asyncio.run(scenario())

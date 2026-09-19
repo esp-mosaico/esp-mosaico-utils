@@ -818,6 +818,7 @@ class GatewayTests(unittest.TestCase):
                     return_value={"operation": {"status": "succeeded"}},
                 )
             )
+            _contexts.enter_context(mock.patch("mosaico_cli.commands.inspect_bundle_plan", return_value={"components": []}))
             result = start_system_update(arguments, context)
 
         self.assertEqual(result["status"], "succeeded")
@@ -1150,6 +1151,7 @@ class GatewayTests(unittest.TestCase):
         )
         session = GatewaySession(Path("python"), Path("iris"), (), None, False)
         with ExitStack() as _contexts:
+            _contexts.enter_context(mock.patch("mosaico_cli.gateway.gateway_json", return_value={"capabilities": ["update-acceptance/v1"]}))
             _contexts.enter_context(self.assertRaises(OutcomeUnknownError))
             run_ota(
                 context,
@@ -1171,6 +1173,7 @@ class GatewayTests(unittest.TestCase):
         )
         session = GatewaySession(Path("python"), Path("iris"), (), None, False)
         with ExitStack() as _contexts:
+            _contexts.enter_context(mock.patch("mosaico_cli.gateway.gateway_json", return_value={"capabilities": ["update-acceptance/v1"]}))
             _contexts.enter_context(self.assertRaises(OperationError))
             run_ota(
                 context,
@@ -1216,7 +1219,7 @@ class GatewayTests(unittest.TestCase):
         session = GatewaySession(Path("python"), Path("iris"), (), None, False)
         with ExitStack() as _contexts:
             poll = _contexts.enter_context(
-                mock.patch("mosaico_cli.gateway.gateway_json", return_value=completed)
+                mock.patch("mosaico_cli.gateway.gateway_json", side_effect=[{"capabilities": ["update-acceptance/v1"]}, completed])
             )
             _contexts.enter_context(mock.patch("mosaico_cli.gateway.time.sleep"))
             result = run_ota(
@@ -1239,7 +1242,8 @@ class GatewayTests(unittest.TestCase):
             "recovery_abi": 1,
         })
         self.assertNotIn("--validation-mode", ota_argv)
-        poll.assert_called_once_with(context, session, "ota-status", "operation-1")
+        self.assertEqual(poll.call_count, 2)
+        poll.assert_called_with(context, session, "ota-status", "operation-1")
         messages = [call.args[0] for call in context.status.call_args_list]
         self.assertTrue(any("waiting_recovery" in message for message in messages))
         self.assertTrue(any("succeeded" in message for message in messages))
@@ -1276,7 +1280,7 @@ class GatewayTests(unittest.TestCase):
         session = GatewaySession(Path("python"), Path("iris"), (), None, False)
         with ExitStack() as _contexts:
             poll = _contexts.enter_context(
-                mock.patch("mosaico_cli.gateway.gateway_json", return_value=completed)
+                mock.patch("mosaico_cli.gateway.gateway_json", side_effect=[{"capabilities": ["update-acceptance/v1"]}, completed])
             )
             _contexts.enter_context(mock.patch("mosaico_cli.gateway.time.sleep"))
             result = run_system_update_bundle(
@@ -1294,7 +1298,8 @@ class GatewayTests(unittest.TestCase):
         compatibility = json.loads(argv[argv.index("--compatibility-json") + 1])
         self.assertEqual(compatibility["product_contract"], "esp-mosaico/v1")
         self.assertEqual(compatibility["recovery_abi"], 1)
-        poll.assert_called_once_with(
+        self.assertEqual(poll.call_count, 2)
+        poll.assert_called_with(
             context, session, "ota-status", "system-operation-1"
         )
         messages = [call.args[0] for call in context.status.call_args_list]
@@ -1325,7 +1330,7 @@ class GatewayTests(unittest.TestCase):
         session = GatewaySession(Path("python"), Path("iris"), (), None, False)
         with ExitStack() as contexts:
             contexts.enter_context(
-                mock.patch("mosaico_cli.gateway.gateway_json", return_value=failed)
+                mock.patch("mosaico_cli.gateway.gateway_json", side_effect=[{"capabilities": ["update-acceptance/v1"]}, failed])
             )
             contexts.enter_context(mock.patch("mosaico_cli.gateway.time.sleep"))
             caught = contexts.enter_context(self.assertRaises(OperationError))
@@ -2104,7 +2109,8 @@ class RecoveryCommandTests(unittest.TestCase):
             arguments = SimpleNamespace(
                 project=str(project),
                 skip_build=True,
-                gateway_profile=None,
+                gateway_profile="remote",
+                endpoint="usb:location=1-8:1.0",
                 device_id=None,
                 validation="elf-sha256",
                 timeout=30,
@@ -2161,15 +2167,19 @@ class RecoveryCommandTests(unittest.TestCase):
                     )
                 )
                 ota = patches.enter_context(
-                    mock.patch("mosaico_cli.commands.run_ota", side_effect=DeviceError("partition table does not match"))
+                    mock.patch("mosaico_cli.commands.run_ota", side_effect=OperationError("partition table does not match", details={"result": {"result": {"failure": {"code": "partition_layout_mismatch", "current_sha256": "ab" * 32, "target_sha256": "cd" * 32, "write_started": False}}}}))
                 )
                 patches.enter_context(
                     mock.patch("mosaico_cli.commands.record_recovery_verification")
                 )
-                caught = patches.enter_context(self.assertRaises(DeviceError))
+                caught = patches.enter_context(self.assertRaises(OperationError))
                 install(arguments, context)
 
-            self.assertIn("does not match", str(caught.exception))
+            self.assertIn("iris system-update", str(caught.exception))
+            self.assertIn("--device-id device", caught.exception.details["suggested_command"])
+            self.assertIn("--gateway-profile remote", caught.exception.details["suggested_command"])
+            self.assertIn("--endpoint usb:location=1-8:1.0", caught.exception.details["suggested_command"])
+            self.assertFalse(caught.exception.details["write_started"])
             ota.assert_called_once()
             self.assertEqual(ota.call_args.kwargs["preconditions"]["partition_table_sha256"],
                              partition_table_flash_sha256(partition_table))

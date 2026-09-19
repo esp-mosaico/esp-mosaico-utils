@@ -78,6 +78,7 @@ from .system_update import (
     load_system_update_bundle,
 )
 from .system_update_workflow import run_system_update
+from .update_acceptance import validate_updated_contract
 
 LOG_PATTERN = re.compile(r"^(?P<level>[EWIDV])\s+\((?P<stamp>\d+)\)\s+(?P<tag>[^:]+):\s?(?P<message>.*)$")
 CONSOLE_METHOD_NAME = "console.execute"
@@ -89,6 +90,7 @@ GATEWAY_CAPABILITIES = [
     "physical-endpoint-maintenance-lease/v1",
     "system-inventory/v1",
     "recovery-preconditions/v1",
+    "update-acceptance/v1",
     "recovery-transition/v1",
 ]
 ACTIVE_MAINTENANCE_STATES = {
@@ -819,6 +821,7 @@ class GatewayService:
                     raise OperationOutcomeUnknown("OTA HEALTHY result has no confirmed new boot")
                 if result.get("boot_id") is not None and result["boot_id"] != status["boot_id"]:
                     raise OperationOutcomeUnknown("OTA boot changed after HEALTHY result")
+                validate_updated_contract(status, device_id, metadata.get("chip_id"), required_compatibility)
                 validation = _validate_ota_identity(
                     status, metadata, validation_mode
                 )
@@ -876,6 +879,7 @@ class GatewayService:
                 raise OperationOutcomeUnknown(
                     f"OTA was written, but the final reconnect/healthy acceptance was not observed within {timeout:g} seconds"
                 )
+            validate_updated_contract(reconnected_status, device_id, metadata.get("chip_id"), required_compatibility)
             validation = _validate_ota_identity(reconnected_status, metadata, validation_mode)
             return {
                 **result,

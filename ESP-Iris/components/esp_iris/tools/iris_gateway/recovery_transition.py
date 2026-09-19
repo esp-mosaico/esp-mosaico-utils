@@ -5,7 +5,7 @@ import asyncio
 import re
 from typing import Any
 
-from .operations import OperationOutcomeUnknown
+from .operations import OperationOutcomeUnknown, OperationRejected
 
 CAPABILITY = "recovery-preconditions/v1"
 
@@ -80,6 +80,11 @@ async def validate_recovery(hub: Any, device_id: str, status: dict[str, Any],
         inventory = await hub.system_update_inventory(device_id)
         actual = str(inventory.get("partition_table_sha256", "")).lower()
         if actual != expected["partition_table_sha256"]:
-            raise ValueError("Device partition table does not match the application build; refusing OTA")
+            raise OperationRejected(
+                "Device partition table does not match the application build; use system update for layout changes",
+                code="partition_layout_mismatch", device_id=device_id,
+                current_sha256=actual, target_sha256=expected["partition_table_sha256"],
+                recommended_action="system_update", write_started=False,
+            )
         evidence["partition_table_sha256"] = actual
     return evidence

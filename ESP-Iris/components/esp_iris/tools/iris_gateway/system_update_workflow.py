@@ -13,6 +13,7 @@ from .operations import OperationManager, OperationOutcomeUnknown
 from .reconciliation import health_timeout
 from .recovery_transition import enter_recovery
 from .system_update import SystemUpdateBundle, SystemUpdateComponentKind
+from .update_acceptance import validate_updated_contract
 
 PreserveCoreDump = Callable[[str], Awaitable[Optional[Dict[str, Any]]]]
 ValidateIdentity = Callable[[Dict[str, Any], Dict[str, Any], str], Dict[str, str]]
@@ -165,6 +166,8 @@ async def run_system_update(
     finally:
         hub.unsubscribe(device_id, queue)
 
+    validate_updated_contract(status, device_id, bundle.chip_id, required_compatibility,
+                              role="recovery" if target_recovery is not None else "normal")
     if inventory_after.get("partition_table_sha256") != bundle.target_layout_sha256:
         raise RuntimeError("post-update partition-table SHA-256 does not match")
     if inventory_after.get("last_operation_id") != wire_operation_id.hex():

@@ -182,10 +182,29 @@ class OwnershipRegistry:
                 ))
             self.db.execute("UPDATE claims SET device_id=? WHERE resource=?", (device_id, endpoint))
             if verified:
+                metadata = dict(endpoint_claim["metadata"])
+                metadata.pop("identity_probe", None)
+                self.db.execute("UPDATE claims SET metadata=? WHERE resource IN (?,?) AND owner=?",
+                                (json.dumps(metadata), endpoint, resource, self.session_id))
                 self.db.execute("INSERT OR REPLACE INTO identities VALUES(?,?,?)", (
-                    endpoint, device_id, json.dumps(endpoint_claim["metadata"]),
+                    endpoint, device_id, json.dumps(metadata),
                 ))
             self._remember_generations()
+
+    def release_attempt(self, endpoint: str, generation: int, *, remove_device: bool) -> None:
+        """Release only this failed attempt, after its physical session is closed."""
+        with self.transaction():
+            item = self.claim(endpoint)
+            if not item or (item["owner"], item["generation"], item["state"]) != (self.session_id, generation, "owned"):
+                return
+            self.db.execute("DELETE FROM claims WHERE resource=?", (endpoint,))
+            if remove_device and item["device_id"]:
+                remaining = self.db.execute(
+                    "SELECT 1 FROM claims WHERE owner=? AND device_id=? AND resource NOT LIKE 'device:%'",
+                    (self.session_id, item["device_id"])).fetchone()
+                if remaining is None:
+                    self.db.execute("DELETE FROM claims WHERE resource=? AND owner=? AND state='owned'",
+                                    ("device:" + item["device_id"], self.session_id))
 
     def _remember_generations(self) -> None:
         self.db.execute("""INSERT INTO generations SELECT resource, generation FROM claims WHERE 1

@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 from .errors import BuildError, SelectionError
+from .product_contract import validate_application_config
 from .workspace import WorkspaceConfig, user_path
-
 
 PARTITION_TABLE_FLASH_BYTES = 0x1000
 
@@ -132,6 +132,7 @@ def discover_artifacts(project: Path) -> BuildArtifacts:
             "Build artifacts are incomplete.",
             details={"missing": missing, "build_dir": str(build_dir)},
         )
+    validate_application_config(build_dir)
     return BuildArtifacts(
         project=project,
         build_dir=build_dir,

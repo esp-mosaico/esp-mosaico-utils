@@ -16,6 +16,14 @@ from .state_machine import TERMINAL_OPERATION_STATES, operation_transition
 from .store import GatewayStore
 
 
+class OperationRejected(ValueError):
+    """A pre-write failure carrying machine-readable remediation evidence."""
+
+    def __init__(self, message: str, **details: Any) -> None:
+        super().__init__(message)
+        self.details = details
+
+
 class OperationCancelled(RuntimeError):
     pass
 
@@ -385,6 +393,7 @@ class OperationManager:
             operation = self._transition(
                 pending.operation_id,
                 "failed",
+                result_json={"failure": exc.details} if isinstance(exc, OperationRejected) else None,
                 error=str(exc),
                 finished_ns=time.time_ns(),
             )

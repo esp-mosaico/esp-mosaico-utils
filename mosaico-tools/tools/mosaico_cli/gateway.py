@@ -25,6 +25,7 @@ from .host import (
     state_root,
     virtual_environment_python,
 )
+from .product_contract import COMPATIBILITY
 from .runtime import RunContext
 from .workspace import WorkspaceConfig, user_path
 
@@ -32,13 +33,7 @@ REQUIRED_GATEWAY_API_MAJOR = 1
 MAINTENANCE_CAPABILITY = "device-maintenance-lease/v1"
 ENDPOINT_MAINTENANCE_CAPABILITY = "physical-endpoint-maintenance-lease/v1"
 SYSTEM_INVENTORY_CAPABILITY = "system-inventory/v1"
-MOSAICO_COMPATIBILITY_JSON = json.dumps({
-    "chip_target": "esp32s31",
-    "product_contract": "esp-mosaico/v1",
-    "board_id": "esp-mosaico",
-    "layout_id": "mosaico-retained-recovery-2m-v1",
-    "recovery_abi": 1,
-}, separators=(",", ":"))
+MOSAICO_COMPATIBILITY_JSON = json.dumps(COMPATIBILITY, separators=(",", ":"))
 
 
 def _python_major_minor(python: Path) -> tuple[int, int] | None:
@@ -246,6 +241,7 @@ def _pinned_source_revision(source: Path) -> str:
     # Historical name retained for callers: this is provenance, not the
     # compatibility boundary, and a source archive does not require Git.
     from types import SimpleNamespace
+
     from .iris import host_api
 
     identity = host_api(SimpleNamespace(esp_iris_path=source)).source_identity(source)
@@ -718,10 +714,11 @@ def run_ota(
     preconditions: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     del validation
+    health = gateway_json(context, session, "health")
     if preconditions:
-        health = gateway_json(context, session, "health")
         if "recovery-preconditions/v1" not in health.get("capabilities", []):
             raise EnvironmentError("Gateway cannot enforce Recovery preconditions; update its host tools before installing")
+    require_update_acceptance(health)
     started = time.monotonic()
     try:
         result = context.run(
@@ -768,6 +765,8 @@ def run_system_update_bundle(
 ) -> dict[str, Any]:
     """Submit one reviewed local System Update bundle and wait for validation."""
 
+    require_update_acceptance(gateway_json(context, session, "health"))
+
     started = time.monotonic()
     try:
         result = context.run(
@@ -793,3 +792,8 @@ def run_system_update_bundle(
         action="System update",
         progress_prefix="system update",
     )
+
+
+def require_update_acceptance(health: dict[str, Any]) -> None:
+    if "update-acceptance/v1" not in health.get("capabilities", []):
+        raise EnvironmentError("Gateway cannot validate the final firmware contract; update its host tools before installing")

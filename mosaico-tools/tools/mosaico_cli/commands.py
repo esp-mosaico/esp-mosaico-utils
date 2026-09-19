@@ -7,6 +7,7 @@ import getpass
 import json
 import os
 import re
+import shlex
 import subprocess
 import sys
 import time
@@ -15,6 +16,7 @@ from queue import Empty, Queue
 from threading import Thread
 from typing import Any, TextIO
 
+from .bundle_plan import inspect_bundle_plan
 from .errors import (
     BuildError,
     DeviceError,
@@ -532,7 +534,7 @@ def start_system_update(arguments: Any, context: RunContext) -> dict[str, Any]:
         context.status(f"project: {project}")
         ensure_gateway(context, arguments.gateway_profile, select=False)
         if not skip_build:
-            context.status("system update: building ota_0 + ui_apps + system bundle")
+            context.status("system update: building application + declared resources + system bundle")
             iris_python, _ = ensure_iris_tools(context)
             run_idf_target(
                 context,
@@ -560,6 +562,7 @@ def start_system_update(arguments: Any, context: RunContext) -> dict[str, Any]:
         context.status(
             f"bundle: {bundle} ({bundle.stat().st_size} bytes)"
         )
+        bundle_plan = inspect_bundle_plan(context, bundle)
 
     context.status("gateway: connecting")
     session = ensure_gateway(context, arguments.gateway_profile)
@@ -597,6 +600,7 @@ def start_system_update(arguments: Any, context: RunContext) -> dict[str, Any]:
             "source": "bundle" if bundle_argument is not None else "local_build",
             "project": str(project) if project is not None else None,
             "bundle": str(bundle),
+            "write_plan": bundle_plan,
             "reused_build": reused_build,
             "gateway_started": session.started_local,
             "operation": operation,
@@ -693,17 +697,34 @@ def install(arguments: Any, context: RunContext) -> dict[str, Any]:
     preconditions = {"recovery_version": recovery_version,
                      "partition_table_sha256": expected_layout_sha256}
     context.status(f"ota: starting recovery-first installation ({arguments.validation})")
-    operation = run_ota(
-        context,
-        session,
-        device_id=device_id,
-        image=artifacts.image,
-        elf=artifacts.elf,
-        map_file=artifacts.map_file,
-        validation=arguments.validation,
-        timeout=arguments.timeout,
-        preconditions=preconditions,
-    )
+    try:
+        operation = run_ota(
+            context,
+            session,
+            device_id=device_id,
+            image=artifacts.image,
+            elf=artifacts.elf,
+            map_file=artifacts.map_file,
+            validation=arguments.validation,
+            timeout=arguments.timeout,
+            preconditions=preconditions,
+        )
+    except OperationError as error:
+        failure = ((error.details.get("result") or {}).get("result") or {}).get("failure") or {}
+        if failure.get("code") != "partition_layout_mismatch":
+            raise
+        command = ["python3", "mosaico.py", "iris", "system-update", "--project", str(project),
+                   "--device-id", device_id]
+        if getattr(arguments, "endpoint", None):
+            command.extend(["--endpoint", arguments.endpoint])
+        if arguments.gateway_profile:
+            command.extend(["--gateway-profile", arguments.gateway_profile])
+        suggestion = shlex.join(command)
+        raise OperationError(
+            f"Partition layout differs (device={failure.get('current_sha256')}, "
+            f"build={failure.get('target_sha256')}). Install the project's intended layout with: {suggestion}",
+            details={**error.details, **failure, "suggested_command": suggestion},
+        ) from error
     completed = operation.get("operation", operation)
     evidence = (completed.get("result") or {}).get("recovery") or {}
     if evidence.get("device_id") == device_id and evidence.get("recovery_version") == recovery_version:

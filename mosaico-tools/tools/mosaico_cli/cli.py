@@ -209,7 +209,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     install_parser = command(
         "install",
-        help="Install a normal application through ESP-Iris",
+        help="Install code-only firmware; requires an identical device partition table",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     install_parser.add_argument(
@@ -236,7 +236,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     system_update_parser = command(
         "system-update",
-        help="Install a validated multi-image or Recovery self-update bundle",
+        help="Install application layout/resources together (preferred for new projects) or a Recovery bundle",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     system_update_source = system_update_parser.add_mutually_exclusive_group()

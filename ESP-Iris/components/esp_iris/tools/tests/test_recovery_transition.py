@@ -50,8 +50,12 @@ def test_precondition_mismatch_never_starts_ota_writer(normal, field):
         service.hub, service.operations = hub, AsyncMock()
         required = {"recovery_version": "0.1", "partition_table_sha256": "ab" * 32}
         required[field] = "bad" if field == "recovery_version" else "cd" * 32
-        with pytest.raises(ValueError, match="does not match"):
+        with pytest.raises(ValueError, match="does not match") as failure:
             await service.closed_loop_ota("d", b"firmware", {"chip_id": 0x20}, "op", preconditions=required)
+        if field == "partition_table_sha256":
+            assert failure.value.details["current_sha256"] == "ab" * 32
+            assert failure.value.details["target_sha256"] == "cd" * 32
+            assert failure.value.details["write_started"] is False
         hub.ota_update.assert_not_called()
         assert hub.enter_recovery.await_count == int(normal)
     asyncio.run(scenario())

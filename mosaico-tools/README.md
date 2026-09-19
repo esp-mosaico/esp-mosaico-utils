@@ -85,7 +85,8 @@ end an incompatible old session through its original owner. The shared ownership
 schema retains its legacy table layout, with new session metadata in a separate
 table. Remote profiles keep their externally managed lifetimes.
 
-`iris app-update` builds and installs a normal application. `iris system-update`
+`iris app-update` installs code-only changes with an identical device partition table.
+Prefer `iris system-update` for a new application, layout change, or changed resources. It
 applies the images selected by a validated update bundle, which can also target
 Recovery alone. `recover` restores the base firmware, including when ESP-Iris
 is unreachable. `iris test` groups individual Recovery test operations:
@@ -128,7 +129,7 @@ python3 /path/to/esp-mosaico-utils/mosaico-tools/mosaico.py \
 ```
 
 `iris app-update` updates only the application OTA partition. `iris system-update` builds
-and submits the workspace's atomic application, UI assets, and system-data
+and submits the workspace's atomic application, partition table, and declared resource
 bundle by default; use `--skip-build` or `--bundle PATH` to reuse artifacts.
 `iris test enter-recovery` asks a reachable normal application to boot the retained
 Recovery image without building or installing firmware. It waits for the same
@@ -179,3 +180,15 @@ python3 -m pytest -q ../esp-mosaico-recovery/tests
 
 
 See [component boundaries](../docs/component-boundaries.md) for API compatibility, source provenance and Recovery contracts.
+
+Local System Update bundles are inspected before device admission; the CLI records
+each image's offset, size, and hash. `app-update` layout mismatches return
+`partition_layout_mismatch`, both table hashes, and a product system-update command.
+The command never rewrites a project's layout or silently expands OTA write scope.
+
+Built normal applications must declare the product role/board/layout/Recovery ABI
+in effective `build/config/sdkconfig.json`, including when reusing artifacts.
+Both update paths require Gateway capability `update-acceptance/v1` and validate
+the final role and product contract after the healthy boot and image identity checks.
+Device ID selection can verify multiple candidates; an explicit endpoint is strict,
+and failed new probes release their endpoint/device reservations.

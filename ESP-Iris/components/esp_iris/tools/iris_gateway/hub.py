@@ -328,7 +328,9 @@ class IrisHub:
                                and item["metadata"].get("serial_number") == candidate["serial_number"]}
                     if len(matches) == 1:
                         device_id = matches.pop()
-                if device_id and self.ownership.allowed("device:" + str(device_id)):
+                device_claim = self.ownership.claim("device:" + str(device_id)) if device_id else None
+                if (device_claim and self.ownership.allowed("device:" + str(device_id))
+                        and not device_claim["metadata"].get("identity_probe")):
                     self.ownership.acquire(endpoint, candidate)
                     self.ownership.bind(endpoint, str(device_id), verified=False)
                 else:
@@ -488,6 +490,12 @@ class IrisHub:
         if device_id is not None and self._mdns_devices.get(device_id) == service_name:
             self._mdns_devices.pop(device_id, None)
         await self._remove_endpoint(endpoint, discovery="mdns")
+
+    async def disconnect_owned_endpoint(self, endpoint: str) -> None:
+        """Close a failed admission attempt without disturbing other endpoints."""
+        if self.ownership is not None:
+            self.ownership._require(endpoint)
+        await self._remove_endpoint(endpoint)
 
     async def _remove_endpoint(
         self, endpoint: str, *, discovery: str | None = None
@@ -795,12 +803,6 @@ class IrisHub:
     async def _on_ready(self, session: DeviceSession) -> None:
         assert session.info is not None
         info = session.info
-        if self.ownership is not None:
-            try:
-                self.ownership.bind(session.link.endpoint, info.device_id)
-            except RuntimeError:
-                await session.close()
-                raise
         endpoint_state = self._endpoint_states[session.link.endpoint]
         advertised_device_id = endpoint_state.get("advertised_device_id")
         if (
@@ -828,6 +830,12 @@ class IrisHub:
                         f"hardware MAC {info.hardware_mac} is already associated "
                         f"with device {other_id}"
                     )
+        if self.ownership is not None:
+            try:
+                self.ownership.bind(session.link.endpoint, info.device_id)
+            except RuntimeError:
+                await session.close()
+                raise
         self._devices[info.device_id] = session
         self._set_endpoint_state(
             session.link.endpoint,

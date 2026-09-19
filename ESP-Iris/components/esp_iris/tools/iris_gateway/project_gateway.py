@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import contextlib
+import re
 import time
 import uuid
 from typing import Any, NoReturn
@@ -14,6 +15,7 @@ from aiohttp import ClientError, ClientSession, ClientTimeout, web
 from .client_lifecycle import CAPABILITY as LIFECYCLE_CAPABILITY
 from .client_lifecycle import ClientLifecycle
 from .compat import to_thread
+from .device_selection import admit_candidates, identity_candidates
 from .discovery import (
     discover_iris_usb_devices,
     iris_usb_allowed,
@@ -153,7 +155,7 @@ class ProjectGateway:
         raise TimeoutError("device has not completed identity validation; ownership is retained")
 
     @staticmethod
-    def selection_error(message: str, candidates: list[str]) -> NoReturn:
+    def selection_error(message: str, candidates: list[Any]) -> NoReturn:
         response = error_response(400, "selection_error", message, candidates=candidates)
         raise web.HTTPBadRequest(text=response.text, content_type="application/json")
 
@@ -221,6 +223,8 @@ class ProjectGateway:
         if self.closing:
             raise OwnershipConflict("project session is draining")
         device_id = body.get("device_id")
+        if device_id and (not isinstance(device_id, str) or re.fullmatch(r"[0-9a-f]{32}", device_id) is None):
+            raise ValueError("Device ID must contain 32 lowercase hexadecimal characters")
         endpoint = body.get("endpoint")
         token = body.get("pairing_token")
         if token is not None and (not isinstance(token, str) or len(bytes.fromhex(token)) != 32):
@@ -242,6 +246,12 @@ class ProjectGateway:
                 self.registry._require("device:" + str(device_id), ("owned",))
                 connected = next((item for item in self.hub.list_devices() if item["device_id"] == device_id), None)
                 if connected is not None:
+                    if endpoint and endpoint != connected.get("endpoint"):
+                        canonical = endpoint
+                        if str(connected.get("endpoint", "")).startswith("usb:") and not str(endpoint).startswith("tcp:"):
+                            canonical = usb_endpoint(await to_thread(resolve_usb_port, str(endpoint)))
+                        if canonical != connected.get("endpoint"):
+                            self.selection_error("Requested endpoint differs from the active device connection.", [connected])
                     return connected
                 if automatic:
                     # Its existing supervisors own reconnect. Never substitute
@@ -263,21 +273,11 @@ class ProjectGateway:
                     raise ValueError("endpoint is reserved for the Recovery maintenance workflow")
                 candidates = [{"endpoint": usb_endpoint(metadata), **metadata}]
         else:
-            candidates = [item for item in candidates if item.get("advertised_device_id") == device_id
-                          or (item.get("ownership") or {}).get("device_id") == device_id]
-            if not candidates:
-                candidates = self.registry.known_endpoints(str(device_id))
-        if len(candidates) != 1:
-            raise ValueError("select one discovered endpoint; use iris status to inspect candidates")
-        metadata = {key: value for key, value in candidates[0].items() if key != "ownership"}
-        endpoint = str(metadata["endpoint"])
-        self.registry.acquire(endpoint, metadata)
-        if device_id:
-            self.registry.bind(endpoint, str(device_id), verified=False)
-        if token is not None:
-            self.tokens[endpoint] = token
-        await self.hub.connect_owned(endpoint, metadata, pairing_token=self.tokens.get(endpoint, self.pairing_token))
-        return await self.wait_device(str(device_id) if device_id else None, endpoint, float(body.get("timeout", 10)))
+            candidates = await identity_candidates(self, str(device_id))
+        if not candidates:
+            self.selection_error("No available endpoint for the selected Device ID.", [])
+        return await admit_candidates(self, candidates, str(device_id) if device_id else None,
+                                      token, float(body.get("timeout", 10)))
 
     async def prepare(self, body: dict[str, Any]) -> dict[str, Any]:
         device_id, target = str(body["device_id"]), str(body["target_session_id"])
