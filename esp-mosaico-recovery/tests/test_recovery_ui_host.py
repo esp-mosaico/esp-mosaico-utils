@@ -64,13 +64,19 @@ class Simulator:
                 assert "error" not in result, result
                 return result.get("result")
 
-    def wait(self, **expected):
-        deadline = time.monotonic() + 15
+    def wait(self, *, timeout=15, **expected):
+        deadline = time.monotonic() + timeout
         actual = {}
         while time.monotonic() < deadline:
             assert self.backend.poll() is None, (self.directory / "sim.log").read_text()
-            if self.state_file.exists():
-                actual = json.loads(self.state_file.read_text())
+            try:
+                snapshot = self.state_file.read_text(encoding="utf-8")
+            except (FileNotFoundError, PermissionError):
+                # Windows briefly denies reads while MoveFileEx replaces the
+                # snapshot. Retry within the same deadline, never reset it.
+                pass
+            else:
+                actual = json.loads(snapshot)
                 if all(actual.get(k) == v for k, v in expected.items()):
                     # Let already-enqueued visibility and list updates paint.
                     self.rpc("wait", frames=20)
@@ -234,7 +240,9 @@ def test_nand_update_and_result_acknowledgement(sim):
     sim.tap(350, 430)
     sim.wait(page=7)
     sim.capture("update")
-    sim.wait(page=8, progress=1000)
+    # Twenty asynchronous service ticks each issue renderer RPCs. macOS CI
+    # can exceed 15 wall-clock seconds while still advancing normally.
+    sim.wait(timeout=45, page=8, progress=1000)
     sim.capture("result")
     sim.tap(240, 409)
     sim.wait(page=0)
