@@ -449,7 +449,8 @@
       "text": "\u203a",
       "font_size": 24,
       "fg_color": "#91919B",
-      "text_align": "left"
+      "text_align": "left",
+      "font_charset": " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~"
     },
     {
       "type": "label",
@@ -1256,7 +1257,7 @@
       "text_align": "center",
       "bind": "update_title",
       "name": "update_title",
-      "font_charset": "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz -"
+      "font_charset": " ADFNUacdefgilmnoprstuvwy"
     },
     {
       "type": "label",
@@ -1405,7 +1406,7 @@
       "text_align": "center",
       "bind": "result_title",
       "name": "result_title",
-      "font_charset": "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz -"
+      "font_charset": " ADFNUacdefgilmnoprstuvwy"
     },
     {
       "type": "label",

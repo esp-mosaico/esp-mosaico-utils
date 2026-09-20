@@ -14,8 +14,8 @@ esp_err_t vibe_bundle_open(esp_gsp_config_t *config)
     s_bundle = heap_caps_aligned_alloc(64, vibe_bundle_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!s_bundle) return ESP_ERR_NO_MEM;
     /* The convenience mem-to-mem API places an approximately 11 KiB decoder
-     * on the caller's stack. Recovery's main task has only 3.5 KiB: allocate
-     * the state explicitly and use the streaming ROM API instead. */
+     * on the caller's stack. Keep that separate from GSP initialization's
+     * stack budget by allocating state and using the streaming ROM API. */
     tinfl_decompressor *decoder = heap_caps_malloc(sizeof(*decoder),
         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!decoder) {

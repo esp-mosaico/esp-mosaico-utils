@@ -14,6 +14,8 @@
 #include "recovery_ota_support.h"
 #include "iris_screen_mirror.h"
 #include "nvs_flash.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "sdkconfig.h"
 
 static const char *TAG = "factory";
@@ -46,6 +48,8 @@ void app_main(void)
                  esp_err_to_name(ui_err));
         return;
     }
+    ESP_LOGI(TAG, "UI initialization stack headroom: %u bytes",
+             (unsigned)uxTaskGetStackHighWaterMark(NULL));
     const esp_err_t input_err = factory_ui_input_register();
     if (input_err != ESP_OK) {
         ESP_LOGE(TAG, "Vibe Mode input failed: %s; USB maintenance remains active",

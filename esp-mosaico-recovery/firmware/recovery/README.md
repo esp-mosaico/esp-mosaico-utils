@@ -203,15 +203,20 @@ ESP-Mosaico workspace 时，`mosaico.py recover` 会根据宿主 workspace 的
 `main/factory_ui.c` 适配网络、Bridge、NAND 和更新状态；
 异步状态在 GSP 渲染上下文汇总，外部打开下载页的请求通过队列提交。
 
-使用 Component Registry 的 **ESP-GSP 1.2.0**，BSP 开启硬件显示但关闭
+使用 Component Registry 的 **ESP-GSP 1.4.0**，BSP 开启硬件显示但关闭
 `CONFIG_BSP_DISPLAY_LVGL_ENABLE`。该 BSP 选项默认开启，保留现有 LVGL
 应用行为。构建必须使用包含该选项的 workspace BSP；旧版 BSP 不支持此模式。
+GSP 1.4 在调用方同步创建、校验 UI，Recovery 将
+`CONFIG_ESP_MAIN_TASK_STACK_SIZE` 设为 20480；仅增加渲染任务栈不能覆盖该阶段。
+启动日志记录 UI 初始化后的主任务栈余量，便于检查后续资源改动。
 
 场景、字形与键盘图标全部嵌入 Recovery，不依赖应用资源分区。
 GSPB 在构建时无损 Deflate 压缩，启动时使用 ROM 解压器还原到 PSRAM；
-GSP 继续执行原始 bundle 校验。FreeType 不注册动态字体驱动，界面仅使用
-预烘焙字形；JPEG 解码入口显式返回不支持，现有图标是编译后的 RGB565_A8。
-若增加运行时字体或 JPEG 图片，必须同步恢复相应驱动并重新验证大小和功能。
+GSP 继续执行原始 bundle 校验。界面仅使用预烘焙字形，不启用运行时字体；
+通过 GSP 1.4 的 `CONFIG_ESP_GSP_ENABLE_JPEG=n` 排除 JPEG 解码器，
+现有图标仍为编译后的 RGB565_A8。32 px 更新标题与百分比只打包对应状态文案
+和数字所需的字形，网络名称与密码仍保留完整的既有字符集。
+若增加运行时字体或 JPEG 图片，必须同步启用相应能力并重新验证大小和功能。
 原生键盘支持大小写、符号、删除、确认、密码显示切换和 64 字节上限，
 离开输入页会清理密码。
 
@@ -221,8 +226,8 @@ GSP 继续执行原始 bundle 校验。FreeType 不注册动态字体驱动，�
 python3 tools/gsp-sim/run.py submodule/esp-mosaico-utils/esp-mosaico-recovery/firmware/recovery/ui/main.json --headless
 ```
 
-运行 Recovery 主机测试前，设置 `GSPC_EXECUTABLE`（0.3.0）和
-`GSP_SIM_EXECUTABLE`（1.2.0）。原生模拟器测试使用真实键盘、列表和回调，
+运行 Recovery 主机测试前，设置 `GSPC_EXECUTABLE`（0.5.0）和
+`GSP_SIM_EXECUTABLE`（1.4.0）。原生模拟器测试使用真实键盘、列表和回调，
 并检查 Wi-Fi 列表的截图像素，覆盖字形完整性、卡片间距和反复导航。
 服务数据由 PC 后端模拟；模拟通过不代表真机网络或更新验收通过。
 

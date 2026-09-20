@@ -24,10 +24,3 @@ include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(factory)
 
 include(cmake/recovery_image.cmake)
-
-# This fixed-slot product has no runtime font files. Keep FreeType's public
-# runtime ABI but do not register unused font-format drivers.
-if(TARGET freetype)
-    target_compile_definitions(freetype PRIVATE
-        FT_CONFIG_MODULES_H="${CMAKE_CURRENT_LIST_DIR}/main/vibe_ft_modules.h")
-endif()

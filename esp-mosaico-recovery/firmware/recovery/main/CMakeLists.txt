@@ -11,7 +11,6 @@ idf_component_register(
         "factory_ui.c"
         "vibe_ui.c"
         "vibe_bundle.c"
-        "vibe_image_policy.c"
         "board_display.c"
         "factory_ui_input.c"
         "recovery_ota_support.c"
@@ -35,7 +34,6 @@ idf_component_register(
         mdns
         mbedtls
         esp-gsp
-        espressif__esp_new_jpeg
         esp_display_present
         esp_lcd
         esp_timer
@@ -65,7 +63,3 @@ add_custom_command(OUTPUT "${vibe_packed}"
         "${CMAKE_CURRENT_LIST_DIR}/../tools/pack_vibe_bundle.py"
     VERBATIM)
 target_sources(${COMPONENT_LIB} PRIVATE "${vibe_packed}")
-
-foreach(vibe_jpeg_symbol jpeg_dec_open jpeg_dec_parse_header jpeg_dec_process jpeg_dec_close)
-    target_link_options(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=${vibe_jpeg_symbol}" "-Wl,-u,__wrap_${vibe_jpeg_symbol}")
-endforeach()
