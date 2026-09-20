@@ -12,6 +12,8 @@ static vibe_ui_t state;
 static vibe_snapshot_t model;
 static unsigned connect_ticks;
 static unsigned connect_attempts, bridge_open_calls;
+static unsigned bridge_prefetch_calls;
+static bool bridge_active;
 static bool connecting, installing;
 static void *trace_timer;
 static bool scenario(const char *name)
@@ -37,9 +39,10 @@ static void trace_state(esp_gsp_handle_t ui, void *ctx)
     FILE *file = fopen(temporary, "w");
     if (!file) return;
     /* Observable test state never contains credentials or pairing tokens. */
-    fprintf(file, "{\"page\":%d,\"password_length\":%u,\"password_visible\":%s,\"pending\":%s,\"bridge_running\":%s,\"network\":%d,\"progress\":%u,\"bridge_open_calls\":%u}\n",
+    fprintf(file, "{\"page\":%d,\"password_length\":%u,\"password_visible\":%s,\"pending\":%s,\"bridge_running\":%s,\"network\":%d,\"progress\":%u,\"bridge_open_calls\":%u,\"bridge_prefetch_calls\":%u,\"bridge_active\":%s,\"code_ready\":%s}\n",
         state.page, (unsigned)strlen(state.password), state.password_visible ? "true" : "false",
-        state.download_pending ? "true" : "false", model.bridge_running ? "true" : "false", model.network, model.progress, bridge_open_calls);
+        state.download_pending ? "true" : "false", model.bridge_running ? "true" : "false", model.network, model.progress, bridge_open_calls,
+        bridge_prefetch_calls, bridge_active ? "true" : "false", model.bridge_code[0] ? "true" : "false");
     fclose(file);
 #ifdef _WIN32
     /* The Windows C runtime's rename cannot replace an existing snapshot. */
@@ -72,7 +75,7 @@ static void snapshot(void *ctx, vibe_snapshot_t *out)
         }
     }
     if (model.bridge_running && model.network == VIBE_NET_CONNECTED) {
-        snprintf(model.bridge_state, sizeof(model.bridge_state), "WAITING_UPLOAD");
+        snprintf(model.bridge_state, sizeof(model.bridge_state), "PAIRING");
         snprintf(model.bridge_code, sizeof(model.bridge_code), "VIBE123456");
         model.bridge_seconds = 300;
     }
@@ -96,9 +99,15 @@ static int command(void *ctx, vibe_command_t cmd, const char *a, const char *b)
         connecting = true; connect_ticks = 0; break;
     case VIBE_OPEN_BRIDGE:
         ++bridge_open_calls;
+        bridge_active = true;
+        if (model.bridge_running) break;
         model.bridge_running = true;
         snprintf(model.bridge_state, sizeof(model.bridge_state), "WAITING_NETWORK"); break;
-    case VIBE_STOP_BRIDGE: model.bridge_running = false; model.bridge_code[0] = 0; break;
+    case VIBE_PREFETCH_BRIDGE:
+        ++bridge_prefetch_calls;
+        model.bridge_running = true; break;
+    case VIBE_PAUSE_BRIDGE: bridge_active = false; break;
+    case VIBE_STOP_BRIDGE: model.bridge_running = false; bridge_active = false; model.bridge_code[0] = 0; break;
     case VIBE_SCAN_NAND: ++model.nand_generation; break;
     case VIBE_INSTALL_NAND:
         installing = true; model.updating = true; model.update_terminal = false; model.progress = 0;
@@ -114,6 +123,11 @@ static int command(void *ctx, vibe_command_t cmd, const char *a, const char *b)
 esp_gsp_err_t gsp_bridge_app_init(esp_gsp_handle_t ui)
 {
     model.tcp_port = 7777;
+    if (scenario("prefetched")) {
+        model.credentials_saved = true;
+        model.network = VIBE_NET_CONNECTED;
+        snprintf(model.ip, sizeof(model.ip), "192.0.2.10");
+    }
     snprintf(model.hostname, sizeof(model.hostname), "mosaico-simulator");
     model.ap_count = 6; model.scan_generation = 1;
     if (scenario("empty")) model.ap_count = 0;

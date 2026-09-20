@@ -187,6 +187,23 @@ def test_download_wifi_continuation_and_cancel(sim):
     sim.wait(page=1, pending=False, bridge_running=False)
 
 
+@pytest.mark.parametrize("sim", ["prefetched"], indirect=True)
+def test_prefetched_code_reused_after_back_and_explicit_cancel(sim):
+    sim.wait(page=0, bridge_prefetch_calls=1, bridge_open_calls=0,
+             bridge_running=True, bridge_active=False, code_ready=True)
+    sim.tap(240, 390)
+    sim.wait(page=4, bridge_active=True, code_ready=True, bridge_open_calls=1)
+    sim.capture("prefetched-code")
+    sim.tap(38, 36)
+    sim.wait(page=0, bridge_running=True, bridge_active=False, code_ready=True)
+    sim.tap(240, 390)
+    sim.wait(page=4, bridge_active=True, bridge_open_calls=2, bridge_prefetch_calls=1)
+    sim.tap(240, 444)
+    sim.wait(page=0, bridge_running=False, bridge_active=False, code_ready=False)
+    sim.tap(240, 390)
+    sim.wait(page=4, bridge_running=True, bridge_open_calls=3, bridge_prefetch_calls=1)
+
+
 def test_wifi_cards_and_labels_survive_navigation_and_rescan(sim):
     def check_frame(name):
         sim.capture(name)

@@ -20,6 +20,8 @@ static esp_iris_system_update_component_t descriptor;
 static int replies_count, reply_index, test_case;
 static int pairing_snapshots;
 static bool expire_on_delay;
+static int activate_after_delays;
+static bool pause_on_poll;
 static struct reply {
     const char *path, *body;
     int status;
@@ -33,6 +35,10 @@ struct mock_http {
 void vTaskDelay(unsigned ms)
 {
     mock_time += (int64_t)ms * 1000;
+    if (activate_after_delays && --activate_after_delays == 0) {
+        assert(requests == 1); /* No background polling or re-registration. */
+        iris_bridge_set_active(true);
+    }
     if (expire_on_delay) {
         mock_time += 600000000;
         expire_on_delay = false;
@@ -109,6 +115,11 @@ int esp_http_client_read(esp_http_client_handle_t h, char *out, size_t n)
     h->offset += n;
     if (h->reply->stop)
         iris_bridge_stop();
+    if (pause_on_poll && strstr(h->reply->path, "/poll")) {
+        iris_bridge_set_active(false);
+        pause_on_poll = false;
+        expire_on_delay = true;
+    }
     return n;
 }
 int esp_http_client_write(esp_http_client_handle_t h, const char *data, size_t n)
@@ -312,6 +323,9 @@ static void reset(void)
 {
     test_case++;
     expire_on_delay = false;
+    activate_after_delays = 0;
+    pause_on_poll = false;
+    atomic_store(&bridge_active, true);
     atomic_store(&bridge_running, false);
     atomic_store(&stop_requested, false);
     memset(session, 0, sizeof(session));
@@ -420,13 +434,45 @@ int main(void)
     assert(requests == 4);
     reset();
     reply("device-sessions", 201, registration, false);
-    reply("/poll", 500, "{}", false);
     expire_on_delay = true;
-    assert(iris_bridge_start(&config) == 0);
+    iris_bridge_config_t background = config;
+    background.prefetch_only = true;
+    assert(iris_bridge_start(&background) == 0);
     run_worker();
     iris_bridge_get_snapshot(&out);
     assert(!strcmp(out.state, "EXPIRED"));
-    assert(!out.code[0] && requests == 2);
+    assert(!out.code[0] && requests == 1);
+    /* Opening a prefetched session enables polling, without another POST. */
+    reset();
+    reply("device-sessions", 201, registration, false);
+    reply("/poll", 410, "{}", false);
+    activate_after_delays = 2;
+    assert(iris_bridge_start(&background) == 0);
+    run_worker();
+    assert(requests == 2 && !mock_writes && !mock_commits);
+    /* A visible expired code renews immediately; the new session is polled. */
+    reset();
+    reply("device-sessions", 201, registration, false);
+    reply("device-sessions", 201, registration, false);
+    reply("/poll", 410, "{}", false);
+    expire_on_delay = true;
+    assert(iris_bridge_start(&config) == 0);
+    run_worker();
+    assert(requests == 3);
+    /* Leaving during /poll must not process its queued update or inventory. */
+    reset();
+    reply("device-sessions", 201, registration, false);
+    reply("/poll", 200, "{\"inventory_required\":true,\"flash\":{\"phase\":\"QUEUED\"}}", false);
+    pause_on_poll = true;
+    assert(iris_bridge_start(&config) == 0);
+    run_worker();
+    assert(requests == 2 && !mock_reserved && !mock_writes && !mock_commits);
+    reset();
+    for (int i = 0; i < 3; ++i) reply("device-sessions", 503, "{}", false);
+    assert(iris_bridge_start(&background) == 0);
+    run_worker();
+    iris_bridge_get_snapshot(&out);
+    assert(requests == 3 && !out.running && !strcmp(out.state, "FAILED"));
     reset();
     reply("device-sessions", 201, registration, true);
     reply("/progress", 200, "{}", false);

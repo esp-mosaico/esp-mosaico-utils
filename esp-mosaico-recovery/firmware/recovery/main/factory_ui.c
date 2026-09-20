@@ -47,6 +47,8 @@ static int service_command(void *ctx, vibe_command_t cmd, const char *a, const c
     case VIBE_FORGET_WIFI: return factory_network_forget();
     case VIBE_CONNECT_WIFI: return factory_network_connect(a, b);
     case VIBE_OPEN_BRIDGE: return factory_bridge_open();
+    case VIBE_PREFETCH_BRIDGE: return factory_bridge_prefetch();
+    case VIBE_PAUSE_BRIDGE: iris_bridge_set_active(false); return ESP_OK;
     case VIBE_STOP_BRIDGE: iris_bridge_stop(); return ESP_OK;
     case VIBE_SCAN_NAND: return factory_nand_update_request_scan();
     case VIBE_INSTALL_NAND: return factory_system_update_start_nand(a);

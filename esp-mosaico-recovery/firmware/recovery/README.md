@@ -32,6 +32,15 @@ bootloader 默认仅保留 ERROR 日志，以适配 `0x2000` 到 `0x8000` 的 24
 
 ## 用户命令
 
+从源码构建前，在已激活的 ESP-IDF Python 环境中安装资源编码依赖：
+
+```sh
+python -m pip install -r firmware/recovery/tools/requirements.txt
+```
+
+该工具依赖 Python 3.10+，仅用于离线 Zopfli 压缩；设备继续使用 ROM 的 zlib/Deflate
+解码，场景、字号和字形内容不变。CI 在构建 Python 环境中安装同一固定版本。
+
 在仓库根目录运行：
 
 ```sh
@@ -51,6 +60,18 @@ python mosaico.py iris logs
 
 Recovery 屏幕在普通 OTA 写入期间显示应用镜像接收进度、传输所有者和
 SHA-256 校验状态；完成后显示重启提示。System Update 继续复用同一进度页面。
+
+### Download Ideas 的后台配对码
+
+本次 Recovery 启动首次连接 Wi-Fi 并取得 IP 后，会后台注册一个 Bridge 会话。
+首页保持可操作，后台只获取/缓存配对码，不轮询、上报 inventory 或执行下载更新。
+打开 Download Ideas 后复用有效码并启用下载轮询；返回首页暂停轮询并保留会话，
+再次进入继续使用同一码。明确点击 Cancel 或忘记 Wi-Fi 时会取消会话。
+
+后台未配对的码按现有约 10 分钟期限失效后结束，不无限注册续期；之后点击下载页
+重新申请。下载页仍打开时会自动续期未配对的码。注册失败最多尝试三次，保留现有
+退避和服务端 Retry-After；失败后可退出页面再进入重试。自动预取每次启动只触发一次，
+忘记 Wi-Fi 后重新配置可再次触发。
 
 ### Recovery 自更新（接受 ROM 兜底）
 

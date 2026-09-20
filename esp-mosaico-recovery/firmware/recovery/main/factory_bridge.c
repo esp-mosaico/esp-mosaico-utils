@@ -11,9 +11,10 @@ static bool network_ready(void)
            network.state == FACTORY_NETWORK_CONNECTED && network.ip[0] != '\0';
 }
 
-esp_err_t factory_bridge_open(void)
+static esp_err_t start(bool prefetch)
 {
     if (iris_bridge_is_running()) {
+        if (!prefetch) iris_bridge_set_active(true);
         return ESP_OK;
     }
     char device_id[33];
@@ -26,7 +27,11 @@ esp_err_t factory_bridge_open(void)
         .board_id = CONFIG_IRIS_FACTORY_BRIDGE_BOARD_ID,
         .device_id = device_id,
         .enable_factory_update = true,
+        .prefetch_only = prefetch,
         .network_ready = network_ready,
     };
     return iris_bridge_start(&config);
 }
+
+esp_err_t factory_bridge_open(void) { return start(false); }
+esp_err_t factory_bridge_prefetch(void) { return start(true); }

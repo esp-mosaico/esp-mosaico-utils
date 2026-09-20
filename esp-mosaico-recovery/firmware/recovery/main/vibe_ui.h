@@ -15,7 +15,8 @@ typedef enum {
 typedef enum { VIBE_NET_OFFLINE, VIBE_NET_CONNECTING, VIBE_NET_CONNECTED, VIBE_NET_FAILED } vibe_net_t;
 typedef enum {
     VIBE_SCAN_WIFI, VIBE_FORGET_WIFI, VIBE_CONNECT_WIFI, VIBE_OPEN_BRIDGE,
-    VIBE_STOP_BRIDGE, VIBE_SCAN_NAND, VIBE_INSTALL_NAND
+    VIBE_STOP_BRIDGE, VIBE_SCAN_NAND, VIBE_INSTALL_NAND,
+    VIBE_PREFETCH_BRIDGE, VIBE_PAUSE_BRIDGE
 } vibe_command_t;
 typedef struct { char ssid[33]; int rssi; bool open; } vibe_ap_t;
 typedef struct { char release[48]; char path[256]; uint64_t bytes; unsigned components; } vibe_bundle_t;
@@ -56,6 +57,7 @@ typedef struct {
     esp_gsp_list_t networks, bundles;
     void *timer;
     bool download_pending, password_visible;
+    bool prefetch_attempted;
     char selected_ssid[33], password_projection[65], password[65];
     vibe_bundle_t selected_bundle;
     uint32_t acknowledged_update;

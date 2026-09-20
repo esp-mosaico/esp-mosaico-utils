@@ -4,6 +4,12 @@ from pathlib import Path
 import argparse
 import zlib
 
+try:
+    import zopfli.zlib
+except ImportError as error:
+    raise SystemExit("Recovery bundle compression requires zopfli: install "
+                     "firmware/recovery/tools/requirements.txt with the build Python") from error
+
 
 def pack(source, output):
     raw = Path(source).read_bytes()
@@ -11,7 +17,10 @@ def pack(source, output):
     # heuristics. Keep the default stream as a candidate so this optimization
     # never grows the bundle. All candidates use the same zlib format accepted
     # by the device's ROM tinfl decoder; no new runtime codec is required.
-    candidates = [zlib.compress(raw, 9)]
+    # Spend a few seconds on the host to save Flash without changing the ROM
+    # decoder or a single decompressed scene/font byte.
+    candidates = [zlib.compress(raw, 9),
+                  zopfli.zlib.compress(raw, numiterations=50)]
     for memory in (6, 7, 8, 9):
         for strategy in (zlib.Z_DEFAULT_STRATEGY, zlib.Z_FILTERED):
             encoder = zlib.compressobj(9, zlib.DEFLATED, 15, memory, strategy)

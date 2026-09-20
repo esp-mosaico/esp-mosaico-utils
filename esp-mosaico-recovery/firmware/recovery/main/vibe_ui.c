@@ -45,7 +45,7 @@ static void show(vibe_ui_t *s, vibe_page_t page)
     }
     if (page != VIBE_WIFI && page != VIBE_PASSWORD) s->download_pending = false;
     if (previous == VIBE_BRIDGE && page != VIBE_BRIDGE && page != VIBE_UPDATE && page != VIBE_RESULT)
-        (void)command(s, VIBE_STOP_BRIDGE, NULL, NULL);
+        (void)command(s, VIBE_PAUSE_BRIDGE, NULL, NULL);
     s->page = page;
     /* Authored layers start with only HOME visible. Update only the two
      * participating layers, avoiding redundant visibility invalidations. */
@@ -69,9 +69,10 @@ int vibe_ui_open_bridge(vibe_ui_t *s)
 {
     if (!s || !s->ui) return ESP_GSP_ERR_INVALID_ARG;
     s->services.snapshot(s->services.ctx, &s->snapshot);
-    if (s->snapshot.bridge_running) return s->snapshot.bridge_error;
+    if (s->snapshot.bridge_running && s->page == VIBE_BRIDGE) return s->snapshot.bridge_error;
     int err = command(s, VIBE_OPEN_BRIDGE, NULL, NULL);
     show(s, VIBE_BRIDGE);
+    vibe_ui_poll(s);
     return err;
 }
 static gsp_err_t network_row(esp_gsp_handle_t ui, esp_gsp_row_t row, uint32_t index, void *ctx)
@@ -145,14 +146,19 @@ static void event(esp_gsp_handle_t ui, const esp_gsp_event_t *e, void *ctx)
     case GSP_VIBE_ACT_ID_BACK_PAIRING:
     case GSP_VIBE_ACT_ID_BACK_NAND:
     case GSP_VIBE_ACT_ID_BACK_BRIDGE:
-    case GSP_VIBE_ACT_ID_CANCEL_BRIDGE:
         s->acknowledged_update = s->snapshot.update_revision;
+        show(s, VIBE_HOME); break;
+    case GSP_VIBE_ACT_ID_CANCEL_BRIDGE:
+        (void)command(s, VIBE_STOP_BRIDGE, NULL, NULL);
         show(s, VIBE_HOME); break;
     case GSP_VIBE_ACT_ID_SCAN:
         err = command(s, VIBE_SCAN_WIFI, NULL, NULL);
         if (err) FORMAT(s, WIFI_SCAN, "Scan error 0x%x", (unsigned)err);
         break;
-    case GSP_VIBE_ACT_ID_FORGET: (void)command(s, VIBE_FORGET_WIFI, NULL, NULL); break;
+    case GSP_VIBE_ACT_ID_FORGET:
+        (void)command(s, VIBE_STOP_BRIDGE, NULL, NULL);
+        s->prefetch_attempted = false;
+        (void)command(s, VIBE_FORGET_WIFI, NULL, NULL); break;
     case GSP_VIBE_ACT_ID_NAND:
     case GSP_VIBE_ACT_ID_NAND_SCAN:
         show(s, VIBE_NAND);
@@ -217,6 +223,11 @@ void vibe_ui_poll(vibe_ui_t *s)
     size_t ap_count = s->snapshot.ap_count, bundle_count = s->snapshot.bundle_count;
     s->services.snapshot(s->services.ctx, &s->snapshot);
     vibe_snapshot_t *v = &s->snapshot;
+    if (!s->prefetch_attempted && !v->updating &&
+        v->network == VIBE_NET_CONNECTED && v->ip[0]) {
+        s->prefetch_attempted = true;
+        (void)command(s, VIBE_PREFETCH_BRIDGE, NULL, NULL);
+    }
     if (v->ap_count > VIBE_AP_MAX) v->ap_count = VIBE_AP_MAX;
     if (v->bundle_count > VIBE_BUNDLE_MAX) v->bundle_count = VIBE_BUNDLE_MAX;
     if (scan != v->scan_generation || ap_count != v->ap_count) {
@@ -299,6 +310,7 @@ void vibe_ui_deinit(vibe_ui_t *s)
 {
     if (!s || !s->ui) return;
     show(s, VIBE_HOME);
+    (void)command(s, VIBE_STOP_BRIDGE, NULL, NULL);
     if (s->timer) (void)esp_gsp_timer_delete(s->ui, s->timer);
     (void)esp_gsp_on_event(s->ui, NULL, NULL);
     clear_secret(s->snapshot.token, sizeof(s->snapshot.token));
