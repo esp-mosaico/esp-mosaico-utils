@@ -1,4 +1,4 @@
-# ESP-Mosaico Factory Reference
+# ESP-Mosaico Vibe Mode
 
 `factory` 是 `esp-mosaico-recovery` 内置的 ESP-Mosaico 保留 Recovery 固件，
 其源码和评审 bundle 与 `mosaico.py recover` 一同维护。普通应用从宿主
@@ -32,6 +32,15 @@ bootloader 默认仅保留 ERROR 日志，以适配 `0x2000` 到 `0x8000` 的 24
 
 ## 用户命令
 
+从源码构建前，在已激活的 ESP-IDF Python 环境中安装资源编码依赖：
+
+```sh
+python -m pip install -r firmware/recovery/tools/requirements.txt
+```
+
+该工具依赖 Python 3.10+，仅用于离线 Zopfli 压缩；设备继续使用 ROM 的 zlib/Deflate
+解码，场景、字号和字形内容不变。CI 在构建 Python 环境中安装同一固定版本。
+
 在仓库根目录运行：
 
 ```sh
@@ -41,7 +50,7 @@ python mosaico.py iris app-update --project projects/<project>
 python mosaico.py iris logs
 ```
 
-- `iris list` 列出仓库适配的设备型号，不查询当前连接设备。
+- `iris list` 实时发现设备，并区分在线连接与离线缓存。
 - `recover` 初始化或恢复设备，默认使用仓库内经过评审的基础包；实时显示基础包
   校验、设备检测、ESP-IDF 构建/烧录、镜像哈希校验、重连和 Recovery 就绪验证。
 - `iris app-update` 构建并通过 ESP-Iris 安装普通应用；不会自动执行 `recover`。
@@ -51,6 +60,18 @@ python mosaico.py iris logs
 
 Recovery 屏幕在普通 OTA 写入期间显示应用镜像接收进度、传输所有者和
 SHA-256 校验状态；完成后显示重启提示。System Update 继续复用同一进度页面。
+
+### Download Ideas 的后台配对码
+
+本次 Recovery 启动首次连接 Wi-Fi 并取得 IP 后，会后台注册一个 Bridge 会话。
+首页保持可操作，后台只获取/缓存配对码，不轮询、上报 inventory 或执行下载更新。
+打开 Download Ideas 后复用有效码并启用下载轮询；返回首页暂停轮询并保留会话，
+再次进入继续使用同一码。明确点击 Cancel 或忘记 Wi-Fi 时会取消会话。
+
+后台未配对的码按现有约 10 分钟期限失效后结束，不无限注册续期；之后点击下载页
+重新申请。下载页仍打开时会自动续期未配对的码。注册失败最多尝试三次，保留现有
+退避和服务端 Retry-After；失败后可退出页面再进入重试。自动预取每次启动只触发一次，
+忘记 Wi-Fi 后重新配置可再次触发。
 
 ### Recovery 自更新（接受 ROM 兜底）
 
@@ -85,7 +106,7 @@ Recovery 主动通过 HTTPS 连接 Bridge 服务，支持 `partitions`、`layout
 环境时，通过 `CONFIG_IRIS_FACTORY_BRIDGE_SERVER_URL`（无末尾斜杠的 HTTPS
 Origin）和 `CONFIG_IRIS_FACTORY_BRIDGE_BOARD_ID` 覆盖这两个值；任一值为空都不注册。
 
-首页主按钮为 **Download From Spark**，引导用户访问
+首页主按钮为 **Download Ideas**，引导用户访问
 <https://mosaico-spark.espressif.com/> 并选择适合设备的应用。没有保存 Wi-Fi
 配置时，点击主按钮先进入配网页；连接取得 IP 后自动继续下载流程。返回首页
 会取消这次续接。普通 **Wi-Fi** 入口不会自动开启下载。
@@ -95,8 +116,7 @@ Origin）和 `CONFIG_IRIS_FACTORY_BRIDGE_BOARD_ID` 覆盖这两个值；任一�
 退出会请求异步安全停止，完成或失败后重新进入页面才能再次配对。
 
 Recovery 支持 Gateway Web 工作台截图，以及 USB 会话下的交互输入。
-触摸输入使用 Gateway 的 `0x1001/1` pointer RPC，在真实 LVGL 输入设备上
-处理按下、移动和抬起；TCP 会话不能通过此接口操作 Recovery 界面。
+触摸输入使用 Gateway 的 `0x1001/1` pointer RPC，交由 GSP 输入处理按下、移动和抬起；TCP 会话不能通过此接口操作 Recovery 界面。
 
 ```sh
 python mosaico.py iris test recovery-wifi --ssid SSID
@@ -193,3 +213,45 @@ manifest 指向 `https://github.com/esp-mosaico/esp-mosaico-bsp`；集成到
 ESP-Mosaico workspace 时，`mosaico.py recover` 会根据宿主 workspace 的
 `.mosaico.json` 注入本地 `esp-mosaico-bsp`，并复用 workspace 中的 ESP-Iris，
 保证 Recovery、设备工具与普通应用使用同一 Iris 版本。
+
+
+## Vibe Mode 界面与构建
+
+用户可见名称为 **Vibe Mode**；工程 `factory`、协议角色 `recovery`、
+`recover` 命令、版本 `0.1` 和 Recovery ABI 1 保持不变。
+九个页面由 `ui/main.json` 和可移植的 `main/vibe_ui.c` 实现，PC 与设备共享
+同一控制器及 `ui/profile.yaml` RGB565 编译配置。
+`main/factory_ui.c` 适配网络、Bridge、NAND 和更新状态；
+异步状态在 GSP 渲染上下文汇总，外部打开下载页的请求通过队列提交。
+
+使用 Component Registry 的 **ESP-GSP 1.4.0**，BSP 开启硬件显示但关闭
+`CONFIG_BSP_DISPLAY_LVGL_ENABLE`。该 BSP 选项默认开启，保留现有 LVGL
+应用行为。构建必须使用包含该选项的 workspace BSP；旧版 BSP 不支持此模式。
+GSP 1.4 在调用方同步创建、校验 UI，Recovery 将
+`CONFIG_ESP_MAIN_TASK_STACK_SIZE` 设为 20480；仅增加渲染任务栈不能覆盖该阶段。
+启动日志记录 UI 初始化后的主任务栈余量，便于检查后续资源改动。
+
+场景、字形与键盘图标全部嵌入 Recovery，不依赖应用资源分区。
+GSPB 在构建时无损 Deflate 压缩，启动时使用 ROM 解压器还原到 PSRAM；
+GSP 继续执行原始 bundle 校验。界面仅使用预烘焙字形，不启用运行时字体；
+通过 GSP 1.4 的 `CONFIG_ESP_GSP_ENABLE_JPEG=n` 排除 JPEG 解码器，
+现有图标仍为编译后的 RGB565_A8。32 px 更新标题与百分比只打包对应状态文案
+和数字所需的字形，网络名称与密码仍保留完整的既有字符集。
+若增加运行时字体或 JPEG 图片，必须同步启用相应能力并重新验证大小和功能。
+原生键盘支持大小写、符号、删除、确认、密码显示切换和 64 字节上限，
+离开输入页会清理密码。
+
+在宿主 workspace 中启动共享控制器的模拟器：
+
+```sh
+python3 tools/gsp-sim/run.py submodule/esp-mosaico-utils/esp-mosaico-recovery/firmware/recovery/ui/main.json --headless
+```
+
+运行 Recovery 主机测试前，设置 `GSPC_EXECUTABLE`（0.5.0）和
+`GSP_SIM_EXECUTABLE`（1.4.0）。原生模拟器测试使用真实键盘、列表和回调，
+并检查 Wi-Fi 列表的截图像素，覆盖字形完整性、卡片间距和反复导航。
+服务数据由 PC 后端模拟；模拟通过不代表真机网络或更新验收通过。
+
+固定 Recovery 槽仍为 `0x20000` / `0x1c0000`。须核对实际构建目录中的
+`factory.bin` 大小；不能仅凭 IDF 构建成功判断镜像适合较小的 factory 槽。
+预编译包只在真机验收后通过 `update-recovery-prebuilt` 整体更新。

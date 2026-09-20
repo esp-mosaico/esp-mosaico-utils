@@ -213,12 +213,9 @@ class EndpointLock:
         root = root or pathlib.Path(tempfile.gettempdir()) / "esp-iris-locks"
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
         self.path = root / f"{digest}.lock"
+        # Windows supports locking ranges beyond EOF. Do not initialize a byte
+        # here: another owner may hold the lock while replacing its metadata.
         self._file = self.path.open("a+b")
-        self._file.seek(0, os.SEEK_END)
-        if self._file.tell() == 0:
-            # msvcrt.locking() needs a real byte range on first use.
-            self._file.write(b"\0")
-            self._file.flush()
 
     def _owner_message(self) -> str:
         try:

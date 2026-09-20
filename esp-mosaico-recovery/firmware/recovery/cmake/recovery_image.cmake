@@ -33,6 +33,16 @@ set(recovery_source_partition_table
     "${CMAKE_BINARY_DIR}/partition_table/partition-table.bin")
 set(recovery_source_ota_data "${CMAKE_BINARY_DIR}/ota_data_initial.bin")
 set(recovery_source_application "${CMAKE_BINARY_DIR}/${PROJECT_NAME}.bin")
+# ESP-IDF accepts an app if it fits any app partition; ota_0 is larger than
+# factory here. Make overflow of the retained slot a hard build failure.
+add_custom_target(recovery-slot-check ALL
+    COMMAND "${CMAKE_COMMAND}"
+        "-DRECOVERY_BINARY=${recovery_source_application}"
+        "-DRECOVERY_SLOT_SIZE=${recovery_partition_size}"
+        -P "${CMAKE_CURRENT_LIST_DIR}/check_recovery_slot.cmake"
+    COMMENT "Checking the immutable Recovery slot size"
+    VERBATIM)
+add_dependencies(recovery-slot-check app)
 set(recovery_self_update_component_dir
     "${CMAKE_BINARY_DIR}/recovery-self-update-components")
 set(recovery_self_update_manifest

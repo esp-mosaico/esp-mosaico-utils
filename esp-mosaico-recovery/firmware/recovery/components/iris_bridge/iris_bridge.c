@@ -32,6 +32,7 @@ static iris_bridge_config_t cfg;
 static char session[80], token[160], boot_id[33], mac[18];
 static atomic_bool stop_requested;
 static atomic_bool bridge_running;
+static atomic_bool bridge_active;
 static int last_http_status;
 static unsigned retry_after_seconds;
 static int64_t last_cancel_check;
@@ -804,6 +805,7 @@ static void run(void *unused)
 {
     (void)unused;
     unsigned backoff = 5;
+    unsigned registration_failures = 0;
     int64_t pairing_deadline = 0;
     set_state("WAITING_NETWORK", 0, ESP_OK);
     while (!atomic_load(&stop_requested) && cfg.network_ready && !cfg.network_ready()) {
@@ -812,6 +814,21 @@ static void run(void *unused)
     if (!atomic_load(&stop_requested))
         set_state("REGISTERING", 0, ESP_OK);
     while (!atomic_load(&stop_requested)) {
+        if (pairing_deadline && esp_timer_get_time() >= pairing_deadline) {
+            set_state("EXPIRED", 0, ESP_ERR_TIMEOUT);
+            if (!atomic_load(&bridge_active)) break;
+            /* A visible download page renews an expired, unpaired session.
+             * Idle prefetch expires instead of registering forever. */
+            memset(session, 0, sizeof(session));
+            memset(token, 0, sizeof(token));
+            pairing_deadline = 0;
+            registration_failures = 0;
+            set_state("REGISTERING", 0, ESP_OK);
+        }
+        if (session[0] && !atomic_load(&bridge_active)) {
+            vTaskDelay(pdMS_TO_TICKS(250));
+            continue;
+        }
         if (!session[0]) {
             const int64_t registered_at = esp_timer_get_time();
             cJSON *j = identity();
@@ -840,12 +857,22 @@ static void run(void *unused)
                 cJSON_Delete(r);
                 backoff = 5;
             } else {
+                if (++registration_failures >= 3) {
+                    set_state("FAILED", 0, ESP_FAIL);
+                    break;
+                }
                 backoff = backoff < 30 ? backoff * 2 : 60;
             }
         } else {
             char path[256];
             path_session(path, "/poll");
             cJSON *r = request(path, NULL);
+            /* A page may close during a blocking HTTP request. Never promote
+             * a background session into inventory/update work on its reply. */
+            if (!atomic_load(&bridge_active)) {
+                cJSON_Delete(r);
+                continue;
+            }
             if (r) {
                 backoff = 5;
                 if (cJSON_IsTrue(
@@ -855,7 +882,7 @@ static void run(void *unused)
                     inventory();
                 }
                 const cJSON *flash = cJSON_GetObjectItemCaseSensitive(r, "flash");
-                if (!atomic_load(&stop_requested) &&
+                if (!atomic_load(&stop_requested) && atomic_load(&bridge_active) &&
                     !strcmp(str(flash, "phase"), "QUEUED")) {
                     /* Never replay after an uncertain PRECHECK acknowledgement. */
                     path_session(path, "/progress");
@@ -866,10 +893,12 @@ static void run(void *unused)
                     cJSON *accepted = request(path, start);
                     cJSON_Delete(start);
                     esp_err_t err = ESP_ERR_INVALID_RESPONSE;
-                    if (accepted && !strcmp(str(accepted, "phase"), "PRECHECK"))
+                    if (accepted && atomic_load(&bridge_active) &&
+                        !strcmp(str(accepted, "phase"), "PRECHECK"))
                         err = execute(session, accepted);
                     if (err != ESP_OK)
-                        event(cancelled || atomic_load(&stop_requested) ? "CANCELLED"
+                        event(cancelled || atomic_load(&stop_requested) ||
+                              !atomic_load(&bridge_active) ? "CANCELLED"
                                                                         : "FAILED",
                               0, err);
                     cJSON_Delete(accepted);
@@ -884,15 +913,13 @@ static void run(void *unused)
             } else {
                 backoff = backoff < 30 ? backoff * 2 : 60;
             }
-            if (pairing_deadline && esp_timer_get_time() >= pairing_deadline) {
-                set_state("EXPIRED", 0, ESP_ERR_TIMEOUT);
-                break;
-            }
         }
+        if (session[0] && !atomic_load(&bridge_active)) continue;
         unsigned wait_seconds =
             retry_after_seconds > backoff ? retry_after_seconds : backoff;
         unsigned remaining_ms = wait_seconds * 1000 + esp_random() % 1000;
         while (remaining_ms && !atomic_load(&stop_requested)) {
+            if (session[0] && !atomic_load(&bridge_active)) break;
             unsigned n = remaining_ms > 250 ? 250 : remaining_ms;
             vTaskDelay(pdMS_TO_TICKS(n));
             remaining_ms -= n;
@@ -913,6 +940,11 @@ static void run(void *unused)
 void iris_bridge_stop(void)
 {
     atomic_store(&stop_requested, true);
+}
+
+void iris_bridge_set_active(bool active)
+{
+    atomic_store(&bridge_active, active);
 }
 
 bool iris_bridge_is_running(void)
@@ -975,6 +1007,7 @@ esp_err_t iris_bridge_start(const iris_bridge_config_t *config)
     strlcpy(snapshot.state, "WAITING_NETWORK", sizeof(snapshot.state));
     taskEXIT_CRITICAL(&snapshot_lock);
     cancelled = false;
+    atomic_store(&bridge_active, !config->prefetch_only);
     atomic_store(&stop_requested, false);
     if (xTaskCreate(run, "iris_bridge", 24576, NULL, 4, NULL) == pdPASS)
         return ESP_OK;

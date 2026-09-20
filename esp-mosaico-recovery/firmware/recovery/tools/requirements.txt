@@ -1,0 +1,2 @@
+# Build-time encoder only; Recovery continues using the ROM Deflate decoder.
+zopfli==0.4.3

@@ -17,6 +17,8 @@ typedef struct {
     const char *board_id;
     const char *device_id;
     bool enable_factory_update;
+    /* Register/cache a code without polling for or executing remote work. */
+    bool prefetch_only;
     /* Nonblocking readiness probe; called only by the Bridge worker. */
     bool (*network_ready)(void);
 } iris_bridge_config_t;
@@ -39,6 +41,9 @@ esp_err_t iris_bridge_resume_boot(void);
 esp_err_t iris_bridge_start(const iris_bridge_config_t *config);
 /* Safe asynchronous stop; an authorized critical commit still finishes. */
 void iris_bridge_stop(void);
+/* Opening the download page enables polling; leaving it pauses polling.
+ * An already-authorized critical commit still finishes. */
+void iris_bridge_set_active(bool active);
 bool iris_bridge_is_running(void);
 void iris_bridge_get_snapshot(iris_bridge_snapshot_t *snapshot);
 
