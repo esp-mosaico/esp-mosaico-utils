@@ -7,90 +7,106 @@
 #include <string.h>
 
 #include "bsp/esp_mosaico.h"
+#include "esp_display_present.h"
+#include "esp_gsp_esp_lcd.h"
 #include "esp_heap_caps.h"
 #include "esp_iris.h"
 #include "esp_log.h"
-#include "lvgl.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+
+#define SCREEN_BYTES_PER_PIXEL 2U
+#define SCREEN_STRIDE ((size_t)BSP_LCD_H_RES * SCREEN_BYTES_PER_PIXEL)
+#define SCREEN_FRAME_BYTES (SCREEN_STRIDE * BSP_LCD_V_RES)
+#define SCREEN_PIXELS ((size_t)BSP_LCD_H_RES * BSP_LCD_V_RES)
+#define COVERAGE_WORD_BITS 32U
+#define COVERAGE_WORDS_PER_ROW \
+    (((size_t)BSP_LCD_H_RES + COVERAGE_WORD_BITS - 1U) / COVERAGE_WORD_BITS)
+#define COVERAGE_WORD_COUNT (COVERAGE_WORDS_PER_ROW * BSP_LCD_V_RES)
+#define COVERAGE_BYTES (COVERAGE_WORD_COUNT * sizeof(uint32_t))
+#define FULL_REPAINT_TIMEOUT_MS 2000U
+
+_Static_assert(COVERAGE_BYTES <= SCREEN_FRAME_BYTES,
+               "capture frame is too small for repaint coverage tracking");
 
 typedef struct {
-    uint8_t *frame;
-    uint32_t total_size;
-    uint16_t width;
-    uint16_t height;
-    uint32_t stride;
-    bool frame_ready;
-} screen_capture_t;
+    esp_gsp_handle_t ui;
+    uint8_t *shadow;
+    uint8_t *capture;
+    uint32_t *coverage;
+    size_t covered_pixels;
+    SemaphoreHandle_t lock;
+    StaticSemaphore_t lock_storage;
+    SemaphoreHandle_t frame_ready;
+    StaticSemaphore_t frame_ready_storage;
+    bool capture_ready;
+    bool warming;
+} screen_mirror_t;
 
 static const char *TAG = "iris_screen";
-static screen_capture_t s_capture;
+static screen_mirror_t s_mirror;
 
-static esp_err_t capture_frame(screen_capture_t *capture)
+static void release_frame_storage(screen_mirror_t *mirror)
 {
-    if (!bsp_display_lock(-1)) {
-        return ESP_ERR_TIMEOUT;
+    uint8_t *capture = NULL;
+    if (mirror->lock != NULL &&
+            xSemaphoreTake(mirror->lock, portMAX_DELAY) == pdTRUE) {
+        capture = mirror->capture;
+        mirror->capture = NULL;
+        mirror->capture_ready = false;
+        xSemaphoreGive(mirror->lock);
     }
-
-    esp_err_t result = ESP_OK;
-    lv_display_t *display = bsp_display_get();
-    lv_draw_buf_t *source = display != NULL
-                                ? lv_display_get_buf_active(display)
-                                : NULL;
-    if (source == NULL || source->data == NULL) {
-        result = ESP_ERR_INVALID_STATE;
-        goto done;
-    }
-
-    const int32_t width = lv_display_get_horizontal_resolution(display);
-    const int32_t height = lv_display_get_vertical_resolution(display);
-    if (width <= 0 || height <= 0 || width > UINT16_MAX ||
-        height > UINT16_MAX ||
-        lv_display_get_color_format(display) != LV_COLOR_FORMAT_RGB565 ||
-        source->header.w != (uint32_t)width ||
-        source->header.h != (uint32_t)height) {
-        result = ESP_ERR_NOT_SUPPORTED;
-        goto done;
-    }
-
-    const uint64_t total_size =
-        (uint64_t)source->header.stride * source->header.h;
-    if (total_size == 0 || (total_size & 1U) != 0 ||
-        total_size > UINT32_MAX ||
-        total_size > source->data_size) {
-        result = ESP_ERR_INVALID_SIZE;
-        goto done;
-    }
-
-    if (capture->frame == NULL || capture->total_size != total_size) {
-        uint8_t *new_frame = heap_caps_malloc(
-            (size_t)total_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (new_frame == NULL) {
-            result = ESP_ERR_NO_MEM;
-            goto done;
-        }
-        heap_caps_free(capture->frame);
-        capture->frame = new_frame;
-    }
-
-    const uint8_t *source_bytes = source->data;
-    for (size_t offset = 0; offset < (size_t)total_size; offset += 2) {
-        capture->frame[offset] = source_bytes[offset + 1];
-        capture->frame[offset + 1] = source_bytes[offset];
-    }
-    capture->total_size = (uint32_t)total_size;
-    capture->width = (uint16_t)width;
-    capture->height = (uint16_t)height;
-    capture->stride = source->header.stride;
-    capture->frame_ready = true;
-
-done:
-    bsp_display_unlock();
-    return result;
+    heap_caps_free(capture);
 }
 
-static void release_capture(screen_capture_t *capture)
+static uint32_t coverage_mask(unsigned first, unsigned last)
 {
-    heap_caps_free(capture->frame);
-    *capture = (screen_capture_t) {0};
+    const uint32_t lower = UINT32_MAX << first;
+    const uint32_t upper = last == 31U
+        ? UINT32_MAX : (UINT32_C(1) << (last + 1U)) - 1U;
+    return lower & upper;
+}
+
+static bool mark_coverage(screen_mirror_t *mirror,
+                          const esp_display_present_area_t *area)
+{
+    const size_t first_word = (size_t)area->x1 / COVERAGE_WORD_BITS;
+    const size_t last_word = (size_t)area->x2 / COVERAGE_WORD_BITS;
+    for (int32_t y = area->y1; y <= area->y2; ++y) {
+        uint32_t *row = mirror->coverage +
+            (size_t)y * COVERAGE_WORDS_PER_ROW;
+        for (size_t word = first_word; word <= last_word; ++word) {
+            const unsigned first = word == first_word
+                ? (unsigned)area->x1 % COVERAGE_WORD_BITS : 0U;
+            const unsigned last = word == last_word
+                ? (unsigned)area->x2 % COVERAGE_WORD_BITS
+                : COVERAGE_WORD_BITS - 1U;
+            const uint32_t mask = coverage_mask(first, last);
+            const uint32_t added = mask & ~row[word];
+            row[word] |= mask;
+            mirror->covered_pixels += (size_t)__builtin_popcount(added);
+        }
+    }
+    if (mirror->covered_pixels < SCREEN_PIXELS) {
+        return false;
+    }
+    mirror->warming = false;
+    return true;
+}
+
+static esp_err_t snapshot_frame(screen_mirror_t *mirror)
+{
+    if (xSemaphoreTake(mirror->lock, portMAX_DELAY) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    if (mirror->capture == NULL || mirror->shadow == NULL) {
+        xSemaphoreGive(mirror->lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    memcpy(mirror->capture, mirror->shadow, SCREEN_FRAME_BYTES);
+    mirror->capture_ready = true;
+    xSemaphoreGive(mirror->lock);
+    return ESP_OK;
 }
 
 static esp_err_t screen_begin(const esp_iris_media_desc_t *requested,
@@ -98,88 +114,231 @@ static esp_err_t screen_begin(const esp_iris_media_desc_t *requested,
                               uint32_t *total_size, void *user_ctx)
 {
     (void)requested;
-    screen_capture_t *capture = user_ctx;
-    if (capture == NULL || actual == NULL || total_size == NULL) {
+    screen_mirror_t *mirror = user_ctx;
+    if (mirror == NULL || mirror->lock == NULL || mirror->frame_ready == NULL ||
+            actual == NULL || total_size == NULL) {
         return ESP_ERR_INVALID_ARG;
     }
-    if (capture->frame != NULL) {
+    if (xSemaphoreTake(mirror->lock, portMAX_DELAY) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_gsp_handle_t ui = mirror->ui;
+    const bool unavailable = ui == NULL || mirror->shadow == NULL ||
+        mirror->capture != NULL;
+    xSemaphoreGive(mirror->lock);
+    if (unavailable) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    esp_err_t err = capture_frame(capture);
+    uint8_t *capture = heap_caps_malloc(
+        SCREEN_FRAME_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (capture == NULL) {
+        return ESP_ERR_NO_MEM;
+    }
+    if (xSemaphoreTake(mirror->lock, portMAX_DELAY) != pdTRUE) {
+        heap_caps_free(capture);
+        return ESP_ERR_TIMEOUT;
+    }
+    if (mirror->capture != NULL) {
+        xSemaphoreGive(mirror->lock);
+        heap_caps_free(capture);
+        return ESP_ERR_INVALID_STATE;
+    }
+    mirror->capture = capture;
+    mirror->capture_ready = false;
+    const bool warming = mirror->warming;
+    xSemaphoreGive(mirror->lock);
+    /* The observer starts before GSP's first frame, so a capture does not
+     * pause/resume the renderer or allocate its transient control objects.
+     * Never expose unpainted pixels during an early-boot capture. */
+    if (warming && xSemaphoreTake(mirror->frame_ready,
+                       pdMS_TO_TICKS(FULL_REPAINT_TIMEOUT_MS)) != pdTRUE) {
+        release_frame_storage(mirror);
+        return ESP_ERR_TIMEOUT;
+    }
+    esp_err_t err = snapshot_frame(mirror);
     if (err != ESP_OK) {
-        release_capture(capture);
+        release_frame_storage(mirror);
         return err;
     }
 
     *actual = (esp_iris_media_desc_t) {
         .x = 0,
         .y = 0,
-        .width = capture->width,
-        .height = capture->height,
-        .stride = capture->stride,
+        .width = BSP_LCD_H_RES,
+        .height = BSP_LCD_V_RES,
+        .stride = SCREEN_STRIDE,
         .format = ESP_IRIS_PIXEL_FORMAT_RGB565,
         .quality = 0,
     };
-    *total_size = capture->total_size;
+    *total_size = SCREEN_FRAME_BYTES;
     return ESP_OK;
 }
 
 static esp_err_t screen_read(uint32_t offset, uint8_t *out, size_t capacity,
                              size_t *out_size, void *user_ctx)
 {
-    screen_capture_t *capture = user_ctx;
-    if (capture == NULL || capture->frame == NULL || out == NULL ||
-        out_size == NULL || capacity == 0 || offset >= capture->total_size) {
+    screen_mirror_t *mirror = user_ctx;
+    if (mirror == NULL || mirror->capture == NULL || out == NULL ||
+        out_size == NULL || capacity == 0 || offset >= SCREEN_FRAME_BYTES) {
         return ESP_ERR_INVALID_ARG;
     }
 
-    if (offset == 0 && !capture->frame_ready) {
-        esp_err_t err = capture_frame(capture);
+    if (offset == 0 && !mirror->capture_ready) {
+        esp_err_t err = snapshot_frame(mirror);
         if (err != ESP_OK) {
             return err;
         }
-    } else if (!capture->frame_ready) {
+    } else if (!mirror->capture_ready) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    size_t size = capture->total_size - offset;
+    size_t size = SCREEN_FRAME_BYTES - offset;
     if (size > capacity) {
         size = capacity;
     }
-    memcpy(out, capture->frame + offset, size);
+    memcpy(out, mirror->capture + offset, size);
     *out_size = size;
-
-    if (offset + size == capture->total_size) {
-        capture->frame_ready = false;
+    if (offset + size == SCREEN_FRAME_BYTES) {
+        mirror->capture_ready = false;
     }
     return ESP_OK;
 }
 
 static void screen_end(void *user_ctx)
 {
-    screen_capture_t *capture = user_ctx;
-    if (capture != NULL) {
-        release_capture(capture);
+    screen_mirror_t *mirror = user_ctx;
+    if (mirror == NULL) {
+        return;
     }
+    release_frame_storage(mirror);
 }
 
-esp_err_t iris_screen_mirror_register(void)
+esp_err_t iris_screen_mirror_init(void)
 {
-    if (bsp_display_get() == NULL) {
+    if (s_mirror.lock != NULL) {
         return ESP_ERR_INVALID_STATE;
     }
+    s_mirror.lock = xSemaphoreCreateMutexStatic(&s_mirror.lock_storage);
+    s_mirror.frame_ready = xSemaphoreCreateBinaryStatic(
+        &s_mirror.frame_ready_storage);
+    if (s_mirror.lock == NULL || s_mirror.frame_ready == NULL) {
+        if (s_mirror.lock != NULL) {
+            vSemaphoreDelete(s_mirror.lock);
+        }
+        if (s_mirror.frame_ready != NULL) {
+            vSemaphoreDelete(s_mirror.frame_ready);
+        }
+        s_mirror.lock = NULL;
+        s_mirror.frame_ready = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+
+    s_mirror.shadow = heap_caps_calloc(
+        1, SCREEN_FRAME_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    s_mirror.coverage = heap_caps_calloc(
+        1, COVERAGE_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (s_mirror.shadow == NULL || s_mirror.coverage == NULL) {
+        heap_caps_free(s_mirror.coverage);
+        heap_caps_free(s_mirror.shadow);
+        s_mirror.coverage = NULL;
+        s_mirror.shadow = NULL;
+        vSemaphoreDelete(s_mirror.frame_ready);
+        vSemaphoreDelete(s_mirror.lock);
+        s_mirror.frame_ready = NULL;
+        s_mirror.lock = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+    s_mirror.warming = true;
 
     const esp_iris_screen_backend_t backend = {
         .begin = screen_begin,
         .read = screen_read,
         .end = screen_end,
-        .user_ctx = &s_capture,
+        .user_ctx = &s_mirror,
     };
     esp_err_t err = esp_iris_screen_register(&backend);
-    if (err == ESP_OK) {
-        ESP_LOGI(TAG, "Registered %dx%d RGB565 screen backend",
-                 BSP_LCD_H_RES, BSP_LCD_V_RES);
+    if (err != ESP_OK) {
+        heap_caps_free(s_mirror.coverage);
+        heap_caps_free(s_mirror.shadow);
+        s_mirror.coverage = NULL;
+        s_mirror.shadow = NULL;
+        vSemaphoreDelete(s_mirror.frame_ready);
+        vSemaphoreDelete(s_mirror.lock);
+        s_mirror.frame_ready = NULL;
+        s_mirror.lock = NULL;
+        return err;
     }
-    return err;
+    ESP_LOGI(TAG,
+             "Registered %dx%d RGB565 GSP screen backend (PSRAM shadow retained, capture on demand)",
+             BSP_LCD_H_RES, BSP_LCD_V_RES);
+    return ESP_OK;
+}
+
+esp_err_t iris_screen_mirror_attach(esp_gsp_handle_t ui)
+{
+    if (ui == NULL || s_mirror.lock == NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (xSemaphoreTake(s_mirror.lock, portMAX_DELAY) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+    if (s_mirror.capture != NULL) {
+        xSemaphoreGive(s_mirror.lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    s_mirror.ui = ui;
+    xSemaphoreGive(s_mirror.lock);
+    return ESP_OK;
+}
+
+/* esp_display_present swaps RGB565 bytes in-place for this panel.  The linker
+ * wrapper observes each GSP partition before that transport conversion, so
+ * ESP-Iris always receives the documented little-endian RGB565 surface. */
+esp_err_t __real_esp_display_presenter_submit_buffer(
+    esp_display_presenter_t *presenter,
+    const esp_display_presenter_buffer_t *buffer,
+    const esp_display_present_area_t *area,
+    size_t stride_bytes);
+
+esp_err_t __wrap_esp_display_presenter_submit_buffer(
+    esp_display_presenter_t *presenter,
+    const esp_display_presenter_buffer_t *buffer,
+    const esp_display_present_area_t *area,
+    size_t stride_bytes)
+{
+    if (s_mirror.lock != NULL && buffer != NULL &&
+        buffer->surface.pixels != NULL && area != NULL && area->x1 >= 0 &&
+        area->y1 >= 0 && area->x2 >= area->x1 && area->y2 >= area->y1 &&
+        area->x2 < BSP_LCD_H_RES && area->y2 < BSP_LCD_V_RES) {
+        const size_t width = (size_t)(area->x2 - area->x1 + 1);
+        const size_t height = (size_t)(area->y2 - area->y1 + 1);
+        const size_t row_bytes = width * SCREEN_BYTES_PER_PIXEL;
+        if (buffer->surface.pixel_format ==
+                ESP_DISPLAY_PRESENT_PIXEL_FORMAT_RGB565 &&
+            stride_bytes >= row_bytes &&
+            height <= buffer->capacity_bytes / stride_bytes &&
+            xSemaphoreTake(s_mirror.lock, portMAX_DELAY) == pdTRUE) {
+            bool frame_ready = false;
+            if (s_mirror.shadow != NULL) {
+                const uint8_t *source = buffer->surface.pixels;
+                uint8_t *destination = s_mirror.shadow +
+                    (size_t)area->y1 * SCREEN_STRIDE +
+                    (size_t)area->x1 * SCREEN_BYTES_PER_PIXEL;
+                for (size_t row = 0; row < height; ++row) {
+                    memcpy(destination + row * SCREEN_STRIDE,
+                           source + row * stride_bytes, row_bytes);
+                }
+                if (s_mirror.warming && s_mirror.coverage != NULL) {
+                    frame_ready = mark_coverage(&s_mirror, area);
+                }
+            }
+            xSemaphoreGive(s_mirror.lock);
+            if (frame_ready) {
+                xSemaphoreGive(s_mirror.frame_ready);
+            }
+        }
+    }
+    return __real_esp_display_presenter_submit_buffer(
+        presenter, buffer, area, stride_bytes);
 }

@@ -6,13 +6,11 @@ dependencies:
   esp-mosaico-bsp:
     git: https://github.com/esp-mosaico/esp-mosaico-bsp
     path: components/esp-mosaico-bsp
-    version: 3d5c451598aaffbda6f41895a0414dba4bac3505
+    version: 05e067de0613a0aa3fe2af42e75616804decbf4b
   espressif/mdns:
     version: "1.12.0"
   espressif/cjson:
     version: "^1.7.19"
   joltwallet/littlefs:
     version: "^1.22.0"
-  lvgl/lvgl:
-    # esp_lvgl_adapter 0.6.2 uses headers deprecated by LVGL 9.6.
-    version: "==9.5.0"
+  espressif/esp-gsp: "==1.2.0"

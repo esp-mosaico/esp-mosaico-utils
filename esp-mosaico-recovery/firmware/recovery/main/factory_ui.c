@@ -1,1389 +1,222 @@
+// SPDX-License-Identifier: Apache-2.0
 #include "factory_ui.h"
-
+#include "factory_ui_input.h"
+#include "vibe_ui.h"
+#include "board_display.h"
+#include "vibe_bundle.h"
+#include "esp_gsp_esp_lcd.h"
+#include "esp_check.h"
+#include "esp_iris.h"
+#include "esp_wifi.h"
+#include "factory_bridge.h"
+#include "factory_network.h"
+#include "factory_nand_update.h"
+#include "factory_system_update.h"
+#include "iris_bridge.h"
+#include "iris_screen_mirror.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
+#include "freertos/queue.h"
+#include "sdkconfig.h"
 #include <stdio.h>
 #include <string.h>
 
-#include "sdkconfig.h"
+static const char *TAG = "vibe_ui";
+static vibe_ui_t s_ui;
+static factory_nand_update_snapshot_t s_nand;
+static esp_iris_system_update_phase_t s_phase;
+static factory_nand_update_state_t s_nand_state;
+static uint32_t s_ota_job;
+static int s_ota_state;
+static uint32_t s_revision;
+static uint8_t s_operation_id[ESP_IRIS_SYSTEM_OPERATION_ID_BYTES];
+static enum { UPDATE_NONE, UPDATE_OTA, UPDATE_SYSTEM, UPDATE_NAND } s_update_source;
+static SemaphoreHandle_t s_initialized;
+static esp_err_t s_init_result;
+static bool s_init_attempted;
+static QueueHandle_t s_open_requests;
+static SemaphoreHandle_t s_open_lock, s_open_done;
+static esp_err_t s_open_result;
+static void *s_command_timer;
 
-#include "bsp/esp_mosaico.h"
-#include "esp_check.h"
-#include "esp_iris.h"
-#include "esp_log.h"
-#include "freertos/FreeRTOS.h"
-#include "freertos/task.h"
-#include "lvgl.h"
-
-#include "esp_iris_system_update.h"
-#include "esp_wifi.h"
-#include "factory_bridge.h"
-#include "iris_bridge.h"
-#include "factory_nand_update.h"
-#include "factory_network.h"
-#include "factory_system_update.h"
-
-#define COLOR_PAPER   lv_color_hex(0xF6F6F3)
-#define COLOR_TEXT    lv_color_hex(0x101010)
-#define COLOR_MUTED   lv_color_hex(0x777777)
-#define COLOR_LINE    lv_color_hex(0xD9DCE0)
-#define COLOR_SURFACE lv_color_hex(0xFAFAFA)
-#define COLOR_ORANGE  lv_color_hex(0xFF4C01)
-#define COLOR_GREEN   lv_color_hex(0x2E7D32)
-#define COLOR_RED     lv_color_hex(0xC62828)
-#define SPARK_WEBSITE "https://mosaico-spark.espressif.com/"
-
-static const char *TAG = "factory_ui";
-
-static lv_obj_t *label_create(lv_obj_t *parent, const char *text,
-                              const lv_font_t *font, lv_color_t color)
+static int service_command(void *ctx, vibe_command_t cmd, const char *a, const char *b)
 {
-    lv_obj_t *label = lv_label_create(parent);
-    lv_label_set_text(label, text);
-    lv_obj_set_style_text_font(label, font, LV_PART_MAIN);
-    lv_obj_set_style_text_color(label, color, LV_PART_MAIN);
-    return label;
+    (void)ctx;
+    switch (cmd) {
+    case VIBE_SCAN_WIFI: return factory_network_request_scan();
+    case VIBE_FORGET_WIFI: return factory_network_forget();
+    case VIBE_CONNECT_WIFI: return factory_network_connect(a, b);
+    case VIBE_OPEN_BRIDGE: return factory_bridge_open();
+    case VIBE_STOP_BRIDGE: iris_bridge_stop(); return ESP_OK;
+    case VIBE_SCAN_NAND: return factory_nand_update_request_scan();
+    case VIBE_INSTALL_NAND: return factory_system_update_start_nand(a);
+    default: return ESP_ERR_INVALID_ARG;
+    }
 }
-
-static lv_obj_t *box_create(lv_obj_t *parent, int32_t width, int32_t height,
-                            lv_color_t color, int32_t radius)
+#define COPY(field, value) snprintf(out->field, sizeof(out->field), "%s", value)
+static void service_snapshot(void *ctx, vibe_snapshot_t *out)
 {
-    lv_obj_t *box = lv_obj_create(parent);
-    lv_obj_set_size(box, width, height);
-    lv_obj_set_style_bg_color(box, color, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(box, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_border_width(box, 0, LV_PART_MAIN);
-    lv_obj_set_style_radius(box, radius, LV_PART_MAIN);
-    lv_obj_set_style_pad_all(box, 0, LV_PART_MAIN);
-    lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
-    return box;
-}
-
-static void screen_prepare(lv_obj_t *screen)
-{
-    lv_obj_clean(screen);
-    lv_obj_set_style_bg_color(screen, COLOR_PAPER, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, LV_PART_MAIN);
-    lv_obj_set_style_border_width(screen, 0, LV_PART_MAIN);
-    lv_obj_set_style_pad_all(screen, 0, LV_PART_MAIN);
-    lv_obj_clear_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
-}
-
-typedef enum {
-    FACTORY_PAGE_READY = 0,
-    FACTORY_PAGE_WIFI,
-    FACTORY_PAGE_PAIRING,
-    FACTORY_PAGE_BRIDGE,
-    FACTORY_PAGE_PASSWORD,
-    FACTORY_PAGE_NAND_LIST,
-    FACTORY_PAGE_NAND_CONFIRM,
-    FACTORY_PAGE_UPDATE,
-    FACTORY_PAGE_RESULT,
-} factory_page_t;
-
-typedef struct {
-    lv_display_t *display;
-    factory_page_t page;
-    lv_obj_t *ready_screen;
-    lv_obj_t *wifi_screen;
-    lv_obj_t *pairing_screen;
-    lv_obj_t *bridge_screen;
-    lv_obj_t *password_screen;
-    lv_obj_t *update_screen;
-    lv_obj_t *result_screen;
-    lv_obj_t *usb_dot;
-    lv_obj_t *usb_value;
-    lv_obj_t *network_dot;
-    lv_obj_t *network_value;
-    lv_obj_t *address;
-    lv_obj_t *wifi_connection;
-    lv_obj_t *wifi_connection_detail;
-    lv_obj_t *wifi_list;
-    lv_obj_t *wifi_scan_status;
-    lv_obj_t *wifi_note;
-    lv_obj_t *pairing_endpoint;
-    lv_obj_t *pairing_token;
-    lv_obj_t *bridge_endpoint;
-    lv_obj_t *bridge_code;
-    lv_obj_t *bridge_code_detail;
-    lv_obj_t *password_title;
-    lv_obj_t *password_input;
-    lv_obj_t *password_toggle;
-    lv_obj_t *nand_list_screen;
-    lv_obj_t *nand_confirm_screen;
-    lv_obj_t *nand_list;
-    lv_obj_t *nand_scan_status;
-    lv_obj_t *nand_confirm_release;
-    lv_obj_t *nand_confirm_detail;
-    lv_obj_t *nand_confirm_path;
-    lv_obj_t *update_title;
-    lv_obj_t *update_detail;
-    lv_obj_t *update_percent;
-    lv_obj_t *update_bar;
-    lv_obj_t *update_owner;
-    lv_obj_t *update_verified;
-    lv_obj_t *result_mark;
-    lv_obj_t *result_title;
-    lv_obj_t *result_detail;
-    char selected_ssid[FACTORY_NETWORK_SSID_BYTES];
-    char ap_ssids[FACTORY_NETWORK_MAX_RESULTS][FACTORY_NETWORK_SSID_BYTES];
-    factory_nand_update_candidate_t selected_nand;
-    uint32_t scan_generation;
-    uint32_t nand_generation;
-    factory_nand_update_state_t nand_update_state;
-    esp_iris_system_update_phase_t update_phase;
-    uint32_t ota_job_id;
-    uint16_t ota_logged_bucket;
-    bool ota_was_active;
-    bool spark_download_pending;
-} factory_ui_context_t;
-
-static factory_ui_context_t s_ui;
-static factory_nand_update_snapshot_t s_nand_snapshot_view;
-
-static lv_obj_t *button_create(lv_obj_t *parent, const char *text,
-                               int32_t width, int32_t height, bool primary)
-{
-    lv_obj_t *button = lv_button_create(parent);
-    lv_obj_set_size(button, width, height);
-    lv_obj_set_style_radius(button, height / 2, LV_PART_MAIN);
-    lv_obj_set_style_border_width(button, primary ? 0 : 1, LV_PART_MAIN);
-    lv_obj_set_style_border_color(button, COLOR_LINE, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(button, primary ? COLOR_TEXT : COLOR_SURFACE,
-                              LV_PART_MAIN);
-    lv_obj_set_style_shadow_width(button, 0, LV_PART_MAIN);
-    lv_obj_set_style_pad_hor(button, 10, LV_PART_MAIN);
-    lv_obj_set_style_pad_ver(button, 6, LV_PART_MAIN);
-    lv_obj_clear_flag(button, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_t *label = label_create(button, text, &lv_font_montserrat_14,
-                                   primary ? COLOR_PAPER : COLOR_TEXT);
-    lv_obj_set_width(label, lv_pct(100));
-    lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-    lv_obj_center(label);
-    return button;
-}
-
-static void header_create(lv_obj_t *screen, const char *section,
-                          const char *title, bool back);
-static void show_page(factory_page_t page);
-
-static void page_event(lv_event_t *event)
-{
-    show_page((factory_page_t)(intptr_t)lv_event_get_user_data(event));
-}
-
-static void spark_download_event(lv_event_t *event)
-{
-    (void)event;
+    (void)ctx;
     factory_network_snapshot_t network = {0};
-    const bool have_network = factory_network_get_snapshot(&network) == ESP_OK;
-    if (have_network && (network.credentials_saved ||
-                         network.state == FACTORY_NETWORK_CONNECTED)) {
-        show_page(FACTORY_PAGE_BRIDGE);
-    } else {
-        s_ui.spark_download_pending = true;
-        show_page(FACTORY_PAGE_WIFI);
+    esp_iris_status_t iris = {0};
+    iris_bridge_snapshot_t bridge = {0};
+    (void)factory_network_get_snapshot(&network);
+    (void)esp_iris_get_status(&iris);
+    iris_bridge_get_snapshot(&bridge);
+    out->network = network.state == FACTORY_NETWORK_CONNECTED ? VIBE_NET_CONNECTED :
+        network.state == FACTORY_NETWORK_CONNECTING ? VIBE_NET_CONNECTING :
+        network.state == FACTORY_NETWORK_FAILED ? VIBE_NET_FAILED : VIBE_NET_OFFLINE;
+    out->credentials_saved = network.credentials_saved;
+    out->scanning = network.scanning;
+    out->session = iris.session_ready;
+    out->usb_owner = iris.session_ready && iris.transport == ESP_IRIS_TRANSPORT_KIND_USB;
+    out->tcp_owner = iris.session_ready && iris.transport == ESP_IRIS_TRANSPORT_KIND_TCP;
+    COPY(ssid, network.ssid); COPY(ip, network.ip); COPY(hostname, network.hostname);
+    out->tcp_port = CONFIG_ESP_IRIS_TCP_PORT;
+    out->token[0] = '\0';
+    (void)esp_iris_pairing_token_get(out->token);
+    out->scan_generation = network.scan_generation;
+    out->ap_count = network.ap_count < VIBE_AP_MAX ? network.ap_count : VIBE_AP_MAX;
+    for (size_t i = 0; i < out->ap_count; ++i) {
+        snprintf(out->aps[i].ssid, sizeof(out->aps[i].ssid), "%s", network.aps[i].ssid);
+        out->aps[i].rssi = network.aps[i].rssi;
+        out->aps[i].open = network.aps[i].authmode == WIFI_AUTH_OPEN;
     }
-}
-
-static void bridge_cancel_event(lv_event_t *event)
-{
-    (void)event;
-    iris_bridge_stop();
-    show_page(FACTORY_PAGE_READY);
-}
-
-static void scan_event(lv_event_t *event)
-{
-    (void)event;
-    (void)factory_network_request_scan();
-}
-
-static void nand_scan_event(lv_event_t *event)
-{
-    (void)event;
-    const esp_err_t err = factory_nand_update_request_scan();
-    if (err != ESP_OK && s_ui.nand_scan_status != NULL) {
-        lv_label_set_text_fmt(s_ui.nand_scan_status, "Scan error 0x%08x",
-                              (unsigned)err);
+    out->bridge_running = bridge.running;
+    COPY(bridge_code, bridge.code); COPY(bridge_state, bridge.state);
+    out->bridge_seconds = bridge.expires_in_ms / 1000;
+    out->bridge_error = bridge.error;
+    (void)factory_nand_update_get_snapshot(&s_nand);
+    out->nand_generation = s_nand.generation;
+    out->nand_scanning = s_nand.scan_state == FACTORY_NAND_SCAN_RUNNING;
+    out->nand_error = s_nand.scan_state == FACTORY_NAND_SCAN_FAILED ? s_nand.scan_result : 0;
+    out->bundle_count = s_nand.candidate_count < VIBE_BUNDLE_MAX ? s_nand.candidate_count : VIBE_BUNDLE_MAX;
+    out->invalid_bundles = s_nand.invalid_count;
+    for (size_t i = 0; i < out->bundle_count; ++i) {
+        const factory_nand_update_candidate_t *c = &s_nand.candidates[i];
+        snprintf(out->bundles[i].release, sizeof(out->bundles[i].release), "%s", c->release);
+        snprintf(out->bundles[i].path, sizeof(out->bundles[i].path), "%s", c->manifest_path);
+        out->bundles[i].bytes = c->total_size;
+        out->bundles[i].components = c->component_count;
     }
-}
-
-static void nand_open_event(lv_event_t *event)
-{
-    (void)event;
-    show_page(FACTORY_PAGE_NAND_LIST);
-    nand_scan_event(NULL);
-}
-
-static void forget_event(lv_event_t *event)
-{
-    (void)event;
-    (void)factory_network_forget();
-}
-
-static void password_submit(void)
-{
-    const char *password = lv_textarea_get_text(s_ui.password_input);
-    const esp_err_t err = factory_network_connect(s_ui.selected_ssid, password);
-    if (err == ESP_OK) {
-        show_page(s_ui.spark_download_pending ? FACTORY_PAGE_WIFI : FACTORY_PAGE_READY);
-    } else {
-        lv_label_set_text(s_ui.password_title, "Check password and try again");
-        lv_obj_set_style_text_color(s_ui.password_title, COLOR_RED,
-                                    LV_PART_MAIN);
-    }
-}
-
-static void keyboard_event(lv_event_t *event)
-{
-    const lv_event_code_t code = lv_event_get_code(event);
-    if (code == LV_EVENT_READY) {
-        password_submit();
-    } else if (code == LV_EVENT_CANCEL) {
-        show_page(FACTORY_PAGE_WIFI);
-    }
-}
-
-static void password_toggle_event(lv_event_t *event)
-{
-    (void)event;
-    const bool hidden = lv_textarea_get_password_mode(s_ui.password_input);
-    lv_textarea_set_password_mode(s_ui.password_input, !hidden);
-    lv_label_set_text(lv_obj_get_child(s_ui.password_toggle, 0),
-                      hidden ? LV_SYMBOL_EYE_CLOSE : LV_SYMBOL_EYE_OPEN);
-}
-
-static void network_select_event(lv_event_t *event)
-{
-    const char *ssid = lv_event_get_user_data(event);
-    if (ssid == NULL || ssid[0] == '\0') {
-        return;
-    }
-    strlcpy(s_ui.selected_ssid, ssid, sizeof(s_ui.selected_ssid));
-    lv_label_set_text_fmt(s_ui.password_title, "Join %s", ssid);
-    lv_obj_set_style_text_color(s_ui.password_title, COLOR_TEXT, LV_PART_MAIN);
-    lv_textarea_set_text(s_ui.password_input, "");
-    lv_textarea_set_password_mode(s_ui.password_input, true);
-    lv_label_set_text(lv_obj_get_child(s_ui.password_toggle, 0),
-                      LV_SYMBOL_EYE_OPEN);
-    show_page(FACTORY_PAGE_PASSWORD);
-}
-
-static void header_create(lv_obj_t *screen, const char *section,
-                          const char *title, bool back)
-{
-    if (back) {
-        lv_obj_t *button = lv_button_create(screen);
-        lv_obj_set_size(button, 48, 48);
-        lv_obj_align(button, LV_ALIGN_TOP_LEFT, 22, 21);
-        lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, LV_PART_MAIN);
-        lv_obj_set_style_shadow_width(button, 0, LV_PART_MAIN);
-        lv_obj_add_event_cb(button, page_event, LV_EVENT_CLICKED,
-                            (void *)(intptr_t)FACTORY_PAGE_READY);
-        lv_obj_t *arrow = label_create(button, LV_SYMBOL_LEFT,
-                                       &lv_font_montserrat_22, COLOR_TEXT);
-        lv_obj_center(arrow);
-    } else {
-        lv_obj_t *brand = label_create(screen, "ESP-", &lv_font_montserrat_14,
-                                       COLOR_TEXT);
-        lv_obj_align(brand, LV_ALIGN_TOP_LEFT, 40, 36);
-        lv_obj_t *mosaico = label_create(screen, "MOSAICO",
-                                         &lv_font_montserrat_14, COLOR_ORANGE);
-        lv_obj_align_to(mosaico, brand, LV_ALIGN_OUT_RIGHT_MID, 0, 0);
-    }
-    lv_obj_t *eyebrow = label_create(screen, section,
-                                     &lv_font_montserrat_12, COLOR_ORANGE);
-    lv_obj_set_style_text_letter_space(eyebrow, 1, LV_PART_MAIN);
-    lv_obj_align(eyebrow, LV_ALIGN_TOP_MID, 0, 24);
-    lv_obj_t *heading = label_create(screen, title, &lv_font_montserrat_22,
-                                     COLOR_TEXT);
-    lv_obj_align(heading, LV_ALIGN_TOP_MID, 0, 43);
-}
-
-static lv_obj_t *status_row_create(lv_obj_t *parent, int32_t y,
-                                   const char *name, lv_obj_t **dot,
-                                   lv_obj_t **value)
-{
-    lv_obj_t *row = lv_obj_create(parent);
-    lv_obj_set_size(row, 360, 45);
-    lv_obj_align(row, LV_ALIGN_TOP_MID, 0, y);
-    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, LV_PART_MAIN);
-    lv_obj_set_style_border_width(row, y == 0 ? 0 : 1, LV_PART_MAIN);
-    lv_obj_set_style_border_side(row, LV_BORDER_SIDE_TOP, LV_PART_MAIN);
-    lv_obj_set_style_border_color(row, COLOR_LINE, LV_PART_MAIN);
-    lv_obj_set_style_pad_all(row, 0, LV_PART_MAIN);
-    lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
-    *dot = box_create(row, 9, 9, COLOR_MUTED, LV_RADIUS_CIRCLE);
-    lv_obj_align(*dot, LV_ALIGN_LEFT_MID, 17, 0);
-    lv_obj_t *label = label_create(row, name, &lv_font_montserrat_14,
-                                   COLOR_TEXT);
-    lv_obj_align(label, LV_ALIGN_LEFT_MID, 39, 0);
-    *value = label_create(row, "Starting", &lv_font_montserrat_12,
-                          COLOR_MUTED);
-    lv_obj_align(*value, LV_ALIGN_RIGHT_MID, -17, 0);
-    return row;
-}
-
-static void ready_screen_create(void)
-{
-    s_ui.ready_screen = lv_obj_create(NULL);
-    screen_prepare(s_ui.ready_screen);
-    header_create(s_ui.ready_screen, "", "", false);
-
-    lv_obj_t *badge = box_create(s_ui.ready_screen, 104, 30, COLOR_TEXT, 15);
-    lv_obj_align(badge, LV_ALIGN_TOP_RIGHT, -40, 28);
-    lv_obj_t *badge_label = label_create(badge, "RECOVERY",
-                                         &lv_font_montserrat_12, COLOR_PAPER);
-    lv_obj_center(badge_label);
-
-    lv_obj_t *arc = lv_arc_create(s_ui.ready_screen);
-    lv_obj_set_size(arc, 72, 72);
-    lv_obj_align(arc, LV_ALIGN_TOP_MID, 0, 72);
-    lv_arc_set_rotation(arc, 120);
-    lv_arc_set_bg_angles(arc, 0, 300);
-    lv_arc_set_range(arc, 0, 100);
-    lv_arc_set_value(arc, 84);
-    lv_obj_set_style_arc_color(arc, COLOR_LINE, LV_PART_MAIN);
-    lv_obj_set_style_arc_width(arc, 7, LV_PART_MAIN);
-    lv_obj_set_style_arc_color(arc, COLOR_ORANGE, LV_PART_INDICATOR);
-    lv_obj_set_style_arc_width(arc, 7, LV_PART_INDICATOR);
-    lv_obj_remove_style(arc, NULL, LV_PART_KNOB);
-    lv_obj_clear_flag(arc, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_t *core = box_create(s_ui.ready_screen, 30, 30, COLOR_TEXT, 8);
-    lv_obj_align_to(core, arc, LV_ALIGN_CENTER, 0, 0);
-    lv_obj_t *core_dot = box_create(core, 8, 8, COLOR_ORANGE, 3);
-    lv_obj_center(core_dot);
-
-    lv_obj_t *title = label_create(s_ui.ready_screen, "Recovery Mode",
-                                   &lv_font_montserrat_32, COLOR_TEXT);
-    lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 152);
-    lv_obj_t *subtitle = label_create(
-        s_ui.ready_screen, "Firmware update service is ready",
-        &lv_font_montserrat_14, lv_color_hex(0x383B40));
-    lv_obj_align(subtitle, LV_ALIGN_TOP_MID, 0, 194);
-
-    lv_obj_t *panel = box_create(s_ui.ready_screen, 360, 90,
-                                 COLOR_SURFACE, 18);
-    lv_obj_set_style_border_width(panel, 1, LV_PART_MAIN);
-    lv_obj_set_style_border_color(panel, COLOR_LINE, LV_PART_MAIN);
-    lv_obj_align(panel, LV_ALIGN_TOP_MID, 0, 222);
-    status_row_create(panel, 0, "USB", &s_ui.usb_dot, &s_ui.usb_value);
-    status_row_create(panel, 45, "Network", &s_ui.network_dot,
-                      &s_ui.network_value);
-
-    s_ui.address = label_create(s_ui.ready_screen,
-                                "Network setup not completed",
-                                &lv_font_montserrat_12, COLOR_MUTED);
-    lv_obj_set_width(s_ui.address, 400);
-    lv_obj_set_style_text_align(s_ui.address, LV_TEXT_ALIGN_CENTER,
-                                LV_PART_MAIN);
-    lv_obj_align(s_ui.address, LV_ALIGN_TOP_MID, 0, 322);
-
-    lv_obj_t *spark_hint = label_create(
-        s_ui.ready_screen, "Visit " SPARK_WEBSITE "\nChoose an app for your device.",
-        &lv_font_montserrat_12, COLOR_MUTED);
-    lv_obj_set_width(spark_hint, 400);
-    lv_obj_set_style_text_align(spark_hint, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-    lv_obj_align(spark_hint, LV_ALIGN_TOP_MID, 0, 344);
-
-    lv_obj_t *spark = button_create(s_ui.ready_screen, "Download From Spark", 360,
-                                    42, true);
-    lv_obj_align(spark, LV_ALIGN_TOP_MID, 0, 380);
-    lv_obj_add_event_cb(spark, spark_download_event, LV_EVENT_CLICKED, NULL);
-
-    lv_obj_t *settings = button_create(s_ui.ready_screen, "Wi-Fi", 84, 38,
-                                       false);
-    lv_obj_align(settings, LV_ALIGN_TOP_LEFT, 60, 430);
-    lv_obj_add_event_cb(settings, page_event, LV_EVENT_CLICKED,
-                        (void *)(intptr_t)FACTORY_PAGE_WIFI);
-    lv_obj_t *pairing = button_create(s_ui.ready_screen, "TCP pairing", 112,
-                                      38, false);
-    lv_obj_align(pairing, LV_ALIGN_TOP_LEFT, 156, 430);
-    lv_obj_add_event_cb(pairing, page_event, LV_EVENT_CLICKED,
-                        (void *)(intptr_t)FACTORY_PAGE_PAIRING);
-    lv_obj_t *nand = button_create(s_ui.ready_screen, "NAND update", 140, 38, false);
-    lv_obj_align(nand, LV_ALIGN_TOP_LEFT, 280, 430);
-    lv_obj_add_event_cb(nand, nand_open_event, LV_EVENT_CLICKED, NULL);
-}
-
-static void pairing_screen_create(void)
-{
-    s_ui.pairing_screen = lv_obj_create(NULL);
-    screen_prepare(s_ui.pairing_screen);
-    header_create(s_ui.pairing_screen, "RECOVERY", "TCP pairing", true);
-
-    lv_obj_t *card = box_create(s_ui.pairing_screen, 368, 116, COLOR_TEXT, 18);
-    lv_obj_align(card, LV_ALIGN_TOP_MID, 0, 91);
-    lv_obj_t *endpoint_label = label_create(card, "DISCOVERABLE ENDPOINT",
-                                            &lv_font_montserrat_12,
-                                            COLOR_ORANGE);
-    lv_obj_align(endpoint_label, LV_ALIGN_TOP_LEFT, 18, 17);
-    s_ui.pairing_endpoint = label_create(card, "Connect Wi-Fi first",
-                                         &lv_font_montserrat_14, COLOR_PAPER);
-    lv_obj_set_width(s_ui.pairing_endpoint, 332);
-    lv_obj_set_style_text_align(s_ui.pairing_endpoint, LV_TEXT_ALIGN_CENTER,
-                                LV_PART_MAIN);
-    lv_obj_align(s_ui.pairing_endpoint, LV_ALIGN_TOP_MID, 0, 48);
-    lv_obj_t *port = label_create(card, "", &lv_font_montserrat_12,
-                                  lv_color_hex(0xC7C7C2));
-    lv_label_set_text_fmt(port, "mDNS service _esp-iris._tcp - port %u",
-                          CONFIG_ESP_IRIS_TCP_PORT);
-    lv_obj_align(port, LV_ALIGN_BOTTOM_MID, 0, -18);
-
-    lv_obj_t *token_label = label_create(s_ui.pairing_screen,
-                                         "PAIRING TOKEN",
-                                         &lv_font_montserrat_12, COLOR_MUTED);
-    lv_obj_align(token_label, LV_ALIGN_TOP_LEFT, 57, 232);
-    lv_obj_t *token_card = box_create(s_ui.pairing_screen, 368, 106,
-                                      COLOR_SURFACE, 16);
-    lv_obj_set_style_border_width(token_card, 1, LV_PART_MAIN);
-    lv_obj_set_style_border_color(token_card, COLOR_LINE, LV_PART_MAIN);
-    lv_obj_align(token_card, LV_ALIGN_TOP_MID, 0, 256);
-    s_ui.pairing_token = label_create(token_card, "Available after startup",
-                                      &lv_font_montserrat_14, COLOR_TEXT);
-    lv_obj_set_width(s_ui.pairing_token, 328);
-    lv_obj_set_style_text_align(s_ui.pairing_token, LV_TEXT_ALIGN_CENTER,
-                                LV_PART_MAIN);
-    lv_obj_center(s_ui.pairing_token);
-
-    lv_obj_t *help = label_create(
-        s_ui.pairing_screen,
-        "Enter this token once in the Gateway. It never crosses the TCP link.",
-        &lv_font_montserrat_12, COLOR_MUTED);
-    lv_obj_set_width(help, 368);
-    lv_obj_set_style_text_align(help, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-    lv_obj_align(help, LV_ALIGN_TOP_MID, 0, 382);
-}
-
-static void pairing_screen_update(void)
-{
-    factory_network_snapshot_t network = {0};
-    if (factory_network_get_snapshot(&network) == ESP_OK &&
-        network.state == FACTORY_NETWORK_CONNECTED) {
-        lv_label_set_text_fmt(s_ui.pairing_endpoint, "%s.local\n%s:%u",
-                              network.hostname, network.ip,
-                              CONFIG_ESP_IRIS_TCP_PORT);
-    } else {
-        lv_label_set_text(s_ui.pairing_endpoint, "Connect Wi-Fi first");
-    }
-
-    char token[65] = {0};
-    if (esp_iris_pairing_token_get(token) == ESP_OK) {
-        char wrapped[66];
-        memcpy(wrapped, token, 32);
-        wrapped[32] = '\n';
-        memcpy(wrapped + 33, token + 32, 32);
-        wrapped[65] = '\0';
-        lv_label_set_text(s_ui.pairing_token, wrapped);
-    } else {
-        lv_label_set_text(s_ui.pairing_token, "Pairing token unavailable");
-    }
-}
-
-static void bridge_screen_create(void)
-{
-    s_ui.bridge_screen = lv_obj_create(NULL);
-    screen_prepare(s_ui.bridge_screen);
-    header_create(s_ui.bridge_screen, "RECOVERY", "Download From Spark",
-                  true);
-
-    lv_obj_t *endpoint_card = box_create(s_ui.bridge_screen, 368, 76,
-                                         COLOR_TEXT, 18);
-    lv_obj_align(endpoint_card, LV_ALIGN_TOP_MID, 0, 88);
-    lv_obj_t *endpoint_title = label_create(endpoint_card, "SPARK WEBSITE",
-                                            &lv_font_montserrat_12,
-                                            COLOR_ORANGE);
-    lv_obj_align(endpoint_title, LV_ALIGN_TOP_LEFT, 18, 13);
-    s_ui.bridge_endpoint = label_create(
-        endpoint_card, SPARK_WEBSITE, &lv_font_montserrat_14,
-        COLOR_PAPER);
-    lv_obj_set_width(s_ui.bridge_endpoint, 332);
-    lv_obj_set_style_text_align(s_ui.bridge_endpoint,
-                                LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-    lv_obj_align(s_ui.bridge_endpoint, LV_ALIGN_BOTTOM_MID, 0, -15);
-
-    lv_obj_t *code_title = label_create(s_ui.bridge_screen,
-                                        "PAIRING CODE",
-                                        &lv_font_montserrat_12, COLOR_MUTED);
-    lv_obj_align(code_title, LV_ALIGN_TOP_MID, 0, 183);
-    lv_obj_t *code_card = box_create(s_ui.bridge_screen, 368, 106,
-                                     COLOR_SURFACE, 16);
-    lv_obj_set_style_border_width(code_card, 1, LV_PART_MAIN);
-    lv_obj_set_style_border_color(code_card, COLOR_LINE, LV_PART_MAIN);
-    lv_obj_align(code_card, LV_ALIGN_TOP_MID, 0, 207);
-    s_ui.bridge_code = label_create(code_card, "------",
-                                         &lv_font_montserrat_32, COLOR_TEXT);
-    lv_obj_set_style_text_letter_space(s_ui.bridge_code, 1, LV_PART_MAIN);
-    lv_obj_align(s_ui.bridge_code, LV_ALIGN_TOP_MID, 0, 17);
-    s_ui.bridge_code_detail = label_create(
-        code_card, "Connecting to Spark", &lv_font_montserrat_12, COLOR_MUTED);
-    lv_obj_set_width(s_ui.bridge_code_detail, 330);
-    lv_obj_set_style_text_align(s_ui.bridge_code_detail,
-                                LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-    lv_obj_align(s_ui.bridge_code_detail, LV_ALIGN_BOTTOM_MID, 0, -15);
-
-    lv_obj_t *warning = label_create(
-        s_ui.bridge_screen,
-        "Visit Spark and choose an app for your device.\n"
-        "Enter this pairing code to download.\nOne pairing allows one flash.",
-        &lv_font_montserrat_12, COLOR_MUTED);
-    lv_obj_set_width(warning, 368);
-    lv_obj_set_style_text_align(warning, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-    lv_obj_align(warning, LV_ALIGN_TOP_MID, 0, 329);
-
-    lv_obj_t *cancel = button_create(s_ui.bridge_screen, "Cancel",
-                                     174, 42, false);
-    lv_obj_align(cancel, LV_ALIGN_TOP_RIGHT, -60, 397);
-    lv_obj_add_event_cb(cancel, bridge_cancel_event, LV_EVENT_CLICKED,
-                        NULL);
-}
-
-static void bridge_screen_update(const factory_network_snapshot_t *network)
-{
-    (void)network;
-    iris_bridge_snapshot_t snapshot;
-    iris_bridge_get_snapshot(&snapshot);
-    lv_label_set_text(s_ui.bridge_code, snapshot.code[0] ? snapshot.code : "----------");
-    if (strcmp(snapshot.state, "NOT_CONFIGURED") == 0) {
-        lv_label_set_text(s_ui.bridge_code_detail, "Bridge URL or board ID is not configured");
-    } else if (strcmp(snapshot.state, "WAITING_NETWORK") == 0) {
-        lv_label_set_text(s_ui.bridge_code_detail, "Waiting for Wi-Fi connection");
-    } else if (snapshot.code[0]) {
-        lv_label_set_text_fmt(s_ui.bridge_code_detail, "Pair within %lus",
-                             (unsigned long)(snapshot.expires_in_ms / 1000));
-    } else {
-        lv_label_set_text_fmt(s_ui.bridge_code_detail, "%s%s", snapshot.state,
-                             snapshot.running ? "" : " - exit to pair again");
-    }
-}
-
-static void wifi_screen_create(void)
-{
-    s_ui.wifi_screen = lv_obj_create(NULL);
-    screen_prepare(s_ui.wifi_screen);
-    header_create(s_ui.wifi_screen, "RECOVERY", "Wi-Fi", true);
-    lv_obj_t *rescan = button_create(s_ui.wifi_screen, "Rescan", 82, 36,
-                                     false);
-    lv_obj_align(rescan, LV_ALIGN_TOP_RIGHT, -26, 27);
-    lv_obj_add_event_cb(rescan, scan_event, LV_EVENT_CLICKED, NULL);
-
-    lv_obj_t *connected = box_create(s_ui.wifi_screen, 368, 76,
-                                     COLOR_TEXT, 17);
-    lv_obj_align(connected, LV_ALIGN_TOP_MID, 0, 83);
-    lv_obj_t *kicker = label_create(connected, "NETWORK",
-                                    &lv_font_montserrat_12, COLOR_ORANGE);
-    lv_obj_align(kicker, LV_ALIGN_TOP_LEFT, 17, 12);
-    s_ui.wifi_connection = label_create(connected, "Not connected",
-                                        &lv_font_montserrat_14, COLOR_PAPER);
-    lv_obj_align(s_ui.wifi_connection, LV_ALIGN_TOP_LEFT, 17, 31);
-    s_ui.wifi_connection_detail = label_create(
-        connected, "Choose a network below", &lv_font_montserrat_12,
-        lv_color_hex(0xC7C7C2));
-    lv_obj_align(s_ui.wifi_connection_detail, LV_ALIGN_TOP_LEFT, 17, 50);
-    lv_obj_t *forget = lv_button_create(connected);
-    lv_obj_set_size(forget, 70, 34);
-    lv_obj_align(forget, LV_ALIGN_RIGHT_MID, -13, 0);
-    lv_obj_set_style_radius(forget, 17, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(forget, LV_OPA_TRANSP, LV_PART_MAIN);
-    lv_obj_set_style_border_width(forget, 1, LV_PART_MAIN);
-    lv_obj_set_style_border_color(forget, lv_color_hex(0x5D5D5A),
-                                  LV_PART_MAIN);
-    lv_obj_set_style_shadow_width(forget, 0, LV_PART_MAIN);
-    lv_obj_t *forget_label = label_create(forget, "Forget",
-                                          &lv_font_montserrat_12, COLOR_PAPER);
-    lv_obj_center(forget_label);
-    lv_obj_add_event_cb(forget, forget_event, LV_EVENT_CLICKED, NULL);
-
-    lv_obj_t *list_title = label_create(s_ui.wifi_screen,
-                                        "Available networks",
-                                        &lv_font_montserrat_12, COLOR_MUTED);
-    lv_obj_align(list_title, LV_ALIGN_TOP_LEFT, 57, 174);
-    s_ui.wifi_scan_status = label_create(s_ui.wifi_screen, "Scanning...",
-                                         &lv_font_montserrat_12, COLOR_MUTED);
-    lv_obj_align(s_ui.wifi_scan_status, LV_ALIGN_TOP_RIGHT, -57, 174);
-    s_ui.wifi_list = lv_obj_create(s_ui.wifi_screen);
-    lv_obj_set_size(s_ui.wifi_list, 368, 235);
-    lv_obj_align(s_ui.wifi_list, LV_ALIGN_TOP_MID, 0, 197);
-    lv_obj_set_flex_flow(s_ui.wifi_list, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_all(s_ui.wifi_list, 0, LV_PART_MAIN);
-    lv_obj_set_style_pad_row(s_ui.wifi_list, 0, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(s_ui.wifi_list, LV_OPA_TRANSP, LV_PART_MAIN);
-    lv_obj_set_style_border_width(s_ui.wifi_list, 0, LV_PART_MAIN);
-    lv_obj_set_scrollbar_mode(s_ui.wifi_list, LV_SCROLLBAR_MODE_AUTO);
-    s_ui.wifi_note = label_create(
-        s_ui.wifi_screen, "USB OTA remains available while offline",
-        &lv_font_montserrat_12, COLOR_MUTED);
-    lv_obj_align(s_ui.wifi_note, LV_ALIGN_BOTTOM_MID, 0, -20);
-}
-
-static void password_screen_create(void)
-{
-    s_ui.password_screen = lv_obj_create(NULL);
-    screen_prepare(s_ui.password_screen);
-    header_create(s_ui.password_screen, "JOIN NETWORK", "", true);
-    s_ui.password_title = label_create(s_ui.password_screen, "Join network",
-                                       &lv_font_montserrat_22, COLOR_TEXT);
-    lv_obj_align(s_ui.password_title, LV_ALIGN_TOP_MID, 0, 44);
-    lv_obj_t *field_label = label_create(s_ui.password_screen, "Password",
-                                         &lv_font_montserrat_12, COLOR_TEXT);
-    lv_obj_align(field_label, LV_ALIGN_TOP_LEFT, 42, 90);
-    s_ui.password_input = lv_textarea_create(s_ui.password_screen);
-    lv_obj_set_size(s_ui.password_input, 396, 52);
-    lv_obj_align(s_ui.password_input, LV_ALIGN_TOP_MID, 0, 109);
-    lv_textarea_set_one_line(s_ui.password_input, true);
-    lv_textarea_set_password_mode(s_ui.password_input, true);
-    lv_textarea_set_max_length(s_ui.password_input, 64);
-    lv_obj_set_style_radius(s_ui.password_input, 14, LV_PART_MAIN);
-    lv_obj_set_style_border_width(s_ui.password_input, 1, LV_PART_MAIN);
-    lv_obj_set_style_border_color(s_ui.password_input, COLOR_LINE,
-                                  LV_PART_MAIN);
-    lv_obj_set_style_bg_color(s_ui.password_input, COLOR_SURFACE,
-                              LV_PART_MAIN);
-    lv_obj_set_style_text_font(s_ui.password_input, &lv_font_montserrat_14,
-                               LV_PART_MAIN);
-    lv_obj_set_style_pad_right(s_ui.password_input, 64, LV_PART_MAIN);
-    const int32_t toggle_width = 44;
-    s_ui.password_toggle = lv_button_create(s_ui.password_screen);
-    lv_obj_set_size(s_ui.password_toggle, toggle_width, toggle_width);
-    lv_obj_set_style_bg_opa(s_ui.password_toggle, LV_OPA_TRANSP, LV_PART_MAIN);
-    lv_obj_set_style_border_width(s_ui.password_toggle, 0, LV_PART_MAIN);
-    lv_obj_set_style_shadow_width(s_ui.password_toggle, 0, LV_PART_MAIN);
-    lv_obj_set_style_pad_all(s_ui.password_toggle, 0, LV_PART_MAIN);
-    lv_obj_t *eye = label_create(s_ui.password_toggle, LV_SYMBOL_EYE_OPEN,
-                                 &lv_font_montserrat_22, COLOR_MUTED);
-    lv_obj_center(eye);
-    /* RIGHT_MID uses the padded content box; anchor to the field's outer edge. */
-    lv_obj_align_to(s_ui.password_toggle, s_ui.password_input,
-                    LV_ALIGN_OUT_RIGHT_MID, -toggle_width - 8, 0);
-    lv_obj_add_event_cb(s_ui.password_toggle, password_toggle_event,
-                        LV_EVENT_CLICKED, NULL);
-    lv_obj_t *help = label_create(
-        s_ui.password_screen,
-        "8-63 characters or 64 hex - recovery only",
-        &lv_font_montserrat_12, COLOR_MUTED);
-    lv_obj_align(help, LV_ALIGN_TOP_LEFT, 42, 168);
-
-    lv_obj_t *keyboard = lv_keyboard_create(s_ui.password_screen);
-    lv_obj_set_size(keyboard, 480, 275);
-    lv_obj_align(keyboard, LV_ALIGN_BOTTOM_MID, 0, 0);
-    lv_keyboard_set_textarea(keyboard, s_ui.password_input);
-    lv_keyboard_set_mode(keyboard, LV_KEYBOARD_MODE_TEXT_LOWER);
-    lv_obj_set_style_bg_color(keyboard, lv_color_hex(0xE3E4E2), LV_PART_MAIN);
-    lv_obj_set_style_border_width(keyboard, 0, LV_PART_MAIN);
-    lv_obj_set_style_radius(keyboard, 0, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(keyboard, COLOR_SURFACE, LV_PART_ITEMS);
-    lv_obj_set_style_text_color(keyboard, COLOR_TEXT, LV_PART_ITEMS);
-    lv_obj_set_style_text_font(keyboard, &lv_font_montserrat_12,
-                               LV_PART_ITEMS);
-    lv_obj_add_event_cb(keyboard, keyboard_event, LV_EVENT_ALL, NULL);
-}
-
-static void nand_select_event(lv_event_t *event)
-{
-    const size_t index = (size_t)(uintptr_t)lv_event_get_user_data(event);
-    if (index >= s_nand_snapshot_view.candidate_count) {
-        return;
-    }
-    s_ui.selected_nand = s_nand_snapshot_view.candidates[index];
-    lv_label_set_text(s_ui.nand_confirm_release, s_ui.selected_nand.release);
-    lv_label_set_text_fmt(s_ui.nand_confirm_detail, "%u components - %lu KB",
-                          s_ui.selected_nand.component_count,
-                          (unsigned long)(s_ui.selected_nand.total_size /
-                                          1024U));
-    lv_label_set_text(s_ui.nand_confirm_path,
-                      s_ui.selected_nand.manifest_path);
-    show_page(FACTORY_PAGE_NAND_CONFIRM);
-}
-
-static void nand_install_event(lv_event_t *event)
-{
-    (void)event;
-    const esp_err_t err = factory_system_update_start_nand(
-        s_ui.selected_nand.manifest_path);
-    if (err != ESP_OK) {
-        lv_obj_set_style_bg_color(s_ui.result_mark, COLOR_RED, LV_PART_MAIN);
-        lv_label_set_text(s_ui.result_title, "NAND update failed");
-        lv_label_set_text_fmt(s_ui.result_detail,
-                              "Could not start - error 0x%08x",
-                              (unsigned)err);
-        show_page(FACTORY_PAGE_RESULT);
-        return;
-    }
-    lv_label_set_text(s_ui.update_title, "Updating system");
-    lv_label_set_text(s_ui.update_detail, "Opening NAND firmware bundle");
-    lv_label_set_text(s_ui.update_percent, "0%");
-    lv_bar_set_value(s_ui.update_bar, 0, LV_ANIM_OFF);
-    lv_label_set_text(s_ui.update_owner, "NAND");
-    lv_label_set_text(s_ui.update_verified, "Validating");
-    show_page(FACTORY_PAGE_UPDATE);
-}
-
-static void result_home_event(lv_event_t *event)
-{
-    (void)event;
-    factory_system_update_status_t status;
-    if (factory_system_update_get_status(&status) == ESP_OK) {
-        s_ui.update_phase = status.update.phase;
-    }
-    s_ui.nand_update_state = s_nand_snapshot_view.update_state;
-    show_page(FACTORY_PAGE_READY);
-}
-
-static void nand_list_screen_create(void)
-{
-    s_ui.nand_list_screen = lv_obj_create(NULL);
-    screen_prepare(s_ui.nand_list_screen);
-    header_create(s_ui.nand_list_screen, "RECOVERY", "NAND firmware", true);
-
-    lv_obj_t *rescan = button_create(s_ui.nand_list_screen, "Rescan", 82, 36,
-                                     false);
-    lv_obj_align(rescan, LV_ALIGN_TOP_RIGHT, -26, 27);
-    lv_obj_add_event_cb(rescan, nand_scan_event, LV_EVENT_CLICKED, NULL);
-
-    lv_obj_t *hint = label_create(
-        s_ui.nand_list_screen,
-        "Choose a complete system-update bundle stored on this device.",
-        &lv_font_montserrat_12, COLOR_MUTED);
-    lv_obj_set_width(hint, 368);
-    lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-    lv_obj_align(hint, LV_ALIGN_TOP_MID, 0, 82);
-
-    s_ui.nand_scan_status = label_create(s_ui.nand_list_screen,
-                                         "Open to scan",
-                                         &lv_font_montserrat_12, COLOR_MUTED);
-    lv_obj_align(s_ui.nand_scan_status, LV_ALIGN_TOP_LEFT, 56, 118);
-    s_ui.nand_list = lv_obj_create(s_ui.nand_list_screen);
-    lv_obj_set_size(s_ui.nand_list, 368, 296);
-    lv_obj_align(s_ui.nand_list, LV_ALIGN_TOP_MID, 0, 143);
-    lv_obj_set_flex_flow(s_ui.nand_list, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_all(s_ui.nand_list, 0, LV_PART_MAIN);
-    lv_obj_set_style_pad_row(s_ui.nand_list, 0, LV_PART_MAIN);
-    lv_obj_set_style_bg_opa(s_ui.nand_list, LV_OPA_TRANSP, LV_PART_MAIN);
-    lv_obj_set_style_border_width(s_ui.nand_list, 0, LV_PART_MAIN);
-    lv_obj_set_scrollbar_mode(s_ui.nand_list, LV_SCROLLBAR_MODE_AUTO);
-}
-
-static void nand_confirm_screen_create(void)
-{
-    s_ui.nand_confirm_screen = lv_obj_create(NULL);
-    screen_prepare(s_ui.nand_confirm_screen);
-    header_create(s_ui.nand_confirm_screen, "NAND UPDATE", "Confirm", true);
-
-    lv_obj_t *card = box_create(s_ui.nand_confirm_screen, 368, 170,
-                                COLOR_SURFACE, 18);
-    lv_obj_set_style_border_width(card, 1, LV_PART_MAIN);
-    lv_obj_set_style_border_color(card, COLOR_LINE, LV_PART_MAIN);
-    lv_obj_align(card, LV_ALIGN_TOP_MID, 0, 91);
-    lv_obj_t *kicker = label_create(card, "SELECTED RELEASE",
-                                    &lv_font_montserrat_12, COLOR_ORANGE);
-    lv_obj_align(kicker, LV_ALIGN_TOP_LEFT, 18, 16);
-    s_ui.nand_confirm_release = label_create(card, "NAND bundle",
-                                             &lv_font_montserrat_22,
-                                             COLOR_TEXT);
-    lv_obj_set_width(s_ui.nand_confirm_release, 332);
-    lv_label_set_long_mode(s_ui.nand_confirm_release, LV_LABEL_LONG_DOT);
-    lv_obj_align(s_ui.nand_confirm_release, LV_ALIGN_TOP_LEFT, 18, 42);
-    s_ui.nand_confirm_detail = label_create(card, "0 components - 0 MB",
-                                            &lv_font_montserrat_12,
-                                            COLOR_MUTED);
-    lv_obj_align(s_ui.nand_confirm_detail, LV_ALIGN_TOP_LEFT, 18, 78);
-    s_ui.nand_confirm_path = label_create(card, "",
-                                          &lv_font_montserrat_12,
-                                          COLOR_MUTED);
-    lv_obj_set_width(s_ui.nand_confirm_path, 332);
-    lv_label_set_long_mode(s_ui.nand_confirm_path, LV_LABEL_LONG_DOT);
-    lv_obj_align(s_ui.nand_confirm_path, LV_ALIGN_TOP_LEFT, 18, 111);
-
-    lv_obj_t *warning = label_create(
-        s_ui.nand_confirm_screen,
-        "Bootloader and partition-table writes have a small power-loss\n"
-        "window. Keep external power connected until restart.",
-        &lv_font_montserrat_12, COLOR_TEXT);
-    lv_obj_set_width(warning, 368);
-    lv_obj_set_style_text_align(warning, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-    lv_obj_align(warning, LV_ALIGN_TOP_MID, 0, 286);
-
-    lv_obj_t *cancel = button_create(s_ui.nand_confirm_screen, "Cancel", 174,
-                                     44, false);
-    lv_obj_align(cancel, LV_ALIGN_TOP_LEFT, 60, 365);
-    lv_obj_add_event_cb(cancel, page_event, LV_EVENT_CLICKED,
-                        (void *)(intptr_t)FACTORY_PAGE_NAND_LIST);
-    lv_obj_t *install = button_create(s_ui.nand_confirm_screen, "Install", 174,
-                                      44, true);
-    lv_obj_align(install, LV_ALIGN_TOP_RIGHT, -60, 365);
-    lv_obj_add_event_cb(install, nand_install_event, LV_EVENT_CLICKED, NULL);
-}
-
-static void update_screen_create(void)
-{
-    s_ui.update_screen = lv_obj_create(NULL);
-    screen_prepare(s_ui.update_screen);
-    header_create(s_ui.update_screen, "", "", false);
-    lv_obj_t *badge = box_create(s_ui.update_screen, 94, 30,
-                                 COLOR_ORANGE, 15);
-    lv_obj_align(badge, LV_ALIGN_TOP_RIGHT, -40, 28);
-    lv_obj_t *badge_label = label_create(badge, "UPDATE",
-                                         &lv_font_montserrat_12, COLOR_PAPER);
-    lv_obj_center(badge_label);
-    lv_obj_t *icon = box_create(s_ui.update_screen, 74, 74, COLOR_TEXT, 22);
-    lv_obj_align(icon, LV_ALIGN_TOP_MID, 0, 89);
-    lv_obj_t *arrow = label_create(icon, LV_SYMBOL_DOWNLOAD,
-                                   &lv_font_montserrat_32, COLOR_ORANGE);
-    lv_obj_center(arrow);
-    s_ui.update_title = label_create(s_ui.update_screen, "Updating system",
-                                     &lv_font_montserrat_32, COLOR_TEXT);
-    lv_obj_align(s_ui.update_title, LV_ALIGN_TOP_MID, 0, 178);
-    s_ui.update_detail = label_create(s_ui.update_screen, "Preparing update",
-                                      &lv_font_montserrat_14, COLOR_MUTED);
-    lv_obj_align(s_ui.update_detail, LV_ALIGN_TOP_MID, 0, 220);
-    s_ui.update_percent = label_create(s_ui.update_screen, "0%",
-                                       &lv_font_montserrat_22, COLOR_TEXT);
-    lv_obj_align(s_ui.update_percent, LV_ALIGN_TOP_LEFT, 56, 264);
-    s_ui.update_bar = lv_bar_create(s_ui.update_screen);
-    lv_obj_set_size(s_ui.update_bar, 368, 9);
-    lv_obj_align(s_ui.update_bar, LV_ALIGN_TOP_MID, 0, 298);
-    lv_bar_set_range(s_ui.update_bar, 0, 1000);
-    lv_bar_set_value(s_ui.update_bar, 0, LV_ANIM_OFF);
-    lv_obj_set_style_bg_color(s_ui.update_bar, COLOR_LINE, LV_PART_MAIN);
-    lv_obj_set_style_bg_color(s_ui.update_bar, COLOR_ORANGE,
-                              LV_PART_INDICATOR);
-    lv_obj_set_style_radius(s_ui.update_bar, 5, LV_PART_MAIN);
-    lv_obj_set_style_radius(s_ui.update_bar, 5, LV_PART_INDICATOR);
-    lv_obj_t *owner_label = label_create(s_ui.update_screen, "Session owner",
-                                         &lv_font_montserrat_12, COLOR_MUTED);
-    lv_obj_align(owner_label, LV_ALIGN_TOP_LEFT, 56, 329);
-    s_ui.update_owner = label_create(s_ui.update_screen, "Negotiating",
-                                     &lv_font_montserrat_12, COLOR_TEXT);
-    lv_obj_align(s_ui.update_owner, LV_ALIGN_TOP_RIGHT, -56, 329);
-    lv_obj_t *verified_label = label_create(s_ui.update_screen, "Authorization",
-                                            &lv_font_montserrat_12,
-                                            COLOR_MUTED);
-    lv_obj_align(verified_label, LV_ALIGN_TOP_LEFT, 56, 365);
-    s_ui.update_verified = label_create(s_ui.update_screen, "Unsigned",
-                                        &lv_font_montserrat_12, COLOR_ORANGE);
-    lv_obj_align(s_ui.update_verified, LV_ALIGN_TOP_RIGHT, -56, 365);
-    lv_obj_t *warning = label_create(
-        s_ui.update_screen,
-        "Keep power connected. The device restarts automatically.",
-        &lv_font_montserrat_12, COLOR_MUTED);
-    lv_obj_align(warning, LV_ALIGN_BOTTOM_MID, 0, -42);
-}
-
-static void result_screen_create(void)
-{
-    s_ui.result_screen = lv_obj_create(NULL);
-    screen_prepare(s_ui.result_screen);
-    lv_obj_t *badge = box_create(s_ui.result_screen, 104, 30,
-                                 COLOR_TEXT, 15);
-    lv_obj_align(badge, LV_ALIGN_TOP_MID, 0, 30);
-    lv_obj_t *badge_label = label_create(badge, "RECOVERY",
-                                         &lv_font_montserrat_12, COLOR_PAPER);
-    lv_obj_center(badge_label);
-    s_ui.result_mark = box_create(s_ui.result_screen, 74, 74,
-                                  COLOR_GREEN, LV_RADIUS_CIRCLE);
-    lv_obj_align(s_ui.result_mark, LV_ALIGN_TOP_MID, 0, 86);
-    lv_obj_t *check = label_create(s_ui.result_mark, LV_SYMBOL_OK,
-                                   &lv_font_montserrat_32, COLOR_PAPER);
-    lv_obj_center(check);
-    s_ui.result_title = label_create(s_ui.result_screen, "Update complete",
-                                     &lv_font_montserrat_32, COLOR_TEXT);
-    lv_obj_align(s_ui.result_title, LV_ALIGN_TOP_MID, 0, 181);
-    s_ui.result_detail = label_create(
-        s_ui.result_screen, "System images verified and committed",
-        &lv_font_montserrat_14, COLOR_MUTED);
-    lv_obj_align(s_ui.result_detail, LV_ALIGN_TOP_MID, 0, 225);
-    lv_obj_t *restart = box_create(s_ui.result_screen, 368, 48,
-                                   COLOR_SURFACE, 24);
-    lv_obj_set_style_border_width(restart, 1, LV_PART_MAIN);
-    lv_obj_set_style_border_color(restart, COLOR_LINE, LV_PART_MAIN);
-    lv_obj_align(restart, LV_ALIGN_TOP_MID, 0, 302);
-    lv_obj_t *restart_label = label_create(
-        restart, "Restarting into the application...",
-        &lv_font_montserrat_14, COLOR_TEXT);
-    lv_obj_center(restart_label);
-    lv_obj_t *footer = label_create(s_ui.result_screen,
-                                    "ESP-Iris recovery verification",
-                                    &lv_font_montserrat_12, COLOR_MUTED);
-    lv_obj_align(footer, LV_ALIGN_BOTTOM_MID, 0, -28);
-    lv_obj_t *home = button_create(s_ui.result_screen, "Recovery home", 220,
-                                   42, false);
-    lv_obj_align(home, LV_ALIGN_TOP_MID, 0, 375);
-    lv_obj_add_event_cb(home, result_home_event, LV_EVENT_CLICKED, NULL);
-}
-
-static void show_page(factory_page_t page)
-{
-    const factory_page_t previous = s_ui.page;
-    /* Leaving setup cancels its continuation, including Back and external OTA. */
-    if (page != FACTORY_PAGE_WIFI && page != FACTORY_PAGE_PASSWORD) {
-        s_ui.spark_download_pending = false;
-    }
-    if (previous == FACTORY_PAGE_BRIDGE && page != FACTORY_PAGE_BRIDGE &&
-        page != FACTORY_PAGE_UPDATE && page != FACTORY_PAGE_RESULT) {
-        iris_bridge_stop();
-    }
-    if (page == FACTORY_PAGE_BRIDGE && previous != FACTORY_PAGE_BRIDGE) {
-        (void)factory_bridge_open();
-    }
-    s_ui.page = page;
-    lv_obj_t *screen = s_ui.ready_screen;
-    if (page == FACTORY_PAGE_WIFI) {
-        screen = s_ui.wifi_screen;
-        lv_label_set_text(s_ui.wifi_note, s_ui.spark_download_pending ?
-                          "Connect Wi-Fi to continue to Spark" :
-                          "USB OTA remains available while offline");
-        (void)factory_network_request_scan();
-    } else if (page == FACTORY_PAGE_PAIRING) {
-        screen = s_ui.pairing_screen;
-        pairing_screen_update();
-    } else if (page == FACTORY_PAGE_BRIDGE) {
-        screen = s_ui.bridge_screen;
-        factory_network_snapshot_t network = {0};
-        if (factory_network_get_snapshot(&network) == ESP_OK) {
-            bridge_screen_update(&network);
-        } else {
-            bridge_screen_update(NULL);
-        }
-    } else if (page == FACTORY_PAGE_PASSWORD) {
-        screen = s_ui.password_screen;
-    } else if (page == FACTORY_PAGE_NAND_LIST) {
-        screen = s_ui.nand_list_screen;
-    } else if (page == FACTORY_PAGE_NAND_CONFIRM) {
-        screen = s_ui.nand_confirm_screen;
-    } else if (page == FACTORY_PAGE_UPDATE) {
-        screen = s_ui.update_screen;
-    } else if (page == FACTORY_PAGE_RESULT) {
-        screen = s_ui.result_screen;
-    }
-    lv_screen_load(screen);
-}
-
-static void wifi_list_rebuild(const factory_network_snapshot_t *network)
-{
-    lv_obj_clean(s_ui.wifi_list);
-    for (size_t i = 0; i < network->ap_count; ++i) {
-        strlcpy(s_ui.ap_ssids[i], network->aps[i].ssid,
-                sizeof(s_ui.ap_ssids[i]));
-        lv_obj_t *row = lv_button_create(s_ui.wifi_list);
-        lv_obj_set_width(row, LV_PCT(100));
-        lv_obj_set_height(row, 56);
-        lv_obj_set_flex_grow(row, 0);
-        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, LV_PART_MAIN);
-        lv_obj_set_style_shadow_width(row, 0, LV_PART_MAIN);
-        lv_obj_set_style_radius(row, 0, LV_PART_MAIN);
-        lv_obj_set_style_border_width(row, 1, LV_PART_MAIN);
-        lv_obj_set_style_border_side(row, LV_BORDER_SIDE_BOTTOM,
-                                     LV_PART_MAIN);
-        lv_obj_set_style_border_color(row, COLOR_LINE, LV_PART_MAIN);
-        lv_obj_t *name = label_create(row, network->aps[i].ssid,
-                                      &lv_font_montserrat_14, COLOR_TEXT);
-        lv_obj_align(name, LV_ALIGN_LEFT_MID, 8, -8);
-        const char *security = network->aps[i].authmode == WIFI_AUTH_OPEN
-            ? "Open" : "Secured";
-        lv_obj_t *detail = label_create(row, "", &lv_font_montserrat_12,
-                                        COLOR_MUTED);
-        lv_label_set_text_fmt(detail, "%s - %d dBm", security,
-                              network->aps[i].rssi);
-        lv_obj_align(detail, LV_ALIGN_LEFT_MID, 8, 10);
-        lv_obj_t *arrow = label_create(row, LV_SYMBOL_RIGHT,
-                                       &lv_font_montserrat_14, COLOR_MUTED);
-        lv_obj_align(arrow, LV_ALIGN_RIGHT_MID, -8, 0);
-        lv_obj_add_event_cb(row, network_select_event, LV_EVENT_CLICKED,
-                            s_ui.ap_ssids[i]);
-    }
-    lv_label_set_text_fmt(s_ui.wifi_scan_status, "%u found",
-                          (unsigned)network->ap_count);
-}
-
-static void nand_list_rebuild(
-    const factory_nand_update_snapshot_t *snapshot)
-{
-    lv_obj_clean(s_ui.nand_list);
-    if (snapshot->scan_state == FACTORY_NAND_SCAN_RUNNING) {
-        lv_label_set_text(s_ui.nand_scan_status, "Scanning NAND...");
-        return;
-    }
-    if (snapshot->scan_state == FACTORY_NAND_SCAN_FAILED) {
-        lv_label_set_text_fmt(s_ui.nand_scan_status,
-                              "NAND unavailable - error 0x%08x",
-                              (unsigned)snapshot->scan_result);
-        return;
-    }
-    if (snapshot->candidate_count == 0) {
-        lv_label_set_text(s_ui.nand_scan_status,
-                          snapshot->invalid_count > 0
-                              ? "No valid bundles (invalid entries skipped)"
-                              : "No firmware bundles found");
-        return;
-    }
-    if (snapshot->invalid_count > 0) {
-        lv_label_set_text_fmt(s_ui.nand_scan_status,
-                              "%u found - %u invalid skipped",
-                              (unsigned)snapshot->candidate_count,
-                              (unsigned)snapshot->invalid_count);
-    } else {
-        lv_label_set_text_fmt(s_ui.nand_scan_status, "%u bundle%s found",
-                              (unsigned)snapshot->candidate_count,
-                              snapshot->candidate_count == 1 ? "" : "s");
-    }
-
-    for (size_t i = 0; i < snapshot->candidate_count; ++i) {
-        const factory_nand_update_candidate_t *candidate =
-            &snapshot->candidates[i];
-        lv_obj_t *row = lv_button_create(s_ui.nand_list);
-        lv_obj_set_width(row, LV_PCT(100));
-        lv_obj_set_height(row, 68);
-        lv_obj_set_flex_grow(row, 0);
-        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, LV_PART_MAIN);
-        lv_obj_set_style_shadow_width(row, 0, LV_PART_MAIN);
-        lv_obj_set_style_radius(row, 0, LV_PART_MAIN);
-        lv_obj_set_style_border_width(row, 1, LV_PART_MAIN);
-        lv_obj_set_style_border_side(row, LV_BORDER_SIDE_BOTTOM,
-                                     LV_PART_MAIN);
-        lv_obj_set_style_border_color(row, COLOR_LINE, LV_PART_MAIN);
-        lv_obj_t *name = label_create(row, candidate->release,
-                                      &lv_font_montserrat_14, COLOR_TEXT);
-        lv_obj_set_width(name, 275);
-        lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
-        lv_obj_align(name, LV_ALIGN_LEFT_MID, 8, -11);
-        lv_obj_t *detail = label_create(row, "", &lv_font_montserrat_12,
-                                        COLOR_MUTED);
-        lv_label_set_text_fmt(detail, "%u components - %lu KB",
-                              candidate->component_count,
-                              (unsigned long)(candidate->total_size / 1024U));
-        lv_obj_align(detail, LV_ALIGN_LEFT_MID, 8, 12);
-        lv_obj_t *arrow = label_create(row, LV_SYMBOL_RIGHT,
-                                       &lv_font_montserrat_14, COLOR_MUTED);
-        lv_obj_align(arrow, LV_ALIGN_RIGHT_MID, -8, 0);
-        lv_obj_add_event_cb(row, nand_select_event, LV_EVENT_CLICKED,
-                            (void *)(uintptr_t)i);
-    }
-}
-
-/* Return true while NAND owns the pre-prepare UI. This prevents an old shared
- * update result from replacing the source-specific opening/error state. */
-static bool nand_ui_update(void)
-{
-    if (factory_nand_update_get_snapshot(&s_nand_snapshot_view) != ESP_OK) {
-        return false;
-    }
-    if (s_nand_snapshot_view.generation != s_ui.nand_generation) {
-        s_ui.nand_generation = s_nand_snapshot_view.generation;
-        if (s_ui.page == FACTORY_PAGE_NAND_LIST) {
-            nand_list_rebuild(&s_nand_snapshot_view);
-        }
-    }
-
-    const factory_nand_update_state_t previous = s_ui.nand_update_state;
-    s_ui.nand_update_state = s_nand_snapshot_view.update_state;
-    if (s_nand_snapshot_view.update_state == FACTORY_NAND_UPDATE_STARTING) {
-        if (previous != FACTORY_NAND_UPDATE_STARTING) {
-            lv_label_set_text(s_ui.update_title, "Updating system");
-            lv_label_set_text(s_ui.update_detail,
-                              "Opening NAND firmware bundle");
-            lv_label_set_text(s_ui.update_percent, "0%");
-            lv_bar_set_value(s_ui.update_bar, 0, LV_ANIM_OFF);
-            lv_label_set_text(s_ui.update_owner, "NAND");
-            lv_label_set_text(s_ui.update_verified, "Validating");
-            show_page(FACTORY_PAGE_UPDATE);
-        }
-        return true;
-    }
-    if (s_nand_snapshot_view.update_state == FACTORY_NAND_UPDATE_FAILED) {
-        const bool newly_failed = previous != FACTORY_NAND_UPDATE_FAILED;
-        if (newly_failed) {
-            lv_obj_set_style_bg_color(s_ui.result_mark, COLOR_RED,
-                                      LV_PART_MAIN);
-            lv_label_set_text(s_ui.result_title, "NAND update failed");
-            lv_label_set_text_fmt(s_ui.result_detail,
-                                  "Error 0x%08x - rescan or use USB",
-                                  (unsigned)s_nand_snapshot_view.update_result);
-            show_page(FACTORY_PAGE_RESULT);
-        }
-        return newly_failed;
-    }
-    return false;
-}
-
-static void link_status_update(const factory_network_snapshot_t *network,
-                               const esp_iris_status_t *iris)
-{
-    const bool session = iris->session_ready;
-    const bool usb_owner = session &&
-        iris->transport == ESP_IRIS_TRANSPORT_KIND_USB;
-    const bool tcp_owner = session &&
-        iris->transport == ESP_IRIS_TRANSPORT_KIND_TCP;
-    lv_label_set_text(s_ui.usb_value,
-                      usb_owner ? "Active" : session ? "Paused" : "Available");
-    lv_obj_set_style_bg_color(s_ui.usb_dot,
-                              usb_owner ? COLOR_ORANGE : COLOR_GREEN,
-                              LV_PART_MAIN);
-
-    if (network->state == FACTORY_NETWORK_CONNECTED) {
-        lv_label_set_text(s_ui.network_value,
-                          tcp_owner ? "Active" : session ? "Paused" : "Available");
-        lv_obj_set_style_bg_color(s_ui.network_dot,
-                                  tcp_owner ? COLOR_ORANGE : COLOR_GREEN,
-                                  LV_PART_MAIN);
-        lv_label_set_text_fmt(s_ui.address, "%s.local - %s:%u",
-                              network->hostname, network->ip,
-                              CONFIG_ESP_IRIS_TCP_PORT);
-    } else if (network->state == FACTORY_NETWORK_CONNECTING) {
-        lv_label_set_text(s_ui.network_value, "Connecting");
-        lv_obj_set_style_bg_color(s_ui.network_dot, COLOR_ORANGE,
-                                  LV_PART_MAIN);
-        lv_label_set_text(s_ui.address, "Connecting to saved Wi-Fi");
-    } else {
-        lv_label_set_text(s_ui.network_value, "Offline");
-        lv_obj_set_style_bg_color(s_ui.network_dot, COLOR_MUTED,
-                                  LV_PART_MAIN);
-        lv_label_set_text(s_ui.address, "Network setup not completed");
-    }
-}
-
-static void network_ui_update(const factory_network_snapshot_t *network)
-{
-    if (network->state == FACTORY_NETWORK_CONNECTED) {
-        lv_label_set_text(s_ui.wifi_connection, network->ssid);
-        lv_label_set_text_fmt(s_ui.wifi_connection_detail, "%s - %s.local",
-                              network->ip, network->hostname);
-    } else if (network->state == FACTORY_NETWORK_CONNECTING) {
-        lv_label_set_text(s_ui.wifi_connection, network->ssid);
-        lv_label_set_text(s_ui.wifi_connection_detail, "Connecting...");
-    } else if (network->state == FACTORY_NETWORK_FAILED) {
-        lv_label_set_text(s_ui.wifi_connection, "Connection failed");
-        lv_label_set_text(s_ui.wifi_connection_detail,
-                          "Choose the network and retry");
-    } else {
-        lv_label_set_text(s_ui.wifi_connection, "Not connected");
-        lv_label_set_text(s_ui.wifi_connection_detail,
-                          "Choose a network below");
-    }
-    if (network->scanning) {
-        lv_label_set_text(s_ui.wifi_scan_status, "Scanning...");
-    }
-    if (network->scan_generation != s_ui.scan_generation) {
-        s_ui.scan_generation = network->scan_generation;
-        wifi_list_rebuild(network);
-    }
-    if (s_ui.spark_download_pending && s_ui.page == FACTORY_PAGE_WIFI &&
-        network->state == FACTORY_NETWORK_CONNECTED && network->ip[0] != '\0') {
-        show_page(FACTORY_PAGE_BRIDGE);
-    }
-}
-
-static const char *transport_name(esp_iris_transport_kind_t transport)
-{
-    if (transport == ESP_IRIS_TRANSPORT_KIND_USB) {
-        return "USB";
-    }
-    if (transport == ESP_IRIS_TRANSPORT_KIND_TCP) {
-        return "TCP";
-    }
-    return "Negotiating";
-}
-
-static void system_update_ui_update(const esp_iris_status_t *iris)
-{
-    factory_system_update_status_t snapshot;
-    if (factory_system_update_get_status(&snapshot) != ESP_OK) {
-        return;
-    }
-    const esp_iris_system_update_status_t *update = &snapshot.update;
-    lv_label_set_text(s_ui.update_title, "Updating system");
-    lv_label_set_text(s_ui.update_verified, "Unsigned");
-    if (update->phase == ESP_IRIS_SYSTEM_UPDATE_PHASE_IDLE) {
-        return;
-    }
-    if (update->phase == ESP_IRIS_SYSTEM_UPDATE_PHASE_COMMITTED) {
-        lv_obj_set_style_bg_color(s_ui.result_mark, COLOR_GREEN, LV_PART_MAIN);
-        lv_label_set_text(s_ui.result_title, "Update complete");
-        lv_label_set_text(s_ui.result_detail,
-                          "System images verified and committed");
-        if (s_ui.update_phase != update->phase &&
-            s_ui.page != FACTORY_PAGE_RESULT) {
-            show_page(FACTORY_PAGE_RESULT);
-        }
-        s_ui.update_phase = update->phase;
-        return;
-    }
-    if (update->phase == ESP_IRIS_SYSTEM_UPDATE_PHASE_FAILED ||
-        update->phase == ESP_IRIS_SYSTEM_UPDATE_PHASE_CANCELLED) {
-        lv_obj_set_style_bg_color(s_ui.result_mark, COLOR_RED, LV_PART_MAIN);
-        lv_label_set_text(s_ui.result_title, "Update failed");
-        lv_label_set_text_fmt(s_ui.result_detail, "Error 0x%08x - use USB to retry",
-                              (unsigned)update->result);
-        if (s_ui.update_phase != update->phase &&
-            s_ui.page != FACTORY_PAGE_RESULT) {
-            show_page(FACTORY_PAGE_RESULT);
-        }
-        s_ui.update_phase = update->phase;
-        return;
-    }
-
-    const uint16_t progress = update->component_size > 0
-        ? (uint16_t)(((uint64_t)update->component_received * 1000U) /
-                     update->component_size)
-        : 0;
-    const char *detail = "Validating unsigned update plan";
-    if (update->phase == ESP_IRIS_SYSTEM_UPDATE_PHASE_RECEIVING) {
-        if (snapshot.owner == FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE) {
-            detail = "Downloading system component";
-        } else if (snapshot.owner == FACTORY_SYSTEM_UPDATE_OWNER_NAND) {
-            detail = "Reading NAND system component";
-        } else {
-            detail = "Receiving system component";
-        }
-    } else if (update->phase ==
-               ESP_IRIS_SYSTEM_UPDATE_PHASE_COMPONENT_VERIFIED) {
-        detail = "Component verified";
-    } else if (update->phase == ESP_IRIS_SYSTEM_UPDATE_PHASE_COMMITTING) {
-        detail = "Committing protected system images";
-    }
-    lv_label_set_text(s_ui.update_detail, detail);
-    lv_label_set_text_fmt(s_ui.update_percent, "%u%%", progress / 10U);
-    lv_bar_set_value(s_ui.update_bar, progress, LV_ANIM_OFF);
-    const char *owner = transport_name(iris->transport);
-    if (snapshot.owner == FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE) {
-        owner = "Bridge";
-    } else if (snapshot.owner == FACTORY_SYSTEM_UPDATE_OWNER_NAND) {
-        owner = "NAND";
-    }
-    lv_label_set_text(s_ui.update_owner, owner);
-    if (s_ui.page != FACTORY_PAGE_UPDATE) {
-        show_page(FACTORY_PAGE_UPDATE);
-    }
-    s_ui.update_phase = update->phase;
-}
-
-static bool ota_ui_update(const esp_iris_status_t *iris)
-{
     esp_iris_ota_status_t ota = {0};
-    if (esp_iris_ota_get_status(&ota) != ESP_OK || ota.job_id == 0) {
-        return false;
+    factory_system_update_status_t system = {0};
+    (void)esp_iris_ota_get_status(&ota);
+    (void)factory_system_update_get_status(&system);
+    const bool nand_changed = s_nand_state != s_nand.update_state;
+    const bool ota_changed = ota.job_id != s_ota_job || (int)ota.state != s_ota_state;
+    const bool system_changed = s_phase != system.update.phase ||
+        memcmp(s_operation_id, system.update.operation_id, sizeof(s_operation_id)) != 0;
+    if (nand_changed || ota_changed || system_changed) ++s_revision;
+    s_nand_state = s_nand.update_state;
+    s_ota_job = ota.job_id; s_ota_state = ota.state;
+    s_phase = system.update.phase;
+    memcpy(s_operation_id, system.update.operation_id, sizeof(s_operation_id));
+    const bool system_active = system.update.phase != ESP_IRIS_SYSTEM_UPDATE_PHASE_IDLE &&
+        system.update.phase < ESP_IRIS_SYSTEM_UPDATE_PHASE_COMMITTED;
+    if (nand_changed && s_nand.update_state == FACTORY_NAND_UPDATE_FAILED) s_update_source = UPDATE_NAND;
+    if (ota_changed && ota.job_id) s_update_source = UPDATE_OTA;
+    if (system_changed && system.update.phase != ESP_IRIS_SYSTEM_UPDATE_PHASE_IDLE) s_update_source = UPDATE_SYSTEM;
+    /* Active writers supersede retained failures from all other sources. */
+    if (s_nand.update_state == FACTORY_NAND_UPDATE_STARTING) s_update_source = UPDATE_NAND;
+    if (ota.active) s_update_source = UPDATE_OTA;
+    if (system_active) s_update_source = UPDATE_SYSTEM;
+    out->updating = out->update_terminal = out->update_failed = false;
+    out->progress = 0;
+    out->update_revision = s_revision;
+    if (s_update_source == UPDATE_NAND) {
+        out->updating = s_nand.update_state == FACTORY_NAND_UPDATE_STARTING;
+        out->update_terminal = out->update_failed = !out->updating;
+        COPY(update_title, out->updating ? "Updating system" : "NAND update failed");
+        if (out->updating) COPY(update_detail, "Opening NAND firmware bundle");
+        else snprintf(out->update_detail, sizeof(out->update_detail), "Error 0x%08x - rescan or use USB", (unsigned)s_nand.update_result);
+        COPY(update_owner, "NAND"); COPY(update_verified, "Validating");
+        out->update_revision = s_revision;
+        return;
     }
-
-    if (ota.active) {
-        s_ui.ota_job_id = ota.job_id;
-        s_ui.ota_was_active = true;
-        lv_label_set_text(s_ui.update_title, "Updating firmware");
-        lv_label_set_text_fmt(s_ui.update_detail,
-                              "Receiving application - %lu / %lu KB",
-                              (unsigned long)(ota.received_size / 1024U),
-                              (unsigned long)(ota.total_size / 1024U));
-        lv_label_set_text_fmt(s_ui.update_percent, "%u%%",
-                              ota.progress_permille / 10U);
-        lv_bar_set_value(s_ui.update_bar, ota.progress_permille, LV_ANIM_OFF);
-        lv_label_set_text(s_ui.update_owner, transport_name(iris->transport));
-        lv_label_set_text(s_ui.update_verified, "SHA-256");
-        if (s_ui.page != FACTORY_PAGE_UPDATE) {
-            show_page(FACTORY_PAGE_UPDATE);
-        }
-        const uint16_t bucket = ota.progress_permille / 100U;
-        if (bucket != s_ui.ota_logged_bucket) {
-            s_ui.ota_logged_bucket = bucket;
-            ESP_LOGI(TAG, "Recovery OTA progress: %u%% (%lu/%lu bytes)",
-                     ota.progress_permille / 10U,
-                     (unsigned long)ota.received_size,
-                     (unsigned long)ota.total_size);
-        }
-        return true;
+    if (s_update_source == UPDATE_OTA) {
+        out->updating = ota.active || ota.state == ESP_IRIS_JOB_SUCCEEDED;
+        out->update_terminal = ota.state == ESP_IRIS_JOB_FAILED || ota.state == ESP_IRIS_JOB_CANCELLED;
+        out->update_failed = out->update_terminal;
+        COPY(update_title, ota.active ? "Updating firmware" : out->update_failed ? "Firmware update failed" : "Firmware verified");
+        if (ota.active) snprintf(out->update_detail, sizeof(out->update_detail), "Receiving application\n%lu / %lu KB", (unsigned long)(ota.received_size / 1024), (unsigned long)(ota.total_size / 1024));
+        else if (out->update_failed) snprintf(out->update_detail, sizeof(out->update_detail), "Error 0x%08x - reconnect and retry", (unsigned)ota.result);
+        else COPY(update_detail, "Restarting into the application");
+        out->progress = ota.active ? ota.progress_permille : 1000;
+        COPY(update_owner, iris.transport == ESP_IRIS_TRANSPORT_KIND_USB ? "USB" : "TCP");
+        COPY(update_verified, "SHA-256");
+        return;
     }
-
-    if (!s_ui.ota_was_active || ota.job_id != s_ui.ota_job_id) {
-        return false;
-    }
-    if (ota.state == ESP_IRIS_JOB_SUCCEEDED) {
-        lv_label_set_text(s_ui.update_title, "Firmware verified");
-        lv_label_set_text(s_ui.update_detail,
-                          "Restarting into the application");
-        lv_label_set_text(s_ui.update_percent, "100%");
-        lv_bar_set_value(s_ui.update_bar, 1000, LV_ANIM_OFF);
-        ESP_LOGI(TAG, "Recovery OTA verified; restarting application");
-    } else if (ota.state == ESP_IRIS_JOB_FAILED ||
-               ota.state == ESP_IRIS_JOB_CANCELLED) {
-        lv_obj_set_style_bg_color(s_ui.result_mark, COLOR_RED, LV_PART_MAIN);
-        lv_label_set_text(s_ui.result_title, "Firmware update failed");
-        lv_label_set_text_fmt(s_ui.result_detail,
-                              "Error 0x%08x - reconnect and retry",
-                              (unsigned)ota.result);
-        show_page(FACTORY_PAGE_RESULT);
-        ESP_LOGE(TAG, "Recovery OTA failed: %s",
-                 esp_err_to_name(ota.result));
-    }
-    return true;
+    if (s_update_source != UPDATE_SYSTEM || system.update.phase == ESP_IRIS_SYSTEM_UPDATE_PHASE_IDLE) return;
+    out->updating = system_active;
+    out->update_terminal = !system_active;
+    out->update_failed = system.update.phase == ESP_IRIS_SYSTEM_UPDATE_PHASE_FAILED || system.update.phase == ESP_IRIS_SYSTEM_UPDATE_PHASE_CANCELLED;
+    COPY(update_title, system_active ? "Updating system" : out->update_failed ? "Update failed" : "Update complete");
+    const char *detail = "Validating unsigned update plan";
+    if (system.update.phase == ESP_IRIS_SYSTEM_UPDATE_PHASE_RECEIVING)
+        detail = system.owner == FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE ? "Downloading system component" : system.owner == FACTORY_SYSTEM_UPDATE_OWNER_NAND ? "Reading NAND system component" : "Receiving system component";
+    else if (system.update.phase == ESP_IRIS_SYSTEM_UPDATE_PHASE_COMPONENT_VERIFIED) detail = "Component verified";
+    else if (system.update.phase == ESP_IRIS_SYSTEM_UPDATE_PHASE_COMMITTING) detail = "Committing protected system images";
+    else if (system.update.phase == ESP_IRIS_SYSTEM_UPDATE_PHASE_COMMITTED) detail = "System images verified and committed";
+    COPY(update_detail, detail);
+    if (out->update_failed) snprintf(out->update_detail, sizeof(out->update_detail), "Error 0x%08x - use USB to retry", (unsigned)system.update.result);
+    out->progress = system.update.component_size ? (unsigned)((uint64_t)system.update.component_received * 1000 / system.update.component_size) : 0;
+    COPY(update_owner, system.owner == FACTORY_SYSTEM_UPDATE_OWNER_NAND ? "NAND" : system.owner == FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE ? "Bridge" : out->usb_owner ? "USB" : "TCP");
+    COPY(update_verified, "Unsigned");
 }
-
-static void ui_status_task(void *arg)
+static void process_commands(esp_gsp_handle_t ui, void *ctx)
 {
-    (void)arg;
-    while (true) {
-        factory_network_snapshot_t network = {0};
-        esp_iris_status_t iris = {0};
-        const bool have_network =
-            factory_network_get_snapshot(&network) == ESP_OK;
-        const bool have_iris = esp_iris_get_status(&iris) == ESP_OK;
-        if (have_iris && bsp_display_lock(100)) {
-            link_status_update(&network, &iris);
-            if (have_network) {
-                network_ui_update(&network);
-            }
-            if (s_ui.page == FACTORY_PAGE_BRIDGE) {
-                bridge_screen_update(have_network ? &network : NULL);
-            }
-            const bool nand_preparing = nand_ui_update();
-            if (!nand_preparing && !ota_ui_update(&iris)) {
-                system_update_ui_update(&iris);
-            }
-            bsp_display_unlock();
-        }
-        vTaskDelay(pdMS_TO_TICKS(250));
+    (void)ctx;
+    if (!s_init_attempted) {
+        s_init_attempted = true;
+        const vibe_services_t services = {.snapshot = service_snapshot, .command = service_command};
+        s_init_result = vibe_ui_init(&s_ui, ui, &services);
+        xSemaphoreGive(s_initialized);
+    }
+    if (s_init_result != ESP_OK) return;
+    uint8_t request;
+    if (xQueueReceive(s_open_requests, &request, 0) == pdTRUE) {
+        s_open_result = vibe_ui_open_bridge(&s_ui);
+        xSemaphoreGive(s_open_done);
     }
 }
-
+esp_gsp_handle_t factory_ui_handle(void) { return s_ui.ui; }
 esp_err_t factory_ui_start(void)
 {
-    lv_display_t *display = bsp_display_start();
-    ESP_RETURN_ON_FALSE(display, ESP_FAIL, TAG, "start display");
-    ESP_RETURN_ON_FALSE(bsp_display_lock(-1), ESP_FAIL, TAG, "lock display");
-
-    s_ui.display = display;
-    ready_screen_create();
-    wifi_screen_create();
-    pairing_screen_create();
-    bridge_screen_create();
-    password_screen_create();
-    nand_list_screen_create();
-    nand_confirm_screen_create();
-    update_screen_create();
-    result_screen_create();
-    show_page(FACTORY_PAGE_READY);
-    bsp_display_unlock();
-
-    ESP_RETURN_ON_FALSE(xTaskCreate(ui_status_task, "factory_ui", 4096, NULL,
-                                    4, NULL) == pdPASS,
-                        ESP_ERR_NO_MEM, TAG, "start UI status task");
-    ESP_LOGI(TAG, "factory UI started at %dx%d", BSP_LCD_H_RES, BSP_LCD_V_RES);
+    esp_display_present_target_config_t display;
+    ESP_RETURN_ON_ERROR(board_display_init(&display), TAG, "display");
+    esp_lcd_touch_handle_t touch = NULL;
+    ESP_RETURN_ON_ERROR(board_touch_init(&touch), TAG, "touch");
+    ESP_RETURN_ON_ERROR(iris_screen_mirror_init(), TAG, "screen backend");
+    s_open_requests = xQueueCreate(1, sizeof(uint8_t));
+    s_open_lock = xSemaphoreCreateMutex();
+    s_open_done = xSemaphoreCreateBinary();
+    s_initialized = xSemaphoreCreateBinary();
+    ESP_RETURN_ON_FALSE(s_open_requests && s_open_lock && s_open_done && s_initialized, ESP_ERR_NO_MEM, TAG, "UI command queue");
+    esp_gsp_config_t config;
+    ESP_RETURN_ON_ERROR(vibe_bundle_open(&config), TAG, "embedded GSP bundle");
+    esp_gsp_esp_lcd_config_t lcd = ESP_GSP_ESP_LCD_CONFIG_INIT();
+    lcd.display = display; lcd.touch = touch;
+    esp_gsp_handle_t ui;
+    ESP_RETURN_ON_ERROR(esp_gsp_esp_lcd_start(&config, &lcd, &ui), TAG, "GSP start");
+    ESP_RETURN_ON_ERROR(iris_screen_mirror_attach(ui), TAG, "screen attach");
+    s_command_timer = esp_gsp_timer_create(ui, 50, process_commands, NULL);
+    ESP_RETURN_ON_FALSE(s_command_timer, ESP_ERR_NO_MEM, TAG, "command timer");
+    xSemaphoreTake(s_initialized, portMAX_DELAY);
+    ESP_RETURN_ON_ERROR(s_init_result, TAG, "Vibe UI");
+    ESP_LOGI(TAG, "Vibe Mode GSP UI ready at 480x480");
     return ESP_OK;
 }
-
 esp_err_t factory_ui_open_bridge(void)
 {
-    if (s_ui.display == NULL || s_ui.bridge_screen == NULL) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    ESP_RETURN_ON_FALSE(bsp_display_lock(1000), ESP_ERR_TIMEOUT, TAG,
-                        "lock display for Bridge page");
-    /* Opening an active session never resets its code or interrupts progress. */
-    if (!iris_bridge_is_running()) {
-        if (s_ui.page == FACTORY_PAGE_BRIDGE) {
-            (void)factory_bridge_open();
-        } else {
-            show_page(FACTORY_PAGE_BRIDGE);
-        }
-    }
-    iris_bridge_snapshot_t snapshot;
-    iris_bridge_get_snapshot(&snapshot);
-    bsp_display_unlock();
-    return snapshot.error;
+    if (!s_command_timer) return ESP_ERR_INVALID_STATE;
+    if (xSemaphoreTake(s_open_lock, pdMS_TO_TICKS(1000)) != pdTRUE) return ESP_ERR_TIMEOUT;
+    const uint8_t request = 1;
+    /* Serialize callers and keep the request storage alive until the render
+     * task completes it; no timed-out stack pointer is ever queued. */
+    xQueueSend(s_open_requests, &request, portMAX_DELAY);
+    xSemaphoreTake(s_open_done, portMAX_DELAY);
+    esp_err_t result = s_open_result;
+    xSemaphoreGive(s_open_lock);
+    return result;
 }
