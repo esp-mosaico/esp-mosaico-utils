@@ -120,11 +120,13 @@ def native_build(tmp_path_factory):
     gspc = os.environ.get("GSPC_EXECUTABLE")
     host = os.environ.get("GSP_SIM_EXECUTABLE")
     assert gspc and host, "Set GSPC_EXECUTABLE and GSP_SIM_EXECUTABLE to the pinned GSP tools"
-    result = subprocess.run([sys.executable, str(component / "tools/sim_bridge/build.py"),
+    build_python = os.environ.get("GSP_BUILD_PYTHON", sys.executable)
+    result = subprocess.run([build_python, str(component / "tools/sim_bridge/build.py"),
         "--project", str(RECOVERY / "pc"), "--build-dir", str(build),
         "--component-dir", str(component), "--gspc", gspc], capture_output=True, text=True, timeout=180)
     assert result.returncode == 0, result.stdout + result.stderr
-    return build / "vibe_backend", build / "vibe_backend_assets/app.gspb", Path(host)
+    manifest = json.loads((build / "vibe_backend-Release.json").read_text())
+    return Path(manifest["executable"]), Path(manifest["bundle"]), Path(host)
 
 
 @pytest.fixture

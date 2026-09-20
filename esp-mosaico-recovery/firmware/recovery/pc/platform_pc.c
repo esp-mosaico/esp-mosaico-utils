@@ -4,6 +4,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 static vibe_ui_t state;
 static vibe_snapshot_t model;
@@ -37,7 +40,13 @@ static void trace_state(esp_gsp_handle_t ui, void *ctx)
     fprintf(file, "{\"page\":%d,\"password_length\":%u,\"password_visible\":%s,\"pending\":%s,\"bridge_running\":%s,\"network\":%d,\"progress\":%u,\"bridge_open_calls\":%u}\n",
         state.page, (unsigned)strlen(state.password), state.password_visible ? "true" : "false",
         state.download_pending ? "true" : "false", model.bridge_running ? "true" : "false", model.network, model.progress, bridge_open_calls);
-    fclose(file); rename(temporary, path);
+    fclose(file);
+#ifdef _WIN32
+    /* The Windows C runtime's rename cannot replace an existing snapshot. */
+    (void)MoveFileExA(temporary, path, MOVEFILE_REPLACE_EXISTING);
+#else
+    (void)rename(temporary, path);
+#endif
 }
 static void snapshot(void *ctx, vibe_snapshot_t *out)
 {
