@@ -7,11 +7,13 @@ using this bootstrap interpreter. Both utilities and workspace CI use this.
 """
 import argparse
 import hashlib
+import io
 import os
 from pathlib import Path
-import subprocess
+import shutil
 import sys
 import urllib.request
+from unittest.mock import patch
 import zipfile
 
 GSP_VERSION = "1.4.0"
@@ -25,14 +27,36 @@ COMPONENT_URL = (
 COMPONENT_CONTENT_SHA256 = "6f1b5cc4f456d652c3f5817b3ea38b463efbb84796d35b3ef9a75d854ff7e236"
 
 
+def extract_verified_zip(data, archive_format, destination):
+    """Work around 0.1.1 copying a ZipInfo instead of its opened byte stream.
+
+    GspManager verifies the archive signature before invoking this hook.
+    Keep the manager's path containment check and use no global site edits.
+    """
+    if archive_format != "zip":
+        raise ValueError("Expected a Windows ZIP release")
+    root = destination.resolve()
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        for member in archive.infolist():
+            target = (root / member.filename).resolve()
+            if root not in target.parents and target != root:
+                raise ValueError("Unsafe GSP archive path: " + member.filename)
+            if member.is_dir():
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with archive.open(member) as source, target.open("wb") as output:
+                shutil.copyfileobj(source, output)
+
+
 def install_tool(product, version):
-    command = [sys.executable, "-m", "gsp.manager"]
-    subprocess.run(command + ["install", version, product], check=True)
-    path = subprocess.check_output(command + ["path", version, product], text=True).strip()
-    executable = Path(path).resolve()
-    if not executable.is_file():
-        raise RuntimeError("GSP manager did not return an executable: " + path)
-    return str(executable)
+    from gsp import manager
+
+    if os.name == "nt":
+        with patch.object(manager, "_safe_extract", extract_verified_zip):
+            executable = manager.GspManager(product).resolve(version)
+    else:
+        executable = manager.GspManager(product).resolve(version)
+    return str(executable.resolve())
 
 
 def prepare(directory, compiler_only=False):
