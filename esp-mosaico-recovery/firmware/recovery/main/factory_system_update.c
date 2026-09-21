@@ -55,7 +55,7 @@ typedef struct {
 
 typedef struct {
     bool prepared;
-    factory_update_plan_component_t plan[FACTORY_SYSTEM_MAX_COMPONENTS];
+    factory_update_plan_component_t *plan;
     size_t plan_count;
     int active_index;
     uint32_t received;
@@ -74,7 +74,11 @@ typedef struct {
 } factory_update_state_t;
 
 static const char *TAG = "factory_sysupdate";
+/* Keep the zero-filled plan in BSS: active_index's nonzero initializer would
+ * otherwise store the entire array in the fixed Recovery flash slot. */
+static factory_update_plan_component_t s_update_plan[FACTORY_SYSTEM_MAX_COMPONENTS];
 static factory_update_state_t s_update = {
+    .plan = s_update_plan,
     .active_index = -1,
 };
 static factory_system_update_owner_t s_owner =
@@ -300,7 +304,7 @@ static void update_state_reset(void)
     s_update.active_partition = NULL;
     s_update.application_received = false;
     s_update.recovery_update = false;
-    memset(s_update.plan, 0, sizeof(s_update.plan));
+    memset(s_update.plan, 0, sizeof(s_update_plan));
     memset(s_update.operation_id, 0, sizeof(s_update.operation_id));
     memset(s_update.target_layout_sha256, 0,
            sizeof(s_update.target_layout_sha256));
