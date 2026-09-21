@@ -5,10 +5,11 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-from iris_gateway.hub import IrisHub
-from iris_gateway.link import SerialLink
 from test_hub import SupervisorLink
 from test_usb_ownership import until
+
+from iris_gateway.hub import IrisHub
+from iris_gateway.link import SerialLink
 
 
 @pytest.fixture

@@ -29,7 +29,7 @@ def describe(service: Any, item: dict, *, workers: list[dict]) -> dict:
         claim = service.project.registry.claim("device:" + device_id if device_id else endpoint)
         owner = claim["owner"] if claim else None
     mode = item.get("firmware_mode") or "unknown"
-    endpoint_state = next((value for value in (hub.list_endpoints() if hub else [])
+    endpoint_state: dict[str, Any] = next((value for value in (hub.list_endpoints() if hub else [])
                            if value.get("endpoint") == endpoint), {})
     if reasons:
         state = "busy"

@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import uuid
+from typing import Any
 
 from .discovery import resolve_usb_port, usb_endpoint
 from .link import EndpointLock
@@ -115,7 +116,7 @@ def run(spec: dict) -> dict:
             # is protected, including nested idf.py/CMake/esptool invocations.
             with open(spec["log_path"], "ab") as log:
                 offset = log.tell()
-                inheritance = {"pass_fds": tuple(descriptors)} if os.name != "nt" else {}
+                inheritance: dict[str, Any] = {"pass_fds": tuple(descriptors)} if os.name != "nt" else {}
                 completed = subprocess.run(argv, cwd=step.get("cwd"), env=environment,
                                            stdout=log, stderr=subprocess.STDOUT, check=False, **inheritance)
             with open(spec["log_path"], "rb") as log:

@@ -9,14 +9,15 @@ from unittest.mock import patch
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from test_hub import SupervisorLink
+from test_usb_ownership import until
+
 from iris_gateway.gateway import GatewayService, create_app
 from iris_gateway.hub import IrisHub
 from iris_gateway.link import EndpointLock, TcpLink
 from iris_gateway.ownership import OwnershipConflict, OwnershipRegistry
 from iris_gateway.project_gateway import ProjectGateway
 from iris_gateway.store import GatewayStore
-from test_hub import SupervisorLink
-from test_usb_ownership import until
 
 D = "00112233445566778899aabbccddeeff"
 E = "tcp:127.0.0.1:29772"

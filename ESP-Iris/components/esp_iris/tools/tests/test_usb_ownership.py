@@ -6,12 +6,13 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+from test_hub import SupervisorLink
+
 from iris_gateway.cli import _web, build_parser
 from iris_gateway.gateway import GatewayService
 from iris_gateway.hub import IrisHub
 from iris_gateway.link import EndpointLock, SerialLink
 from iris_gateway.store import GatewayStore
-from test_hub import SupervisorLink
 
 
 class SilentLink:

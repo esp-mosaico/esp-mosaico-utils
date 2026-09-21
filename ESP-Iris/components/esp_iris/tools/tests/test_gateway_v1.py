@@ -8,11 +8,12 @@ import uuid
 from pathlib import Path
 from unittest.mock import Mock
 
-import iris_gateway.cli as cli_module
-import iris_gateway.crashes as crashes_module
 import pytest
 from aiohttp import FormData
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
+
+import iris_gateway.cli as cli_module
+import iris_gateway.crashes as crashes_module
 from iris_gateway import __version__
 from iris_gateway.cli import _client_ssl, _listen_is_loopback, build_parser
 from iris_gateway.demo import DemoHub

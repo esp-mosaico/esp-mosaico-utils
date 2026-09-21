@@ -7,13 +7,14 @@ from unittest.mock import patch
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
+from test_usb_ownership import until
+
 from iris_gateway.client_lifecycle import CAPABILITY, LEASE_SECONDS, ClientLifecycle
 from iris_gateway.gateway import GatewayService, create_app
 from iris_gateway.hub import IrisHub
 from iris_gateway.ownership import OwnershipRegistry
 from iris_gateway.project_gateway import ProjectGateway
 from iris_gateway.store import GatewayStore
-from test_usb_ownership import until
 
 
 def test_references_idle_deadline_and_passive_queries():

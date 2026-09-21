@@ -246,7 +246,7 @@ def test_writer_survives_parent_exit_and_holds_physical_lock(tmp_path):
         "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,start_new_session=True); "
         f"p.stdin.write({json.dumps(spec).encode()!r}); p.stdin.close(); print(p.pid)"
     )
-    launched = subprocess.run([sys.executable, "-c", parent], capture_output=True, text=True, timeout=5)
+    launched = subprocess.run([sys.executable, "-c", parent], capture_output=True, text=True, timeout=5, check=False)
     assert launched.returncode == 0, launched.stderr
     lock = EndpointLock(endpoint)
     try:
@@ -366,7 +366,7 @@ def test_unmanaged_rom_is_visible_without_opening_or_inventing_identity(tmp_path
     store = GatewayStore(tmp_path)
     service = GatewayService(store, instance_id="discovery")
     hub = HostHub()
-    hub.list_endpoints = lambda: []
+    hub.list_endpoints = list
     service.attach_hub(hub)
     try:
         endpoints = service.list_endpoints()

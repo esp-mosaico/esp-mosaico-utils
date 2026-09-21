@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
+
 from iris_gateway.discovery import IrisUsbDevice
 from iris_gateway.gateway import GatewayService, create_app
 from iris_gateway.hub import IrisHub

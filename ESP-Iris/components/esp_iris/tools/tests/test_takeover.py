@@ -7,15 +7,16 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
+from test_hub import SupervisorLink
+from test_project_ownership import D, E, registry
+from test_usb_ownership import until
+
 from iris_gateway.gateway import GatewayService, create_app
 from iris_gateway.hub import IrisHub
 from iris_gateway.link import TcpLink
 from iris_gateway.project_gateway import ProjectGateway
 from iris_gateway.security import Actor
 from iris_gateway.store import GatewayStore
-from test_hub import SupervisorLink
-from test_project_ownership import D, E, registry
-from test_usb_ownership import until
 
 
 @contextlib.asynccontextmanager

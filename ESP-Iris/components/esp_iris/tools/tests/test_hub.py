@@ -4,6 +4,7 @@ import asyncio
 import struct
 
 import pytest
+
 from iris_gateway.hub import (
     IrisHub,
     _next_complete_screen_frame,
