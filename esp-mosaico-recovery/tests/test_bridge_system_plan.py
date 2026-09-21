@@ -17,6 +17,7 @@ class SystemPlanTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.directory = tempfile.TemporaryDirectory(prefix="iris-device-policy-")
+        cls.addClassCleanup(cls.cleanup_fixture)
         out = Path(cls.directory.name)
         root = Path(__file__).resolve().parents[1]
         cjson = Path(os.environ.get("CJSON_COMPONENT_DIR", str(root / "firmware/recovery/managed_components/espressif__cjson")))
@@ -27,13 +28,17 @@ class SystemPlanTests(unittest.TestCase):
             "typedef int esp_err_t;\n#define ESP_OK 0\n"
             "#define ESP_ERR_INVALID_ARG 1\n#define ESP_ERR_NOT_SUPPORTED 2\n"
         )
-        subprocess.run([
+        library = out / ("validator.dll" if os.name == "nt" else "validator.so")
+        command = [
             os.environ.get("CC", "cc"), "-std=c11", "-Wall", "-Wextra", "-Werror",
             "-shared", "-fPIC", "-I", str(out), "-I", str(source.parent),
             str(root / "firmware/recovery/components/iris_bridge/system_plan.c"), str(source),
-            "-o", str(out / "validator.so"),
-        ], check=True)
-        cls.lib = ctypes.CDLL(str(out / "validator.so"))
+            "-o", str(library),
+        ]
+        if os.name == "nt":
+            command.append("-Wl,--export-all-symbols")
+        subprocess.run(command, check=True)
+        cls.lib = ctypes.CDLL(str(library))
         cls.lib.cJSON_Parse.argtypes = [ctypes.c_char_p]
         cls.lib.cJSON_Parse.restype = ctypes.c_void_p
         cls.lib.cJSON_Delete.argtypes = [ctypes.c_void_p]
@@ -43,7 +48,12 @@ class SystemPlanTests(unittest.TestCase):
         cls.lib.iris_bridge_validate_system_plan.restype = ctypes.c_int
 
     @classmethod
-    def tearDownClass(cls):
+    def cleanup_fixture(cls):
+        if hasattr(cls, "lib"):
+            if os.name == "nt":
+                import _ctypes
+                _ctypes.FreeLibrary(cls.lib._handle)
+            del cls.lib
         cls.directory.cleanup()
 
     def plan(self, kinds=("partition_table", "bootloader")):

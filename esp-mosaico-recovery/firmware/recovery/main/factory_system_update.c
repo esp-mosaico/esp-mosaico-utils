@@ -1633,10 +1633,11 @@ static esp_err_t source_prepare(
     const char *parse_end = NULL;
     cJSON *root = cJSON_ParseWithLengthOpts(
         (const char *)manifest, manifest_size, &parse_end, false);
-    ESP_RETURN_ON_FALSE(root != NULL &&
-                            parse_end == (const char *)manifest + manifest_size,
-                        ESP_ERR_INVALID_ARG, TAG,
-                        "parse local update manifest");
+    if (root == NULL ||
+        parse_end != (const char *)manifest + manifest_size) {
+        cJSON_Delete(root);
+        return ESP_ERR_INVALID_ARG;
+    }
     const cJSON *components = json_member(root, "components");
     const int component_count = cJSON_IsArray(components)
         ? cJSON_GetArraySize(components) : 0;

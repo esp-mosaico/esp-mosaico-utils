@@ -14,6 +14,23 @@ static uint8_t flash[0x1000000];
 static int erased, persisted, corrupt_readback;
 static uint32_t last_write;
 static const esp_partition_t *boot;
+static size_t cjson_allocations;
+
+static void *counted_cjson_malloc(size_t size)
+{
+    void *memory = malloc(size);
+    if (memory != NULL)
+        ++cjson_allocations;
+    return memory;
+}
+
+static void counted_cjson_free(void *memory)
+{
+    if (memory != NULL)
+        --cjson_allocations;
+    free(memory);
+}
+
 void vTaskDelay(unsigned ms)
 {
     (void)ms;
@@ -287,6 +304,30 @@ static esp_err_t prepare_bridge(char *json, bool allow_bootloader)
 
 int main(void)
 {
+    /* A parsed prefix followed by trailing bytes must not leak its cJSON tree. */
+    setup();
+    char *trailing = manifest(true, "data", 0x200000, 4);
+    size_t trailing_size = strlen(trailing);
+    trailing = realloc(trailing, trailing_size + 2);
+    assert(trailing);
+    trailing[trailing_size++] = 'x';
+    trailing[trailing_size] = '\0';
+    cJSON_Hooks hooks = {
+        .malloc_fn = counted_cjson_malloc,
+        .free_fn = counted_cjson_free,
+    };
+    cjson_allocations = 0;
+    cJSON_InitHooks(&hooks);
+    for (int i = 0; i < 32; ++i) {
+        assert(factory_system_update_source_prepare(
+                   FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE,
+                   (uint8_t *)trailing, trailing_size, op) ==
+               ESP_ERR_INVALID_ARG);
+        assert(cjson_allocations == 0);
+    }
+    cJSON_InitHooks(NULL);
+    free(trailing);
+
     setup();
     assert(factory_system_update_source_reserve(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE,
                                                 op) == 0);
