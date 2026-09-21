@@ -7,14 +7,13 @@ from unittest.mock import patch
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
-from test_usb_ownership import until
-
 from iris_gateway.client_lifecycle import CAPABILITY, LEASE_SECONDS, ClientLifecycle
 from iris_gateway.gateway import GatewayService, create_app
 from iris_gateway.hub import IrisHub
 from iris_gateway.ownership import OwnershipRegistry
 from iris_gateway.project_gateway import ProjectGateway
 from iris_gateway.store import GatewayStore
+from test_usb_ownership import until
 
 
 def test_references_idle_deadline_and_passive_queries():
@@ -67,7 +66,7 @@ def test_idle_join_renews_once_and_private_tokens_are_not_exposed():
         lifetime.register({})
 
 
-@pytest.mark.parametrize("work", ["operations", "maintenance", "jobs", "requests", "mirrors", "streams"])
+@pytest.mark.parametrize("work", ["operations", "host_workers", "jobs", "requests", "mirrors", "streams"])
 def test_work_without_clients_defers_idle_shutdown(work):
     now = [0.0]
     lifetime = ClientLifecycle(clock=lambda: now[0])
