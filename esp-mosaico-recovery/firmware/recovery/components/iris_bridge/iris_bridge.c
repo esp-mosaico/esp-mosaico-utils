@@ -1,4 +1,5 @@
 #include "iris_bridge.h"
+#include "system_plan.h"
 #include "cJSON.h"
 #include "esp_app_desc.h"
 #include "esp_chip_info.h"
@@ -27,7 +28,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define LIMIT 32768
+#define LIMIT 98304 /* 32 KiB manifest plus bounded image descriptors. */
 static iris_bridge_config_t cfg;
 static char session[80], token[160], boot_id[33], mac[18];
 static atomic_bool stop_requested;
@@ -394,6 +395,10 @@ static bool inventory(void)
     cJSON_AddItemToArray(caps, cJSON_CreateString("select_boot"));
     if (cfg.enable_factory_update)
         cJSON_AddItemToArray(caps, cJSON_CreateString("factory_update"));
+    if (cfg.enable_system_update)
+        cJSON_AddItemToArray(caps, cJSON_CreateString("system_update"));
+    if (cfg.enable_system_update && cfg.enable_bootloader_update)
+        cJSON_AddItemToArray(caps, cJSON_CreateString("bootloader_update"));
     factory_sysmeta_record_t previous;
     if (factory_system_metadata_load_last_result(&previous) == ESP_OK) {
         char ophex[33];
@@ -573,6 +578,7 @@ done:
     }
     return err;
 }
+
 /* Backend validates target partition types and bounds; transport never grants
  * Flash permission. */
 static esp_err_t execute(const char *op, const cJSON *plan)
@@ -582,11 +588,18 @@ static esp_err_t execute(const char *op, const cJSON *plan)
         return ESP_ERR_INVALID_STATE;
     last_cancel_check = esp_timer_get_time();
     const char *mode = str(plan, "mode");
+    bool system = strcmp(mode, "system_update") == 0;
     bool layout = strcmp(mode, "layout") == 0;
     bool factory = strcmp(mode, "factory") == 0;
-    if ((factory && !cfg.enable_factory_update) ||
-        (!layout && !factory && strcmp(mode, "partitions") != 0))
+    if ((system && !cfg.enable_system_update) ||
+        (factory && !cfg.enable_factory_update) ||
+        (!system && !layout && !factory && strcmp(mode, "partitions") != 0))
         return ESP_ERR_NOT_SUPPORTED;
+    if (system) {
+        esp_err_t policy = iris_bridge_validate_system_plan(plan, cfg.enable_bootloader_update, cfg.enable_factory_update);
+        if (policy != ESP_OK)
+            return policy;
+    }
     if (factory) {
         const cJSON *m = cJSON_GetObjectItemCaseSensitive(plan, "factory_manifest");
         if (strcmp(str(m, "profile_id"), "iris-s31-layout-v1") ||
@@ -615,6 +628,14 @@ static esp_err_t execute(const char *op, const cJSON *plan)
         strcmp(source_hash, str(plan, "source_table_sha256"))) {
         err = ESP_ERR_INVALID_VERSION;
         goto abort;
+    }
+    if (system) {
+        const cJSON *manifest = cJSON_GetObjectItemCaseSensitive(plan, "system_manifest");
+        err = factory_system_update_source_prepare_bridge(
+            manifest, opid, cfg.enable_bootloader_update);
+        if (err != ESP_OK)
+            goto abort;
+        goto prepared;
     }
     if (layout) {
         err = get_table(plan, table);
@@ -741,6 +762,7 @@ static esp_err_t execute(const char *op, const cJSON *plan)
     free(json);
     if (err != ESP_OK)
         goto abort;
+prepared:;
     size_t count = factory_system_update_source_component_count(
         FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE);
     if (!event("WRITING", 0, ESP_OK) || cancelled) {
@@ -755,7 +777,7 @@ static esp_err_t execute(const char *op, const cJSON *plan)
         if (err != ESP_OK)
             goto abort;
         err = transfer(file, &c,
-                       c.kind == ESP_IRIS_SYSTEM_UPDATE_COMPONENT_PARTITION_TABLE
+                       !system && c.kind == ESP_IRIS_SYSTEM_UPDATE_COMPONENT_PARTITION_TABLE
                            ? table
                            : (factory ? recovery : NULL));
         if (err != ESP_OK)

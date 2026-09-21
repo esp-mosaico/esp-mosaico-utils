@@ -256,6 +256,35 @@ static char *layout_manifest(bool complete)
     return json;
 }
 
+static char *bootloader_manifest(void)
+{
+    char *json = layout_manifest(true);
+    cJSON *root = cJSON_Parse(json);
+    free(json);
+    json = manifest(false, "bootloader", 0x2000, 0x6000);
+    cJSON *other = cJSON_Parse(json);
+    free(json);
+    cJSON *component = cJSON_DetachItemFromArray(cJSON_GetObjectItem(other, "components"), 0);
+    cJSON_ReplaceItemInObject(component, "id", cJSON_CreateNumber(4));
+    cJSON_ReplaceItemInObject(component, "file", cJSON_CreateString("bootloader.bin"));
+    cJSON_AddItemToArray(cJSON_GetObjectItem(root, "components"), component);
+    cJSON_Delete(other);
+    json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return json;
+}
+
+static esp_err_t prepare_bridge(char *json, bool allow_bootloader)
+{
+    cJSON *root = cJSON_Parse(json);
+    assert(root);
+    esp_err_t err = factory_system_update_source_prepare_bridge(
+        root, op, allow_bootloader);
+    cJSON_Delete(root);
+    free(json);
+    return err;
+}
+
 int main(void)
 {
     setup();
@@ -409,5 +438,61 @@ int main(void)
     assert(end_component(&c, c.sha256, NULL) == ESP_ERR_INVALID_VERSION);
     assert(!erased && !mock_writes);
     free(image);
+    /* Only an explicit local Bridge policy may grant bootloader replacement. */
+    setup();
+    assert(prepare(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE, bootloader_manifest()) ==
+           ESP_ERR_NOT_SUPPORTED);
+    assert(!erased && !mock_writes);
+    setup();
+    assert(prepare_bridge(bootloader_manifest(), false) == ESP_ERR_NOT_SUPPORTED);
+    assert(!erased && !mock_writes);
+    setup();
+    assert(prepare_bridge(bootloader_manifest(), true) == ESP_OK);
+    assert(update_owner_is(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE) && s_update.plan_count == 4);
+    assert(!erased && !mock_writes);
+    /* Remote JSON cannot override the generic API's local policy. */
+    setup();
+    json = bootloader_manifest();
+    root = cJSON_Parse(json);
+    free(json);
+    cJSON_AddBoolToObject(root, "allow_bootloader", true);
+    json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    assert(prepare(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE, json) == ESP_ERR_NOT_SUPPORTED);
+    assert(!erased && !mock_writes);
+    /* Even local opt-in requires the matching partition table. */
+    setup();
+    assert(prepare_bridge(manifest(true, "bootloader", 0x2000, 0x6000), true) != ESP_OK);
+    assert(!erased && !mock_writes);
+    /* Manifest-only policy remains centralized in the shared backend. */
+    setup();
+    assert(prepare(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE,
+                   manifest(true, "unknown", 0x200000, 4096)) != ESP_OK);
+    assert(!erased && !mock_writes);
+    setup();
+    json = layout_manifest(true);
+    root = cJSON_Parse(json);
+    free(json);
+    cJSON *components = cJSON_GetObjectItem(root, "components");
+    cJSON_AddItemToArray(components, cJSON_DetachItemFromArray(components, 0));
+    json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    assert(prepare(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE, json) != ESP_OK);
+    assert(!erased && !mock_writes);
+    /* Source-neutral ownership and Recovery version checks still apply. */
+    setup();
+    assert(factory_system_update_source_reserve(FACTORY_SYSTEM_UPDATE_OWNER_NAND, op) == ESP_OK);
+    assert(prepare_bridge(bootloader_manifest(), true) == ESP_ERR_INVALID_STATE);
+    assert(update_owner_is(FACTORY_SYSTEM_UPDATE_OWNER_NAND));
+    assert(!erased && !mock_writes);
+    setup();
+    json = bootloader_manifest();
+    root = cJSON_Parse(json);
+    free(json);
+    cJSON_AddStringToObject(root, "minimum_recovery_version", "1.0");
+    json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    assert(prepare_bridge(json, true) == ESP_ERR_INVALID_VERSION);
+    assert(!erased && !mock_writes);
     puts("Recovery backend ownership, layout, readback and factory gates passed");
 }

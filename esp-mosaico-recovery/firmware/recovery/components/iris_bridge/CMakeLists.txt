@@ -1,5 +1,5 @@
 idf_component_register(
-    SRCS "iris_bridge.c"
+    SRCS "iris_bridge.c" "system_plan.c"
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "../../main" "../../../../include"
     REQUIRES efuse esp_http_client esp-tls espressif__cjson mbedtls esp_app_format
