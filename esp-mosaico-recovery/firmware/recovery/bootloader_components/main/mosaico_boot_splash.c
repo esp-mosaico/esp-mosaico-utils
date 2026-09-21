@@ -4,6 +4,7 @@
  */
 
 #include "mosaico_boot_splash.h"
+#include "mosaico_boot_handoff.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -40,6 +41,11 @@
 #define LCD_COLOR_WRITE 0x32U
 #define LCD_BOOT_BRIGHTNESS 0xFFU
 #define LCD_TRANSFER_TIMEOUT_MS 100U
+
+#define BOOT_MOTOR_GPIO 8
+#define BOOT_MOTOR_ON_LEVEL 1
+#define BOOT_MOTOR_OFF_LEVEL 0
+#define BOOT_MOTOR_PULSE_US 60000U
 
 #define LOGO_CELL_PX 8U
 #define LOGO_GLYPH_COLS 5U
@@ -95,6 +101,18 @@ static void gpio_output(int gpio, int level) {
   gpio_ll_output_enable(&GPIO, gpio);
 }
 
+static void boot_feedback_start(void) {
+  /* The motor and panel share VCC_3V3.  Start tactile feedback before the LCD
+   * reset and initialization delays so power-on is perceptible immediately. */
+  gpio_output(LCD_POWER_GPIO, 0);
+  gpio_output(BOOT_MOTOR_GPIO, BOOT_MOTOR_OFF_LEVEL);
+  gpio_ll_set_level(&GPIO, BOOT_MOTOR_GPIO, BOOT_MOTOR_ON_LEVEL);
+}
+
+static void boot_feedback_stop(void) {
+  gpio_ll_set_level(&GPIO, BOOT_MOTOR_GPIO, BOOT_MOTOR_OFF_LEVEL);
+}
+
 static void route_spi_output(int gpio, int signal) {
   esp_rom_gpio_pad_select_gpio(gpio);
   esp_rom_gpio_connect_out_signal(gpio, signal, false, false);
@@ -102,11 +120,20 @@ static void route_spi_output(int gpio, int signal) {
 }
 
 static bool spi_wait(void) {
-  const uint32_t started_ms = esp_log_early_timestamp();
+  uint32_t started_ms = 0;
+  unsigned polls = 0;
   while (!spi_hal_usr_is_done(&s_spi)) {
-    if ((uint32_t)(esp_log_early_timestamp() - started_ms) >=
-        LCD_TRANSFER_TIMEOUT_MS) {
-      return false;
+    /* A normal 64-byte QSPI transfer completes in a few microseconds.  Avoid
+     * reading the early boot clock for every one of the ~7200 chunks; sample
+     * it only if a transfer is unexpectedly slow, while retaining a bounded
+     * failure path for broken hardware. */
+    if ((++polls & 0xFFU) == 0U) {
+      const uint32_t now = esp_log_early_timestamp();
+      if (started_ms == 0U) {
+        started_ms = now;
+      } else if ((uint32_t)(now - started_ms) >= LCD_TRANSFER_TIMEOUT_MS) {
+        return false;
+      }
     }
   }
   return true;
@@ -235,7 +262,9 @@ static bool panel_init(void) {
   gpio_output(lcd_reset_gpio, 0);
   esp_rom_delay_us(10000);
   gpio_ll_set_level(&GPIO, lcd_reset_gpio, 1);
-  esp_rom_delay_us(150000);
+  esp_rom_delay_us(BOOT_MOTOR_PULSE_US - 10000U);
+  boot_feedback_stop();
+  esp_rom_delay_us(150000U - (BOOT_MOTOR_PULSE_US - 10000U));
 
   spi_init();
   if (!lcd_command(0x11, NULL, 0)) {
@@ -250,31 +279,22 @@ static bool panel_init(void) {
   return true;
 }
 
-static uint16_t logo_pixel(unsigned x, unsigned y) {
-  if (x < LOGO_X || x >= LOGO_X + LOGO_WIDTH || y < LOGO_Y ||
-      y >= LOGO_Y + LOGO_HEIGHT) {
-    return 0;
+static bool lcd_write_solid(uint16_t color, size_t pixels, bool keep_cs) {
+  uint8_t fifo[LCD_FIFO_BYTES];
+  for (size_t i = 0; i < sizeof(fifo); i += 2U) {
+    fifo[i] = (uint8_t)(color >> 8);
+    fifo[i + 1U] = (uint8_t)color;
   }
-
-  const unsigned local_x = x - LOGO_X;
-  const unsigned local_y = y - LOGO_Y;
-  const unsigned cell_column = local_x / LOGO_CELL_PX;
-  const unsigned character = cell_column / LOGO_CHAR_ADVANCE;
-  const unsigned glyph_column = cell_column % LOGO_CHAR_ADVANCE;
-  const unsigned glyph_row = local_y / LOGO_CELL_PX;
-  if (character >= LOGO_CHAR_COUNT || glyph_column >= LOGO_GLYPH_COLS ||
-      (s_logo[character][glyph_row] &
-       (1U << (LOGO_GLYPH_COLS - 1U - glyph_column))) == 0U) {
-    return 0;
+  while (pixels > 0U) {
+    const size_t chunk = pixels > sizeof(fifo) / 2U
+                             ? sizeof(fifo) / 2U
+                             : pixels;
+    pixels -= chunk;
+    if (!spi_tx(fifo, chunk * 2U, 4, keep_cs || pixels > 0U)) {
+      return false;
+    }
   }
-
-  const unsigned dot_x = local_x % LOGO_CELL_PX;
-  const unsigned dot_y = local_y % LOGO_CELL_PX;
-  if (dot_x < 1U || dot_x > 6U || dot_y < 1U || dot_y > 6U ||
-      ((dot_x == 1U || dot_x == 6U) && (dot_y == 1U || dot_y == 6U))) {
-    return 0;
-  }
-  return LOGO_COLOR;
+  return true;
 }
 
 static bool draw_splash(void) {
@@ -286,34 +306,45 @@ static bool draw_splash(void) {
     return false;
   }
 
-  uint8_t fifo[LCD_FIFO_BYTES];
-  size_t used = 0;
-  for (unsigned y = 0; y < LCD_HEIGHT; ++y) {
-    for (unsigned x = 0; x < LCD_WIDTH; ++x) {
-      const uint16_t color = logo_pixel(x, y);
-      fifo[used++] = (uint8_t)(color >> 8);
-      fifo[used++] = (uint8_t)color;
-      if (used == sizeof(fifo)) {
-        const bool last = y == LCD_HEIGHT - 1U && x == LCD_WIDTH - 1U;
-        if (!spi_tx(fifo, used, 4, !last)) {
+  if (!lcd_write_solid(0, LCD_WIDTH * LCD_HEIGHT, false)) {
+    return false;
+  }
+  for (unsigned character = 0; character < LOGO_CHAR_COUNT; ++character) {
+    for (unsigned row = 0; row < LOGO_GLYPH_ROWS; ++row) {
+      for (unsigned column = 0; column < LOGO_GLYPH_COLS; ++column) {
+        if ((s_logo[character][row] &
+             (1U << (LOGO_GLYPH_COLS - 1U - column))) == 0U) {
+          continue;
+        }
+        const uint16_t x = LOGO_X +
+            (character * LOGO_CHAR_ADVANCE + column) * LOGO_CELL_PX + 1U;
+        const uint16_t y = LOGO_Y + row * LOGO_CELL_PX + 1U;
+        if (!lcd_set_window(x, y, 6, 6) ||
+            !spi_tx(write_command, sizeof(write_command), 1, true) ||
+            !lcd_write_solid(LOGO_COLOR, 36, false)) {
           return false;
         }
-        used = 0;
       }
     }
   }
-  return used == 0U && lcd_command(0x29, NULL, 0);
+  return lcd_command(0x29, NULL, 0);
 }
 
 bool mosaico_boot_splash_show(void) {
+  mosaico_boot_handoff_clear();
   if (!hardware_version_supported()) {
     ESP_LOGW(TAG, "unsupported hardware; LCD splash skipped");
     return false;
   }
-  if (!panel_init() || !draw_splash()) {
+  boot_feedback_start();
+  const bool splash_visible = panel_init() && draw_splash();
+  /* Idempotent failure guard; the normal path stops after the short pulse. */
+  boot_feedback_stop();
+  if (!splash_visible) {
     ESP_LOGW(TAG, "LCD splash failed; continuing boot");
     return false;
   }
+  mosaico_boot_handoff_publish();
   ESP_LOGW(TAG, "LCD boot splash visible");
   return true;
 }
