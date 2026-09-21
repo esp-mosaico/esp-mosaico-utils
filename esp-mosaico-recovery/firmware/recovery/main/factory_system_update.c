@@ -1020,6 +1020,14 @@ static bool partition_entry_is_immutable(
     return false;
 }
 
+static bool partition_entry_requires_remote_layout_image(
+    const esp_partition_info_t *entry)
+{
+    return entry->pos.offset >= 0x200000U &&
+           !(entry->type == ESP_PARTITION_TYPE_DATA &&
+             entry->subtype == ESP_PARTITION_SUBTYPE_DATA_NVS);
+}
+
 static const esp_partition_info_t *find_partition_entry_at_offset(
     const esp_partition_info_t *entries, int count, uint32_t offset)
 {
@@ -1227,7 +1235,7 @@ static esp_err_t validate_partition_table(const uint8_t *image)
     if (s_update.remote_bridge && !s_update.preserve_layout) {
         for (int i = 0; i < target_count; ++i) {
             if (target_entries[i].magic != ESP_PARTITION_MAGIC ||
-                target_entries[i].pos.offset < 0x200000U)
+                !partition_entry_requires_remote_layout_image(&target_entries[i]))
                 continue;
             bool supplied = false;
             for (size_t j = 0; j < s_update.plan_count; ++j)

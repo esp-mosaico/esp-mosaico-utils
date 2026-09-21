@@ -273,6 +273,17 @@ static char *layout_manifest(bool complete)
     return json;
 }
 
+static char *layout_manifest_without_data(void)
+{
+    char *json = layout_manifest(true);
+    cJSON *root = cJSON_Parse(json);
+    free(json);
+    cJSON_DeleteItemFromArray(cJSON_GetObjectItem(root, "components"), 1);
+    json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return json;
+}
+
 static char *bootloader_manifest(void)
 {
     char *json = layout_manifest(true);
@@ -411,7 +422,7 @@ int main(void)
     s_update.received = 0x1c0000;
     assert(end_component(&c, c.sha256, NULL) == ESP_ERR_IMAGE_INVALID);
     assert(!erased && !mock_writes);
-    /* Layout requires every mutable target, then commits its table last. */
+    /* Layout still requires every non-NVS mutable target. */
     setup();
     assert(prepare(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE, layout_manifest(false)) == 0);
     c = s_update.plan[0].descriptor;
@@ -419,6 +430,25 @@ int main(void)
     assert(write_component(&c, 0, new_table, 4096, NULL) == 0);
     assert(end_component(&c, c.sha256, NULL) != 0);
     assert(!erased);
+
+    /* An omitted NVS image preserves its bytes; other data remains required. */
+    setup();
+    esp_partition_info_t *mutable =
+        &((esp_partition_info_t *)(flash + 0x8000))[5];
+    mutable->subtype = ESP_PARTITION_SUBTYPE_DATA_NVS;
+    strncpy(mutable->label, "nvs", sizeof(mutable->label));
+    assert(prepare(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE,
+                   layout_manifest_without_data()) == 0);
+    for (size_t i = 0; i < 2; i++) {
+        c = s_update.plan[i].descriptor;
+        assert(begin_component(&c, NULL) == 0);
+        const uint8_t *data = i ? (const uint8_t *)"data" : new_table;
+        assert(write_component(&c, 0, data, c.size, NULL) == 0);
+        assert(end_component(&c, c.sha256, NULL) == 0);
+    }
+    assert(commit_update(op, NULL) == 0);
+    assert(last_write == 0x8000);
+
     setup();
     assert(prepare(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE, layout_manifest(true)) == 0);
     for (size_t i = 0; i < 3; i++) {
