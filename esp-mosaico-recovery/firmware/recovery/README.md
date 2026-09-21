@@ -21,12 +21,18 @@ CO5300，绘制黑底橙色点阵 `mosaico`。Logo 使用紧凑的字形数据�
 不依赖 LVGL、GSP、PSRAM 或外部 UI 资源。支持 eFuse 标识的 v1.0、v1.1 和
 v1.2 板；未知板型或 SPI 传输失败时跳过 Logo，继续正常启动与 Recovery。
 
-Logo 仅在 bootloader 阶段显示，不发布跨启动阶段的屏幕交接标记，也不保留
-LP STORE 寄存器。BSP 和应用使用原来的完整屏幕 reset 与初始化流程；进入
-Recovery 或普通应用时允许短暂黑屏，不保证 Logo 连续显示至应用首次刷新。
+确认硬件版本后，bootloader 会先打开 VCC_3V3 并触发约 60 ms 的 GPIO8 短震，
+再继续屏幕初始化和 Logo 绘制。短震复用了原有屏幕复位等待时间，没有额外延长
+启动流程；失败路径会再次确保马达关闭，未知板型不会驱动马达。
 
-bootloader 默认仅保留 ERROR 日志，以适配 `0x2000` 到 `0x8000` 的 24 KiB
-固定空间。分区布局、OTA 选择、Recovery Boot 按键和恢复协议不变。维护者必须
+Logo 完整写入后通过 LP STORE15 发布一次性屏幕交接标记。支持该协议的 BSP
+会在应用启动时消费标记，跳过重复面板 reset、Sleep Out 和 Display On 延迟，
+保留 Logo 直至应用首帧覆盖。Logo 初始化或传输失败时不发布标记，BSP 自动
+回到原来的完整初始化流程。
+
+bootloader 默认关闭串口日志，以适配 `0x2000` 到 `0x8000` 的 24 KiB 固定
+空间；Logo 和分区选择失败仍通过安全回退或复位处理。分区布局、OTA 选择、
+Recovery Boot 按键和恢复协议不变。维护者必须
 在更新源码后重新生成并校验 `prebuilt/recovery` 的完整包，不能只替换其中一个
 镜像；普通应用更新仍使用宿主 workspace 的 `mosaico.py iris app-update`。
 

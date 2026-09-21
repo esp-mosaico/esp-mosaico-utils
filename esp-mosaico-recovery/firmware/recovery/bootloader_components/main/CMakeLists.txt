@@ -13,6 +13,10 @@ idf_component_register(
         soc
 )
 
+# The retained bootloader has an immutable 24 KiB window.  Prefer minimum
+# code size for the custom partition selector and LCD splash paths.
+target_compile_options(${COMPONENT_LIB} PRIVATE -Oz)
+
 # Keep the default ESP-IDF bootloader linker layout.
 idf_build_get_property(scripts BOOTLOADER_LINKER_SCRIPT)
 target_linker_script(${COMPONENT_LIB} INTERFACE "${scripts}")

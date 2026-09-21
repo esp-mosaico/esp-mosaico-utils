@@ -926,12 +926,18 @@ def recover(arguments: Any, context: RunContext) -> dict[str, Any]:
         raise DeviceError("The local Gateway is required to verify Recovery.")
 
     context.status("bundle: preparing all Recovery artifacts before device maintenance")
-    recovery_components = (
+    required_recovery_components = (
         workspace.bsp_path / "components" / "esp-mosaico-bsp",
         workspace.esp_iris_path / "components" / "esp_iris",
     )
+    optional_boot_splash = workspace.bsp_path / "components" / "mosaico_boot_splash"
+    recovery_components = required_recovery_components + (
+        (optional_boot_splash,) if (optional_boot_splash / "CMakeLists.txt").is_file() else ()
+    )
     missing_components = [
-        str(path) for path in recovery_components if not (path / "CMakeLists.txt").is_file()
+        str(path)
+        for path in required_recovery_components
+        if not (path / "CMakeLists.txt").is_file()
     ]
     if missing_components:
         raise EnvironmentError(
