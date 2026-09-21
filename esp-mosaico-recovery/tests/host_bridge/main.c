@@ -16,6 +16,8 @@ static esp_partition_t app = {
     .address = 0x210000, .size = 0x100000, .subtype = 16, .label = "ota_0"};
 static jmp_buf worker_exit;
 static int restart_count, requests, allocation_count, mock_backend_alloc_fail;
+static int system_prepares;
+static bool system_allow_bootloader;
 static esp_iris_system_update_component_t descriptor;
 static int replies_count, reply_index, test_case;
 static int pairing_snapshots;
@@ -193,6 +195,19 @@ esp_err_t factory_system_update_source_prepare(factory_system_update_owner_t own
     cJSON_Delete(root);
     return 0;
 }
+esp_err_t factory_system_update_source_prepare_bridge(const cJSON *root,
+                                                     const uint8_t *op,
+                                                     bool allow_bootloader)
+{
+    system_prepares++;
+    system_allow_bootloader = allow_bootloader;
+    char *json = cJSON_PrintUnformatted(root);
+    assert(json);
+    esp_err_t err = factory_system_update_source_prepare(
+        FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE, (uint8_t *)json, strlen(json), op);
+    free(json);
+    return err;
+}
 size_t factory_system_update_source_component_count(factory_system_update_owner_t owner)
 {
     (void)owner;
@@ -322,6 +337,10 @@ static iris_bridge_config_t config = {.server_url = "https://flash.example.com",
 static void reset(void)
 {
     test_case++;
+    system_prepares = 0;
+    system_allow_bootloader = false;
+    cfg.enable_system_update = false;
+    cfg.enable_bootloader_update = false;
     expire_on_delay = false;
     activate_after_delays = 0;
     pause_on_poll = false;
@@ -387,6 +406,22 @@ static cJSON *plan(const char *mode)
     cJSON_AddStringToObject(m, "profile_id", "iris-s31-layout-v1");
     cJSON_AddStringToObject(m, "recovery_version", "3.0");
     cJSON_AddNumberToObject(m, "protocol_version", 1);
+    return p;
+}
+
+static cJSON *system_plan(void)
+{
+    cJSON *p = plan("system_update");
+    cJSON *im = cJSON_GetArrayItem(cJSON_GetObjectItem(p, "images"), 0);
+    cJSON_AddNumberToObject(im, "component_id", 1);
+    cJSON_AddStringToObject(im, "kind", "data");
+    cJSON *manifest = cJSON_AddObjectToObject(p, "system_manifest");
+    cJSON_AddStringToObject(manifest, "schema", "esp-iris-system-update/v1");
+    cJSON_AddStringToObject(manifest, "target_layout_sha256", str(p, "target_table_sha256"));
+    cJSON_AddBoolToObject(manifest, "preserve_layout", true);
+    cJSON *components = cJSON_AddArrayToObject(manifest, "components");
+    cJSON_AddItemToArray(components, component(1, "data", 0x210000, 4,
+                                             str(im, "sha256"), "image"));
     return p;
 }
 
@@ -582,6 +617,46 @@ int main(void)
     reply("/files/", 410, "{}", false);
     assert(get_table(p, table) != ESP_OK);
     assert(!mock_writes && !mock_commits);
+    cJSON_Delete(p);
+    /* Full bundle mode is locally gated before writer or network activity. */
+    reset();
+    p = system_plan();
+    assert(execute("12345678901234567890123456789012", p) == ESP_ERR_NOT_SUPPORTED);
+    assert(!mock_reserved && !requests && !system_prepares);
+    cJSON_Delete(p);
+    /* A leased descriptor mismatch cannot reach the backend. */
+    reset();
+    cfg.enable_system_update = true;
+    p = system_plan();
+    cJSON_ReplaceItemInObject(cJSON_GetArrayItem(cJSON_GetObjectItem(p, "images"), 0),
+                              "component_id", cJSON_CreateNumber(2));
+    assert(execute("12345678901234567890123456789012", p) == ESP_ERR_INVALID_ARG);
+    assert(!mock_reserved && !requests && !system_prepares);
+    cJSON_Delete(p);
+    /* Source layout is rechecked under the shared reservation. */
+    reset();
+    cfg.enable_system_update = true;
+    p = system_plan();
+    cJSON_ReplaceItemInObject(p, "source_table_sha256", cJSON_CreateString("stale"));
+    assert(execute("12345678901234567890123456789012", p) == ESP_ERR_INVALID_VERSION);
+    assert(!mock_reserved && !requests && !system_prepares && mock_abort == 1);
+    cJSON_Delete(p);
+    /* The actual new worker branch streams through the shared backend and
+     * restarts after commit; no extra Recovery-sized transport buffer exists. */
+    reset();
+    cfg.enable_system_update = true;
+    cfg.enable_bootloader_update = true;
+    p = system_plan();
+    reply("/progress", 200, "{}", false);
+    reply("/files/", 200, "data", false);
+    reply("/progress", 200, "{}", false);
+    reply("/progress", 200, "{}", false);
+    reply("/progress", 200, "{}", false);
+    reply("/progress", 200, "{}", false);
+    if (!setjmp(worker_exit))
+        execute("12345678901234567890123456789012", p);
+    assert(system_prepares == 1 && system_allow_bootloader);
+    assert(mock_writes == 1 && mock_commits == 1 && restart_count == 1);
     cJSON_Delete(p);
     puts("Bridge worker, cancellation and transaction gates passed");
 }

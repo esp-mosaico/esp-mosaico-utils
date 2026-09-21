@@ -14,6 +14,23 @@ static uint8_t flash[0x1000000];
 static int erased, persisted, corrupt_readback;
 static uint32_t last_write;
 static const esp_partition_t *boot;
+static size_t cjson_allocations;
+
+static void *counted_cjson_malloc(size_t size)
+{
+    void *memory = malloc(size);
+    if (memory != NULL)
+        ++cjson_allocations;
+    return memory;
+}
+
+static void counted_cjson_free(void *memory)
+{
+    if (memory != NULL)
+        --cjson_allocations;
+    free(memory);
+}
+
 void vTaskDelay(unsigned ms)
 {
     (void)ms;
@@ -256,8 +273,72 @@ static char *layout_manifest(bool complete)
     return json;
 }
 
+static char *layout_manifest_without_data(void)
+{
+    char *json = layout_manifest(true);
+    cJSON *root = cJSON_Parse(json);
+    free(json);
+    cJSON_DeleteItemFromArray(cJSON_GetObjectItem(root, "components"), 1);
+    json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return json;
+}
+
+static char *bootloader_manifest(void)
+{
+    char *json = layout_manifest(true);
+    cJSON *root = cJSON_Parse(json);
+    free(json);
+    json = manifest(false, "bootloader", 0x2000, 0x6000);
+    cJSON *other = cJSON_Parse(json);
+    free(json);
+    cJSON *component = cJSON_DetachItemFromArray(cJSON_GetObjectItem(other, "components"), 0);
+    cJSON_ReplaceItemInObject(component, "id", cJSON_CreateNumber(4));
+    cJSON_ReplaceItemInObject(component, "file", cJSON_CreateString("bootloader.bin"));
+    cJSON_AddItemToArray(cJSON_GetObjectItem(root, "components"), component);
+    cJSON_Delete(other);
+    json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    return json;
+}
+
+static esp_err_t prepare_bridge(char *json, bool allow_bootloader)
+{
+    cJSON *root = cJSON_Parse(json);
+    assert(root);
+    esp_err_t err = factory_system_update_source_prepare_bridge(
+        root, op, allow_bootloader);
+    cJSON_Delete(root);
+    free(json);
+    return err;
+}
+
 int main(void)
 {
+    /* A parsed prefix followed by trailing bytes must not leak its cJSON tree. */
+    setup();
+    char *trailing = manifest(true, "data", 0x200000, 4);
+    size_t trailing_size = strlen(trailing);
+    trailing = realloc(trailing, trailing_size + 2);
+    assert(trailing);
+    trailing[trailing_size++] = 'x';
+    trailing[trailing_size] = '\0';
+    cJSON_Hooks hooks = {
+        .malloc_fn = counted_cjson_malloc,
+        .free_fn = counted_cjson_free,
+    };
+    cjson_allocations = 0;
+    cJSON_InitHooks(&hooks);
+    for (int i = 0; i < 32; ++i) {
+        assert(factory_system_update_source_prepare(
+                   FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE,
+                   (uint8_t *)trailing, trailing_size, op) ==
+               ESP_ERR_INVALID_ARG);
+        assert(cjson_allocations == 0);
+    }
+    cJSON_InitHooks(NULL);
+    free(trailing);
+
     setup();
     assert(factory_system_update_source_reserve(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE,
                                                 op) == 0);
@@ -341,7 +422,7 @@ int main(void)
     s_update.received = 0x1c0000;
     assert(end_component(&c, c.sha256, NULL) == ESP_ERR_IMAGE_INVALID);
     assert(!erased && !mock_writes);
-    /* Layout requires every mutable target, then commits its table last. */
+    /* Layout still requires every non-NVS mutable target. */
     setup();
     assert(prepare(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE, layout_manifest(false)) == 0);
     c = s_update.plan[0].descriptor;
@@ -349,6 +430,25 @@ int main(void)
     assert(write_component(&c, 0, new_table, 4096, NULL) == 0);
     assert(end_component(&c, c.sha256, NULL) != 0);
     assert(!erased);
+
+    /* An omitted NVS image preserves its bytes; other data remains required. */
+    setup();
+    esp_partition_info_t *mutable =
+        &((esp_partition_info_t *)(flash + 0x8000))[5];
+    mutable->subtype = ESP_PARTITION_SUBTYPE_DATA_NVS;
+    strncpy(mutable->label, "nvs", sizeof(mutable->label));
+    assert(prepare(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE,
+                   layout_manifest_without_data()) == 0);
+    for (size_t i = 0; i < 2; i++) {
+        c = s_update.plan[i].descriptor;
+        assert(begin_component(&c, NULL) == 0);
+        const uint8_t *data = i ? (const uint8_t *)"data" : new_table;
+        assert(write_component(&c, 0, data, c.size, NULL) == 0);
+        assert(end_component(&c, c.sha256, NULL) == 0);
+    }
+    assert(commit_update(op, NULL) == 0);
+    assert(last_write == 0x8000);
+
     setup();
     assert(prepare(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE, layout_manifest(true)) == 0);
     for (size_t i = 0; i < 3; i++) {
@@ -409,5 +509,61 @@ int main(void)
     assert(end_component(&c, c.sha256, NULL) == ESP_ERR_INVALID_VERSION);
     assert(!erased && !mock_writes);
     free(image);
+    /* Only an explicit local Bridge policy may grant bootloader replacement. */
+    setup();
+    assert(prepare(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE, bootloader_manifest()) ==
+           ESP_ERR_NOT_SUPPORTED);
+    assert(!erased && !mock_writes);
+    setup();
+    assert(prepare_bridge(bootloader_manifest(), false) == ESP_ERR_NOT_SUPPORTED);
+    assert(!erased && !mock_writes);
+    setup();
+    assert(prepare_bridge(bootloader_manifest(), true) == ESP_OK);
+    assert(update_owner_is(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE) && s_update.plan_count == 4);
+    assert(!erased && !mock_writes);
+    /* Remote JSON cannot override the generic API's local policy. */
+    setup();
+    json = bootloader_manifest();
+    root = cJSON_Parse(json);
+    free(json);
+    cJSON_AddBoolToObject(root, "allow_bootloader", true);
+    json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    assert(prepare(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE, json) == ESP_ERR_NOT_SUPPORTED);
+    assert(!erased && !mock_writes);
+    /* Even local opt-in requires the matching partition table. */
+    setup();
+    assert(prepare_bridge(manifest(true, "bootloader", 0x2000, 0x6000), true) != ESP_OK);
+    assert(!erased && !mock_writes);
+    /* Manifest-only policy remains centralized in the shared backend. */
+    setup();
+    assert(prepare(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE,
+                   manifest(true, "unknown", 0x200000, 4096)) != ESP_OK);
+    assert(!erased && !mock_writes);
+    setup();
+    json = layout_manifest(true);
+    root = cJSON_Parse(json);
+    free(json);
+    cJSON *components = cJSON_GetObjectItem(root, "components");
+    cJSON_AddItemToArray(components, cJSON_DetachItemFromArray(components, 0));
+    json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    assert(prepare(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE, json) != ESP_OK);
+    assert(!erased && !mock_writes);
+    /* Source-neutral ownership and Recovery version checks still apply. */
+    setup();
+    assert(factory_system_update_source_reserve(FACTORY_SYSTEM_UPDATE_OWNER_NAND, op) == ESP_OK);
+    assert(prepare_bridge(bootloader_manifest(), true) == ESP_ERR_INVALID_STATE);
+    assert(update_owner_is(FACTORY_SYSTEM_UPDATE_OWNER_NAND));
+    assert(!erased && !mock_writes);
+    setup();
+    json = bootloader_manifest();
+    root = cJSON_Parse(json);
+    free(json);
+    cJSON_AddStringToObject(root, "minimum_recovery_version", "1.0");
+    json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    assert(prepare_bridge(json, true) == ESP_ERR_INVALID_VERSION);
+    assert(!erased && !mock_writes);
     puts("Recovery backend ownership, layout, readback and factory gates passed");
 }
