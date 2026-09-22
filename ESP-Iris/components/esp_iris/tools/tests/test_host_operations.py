@@ -338,10 +338,15 @@ def test_rom_work_stops_mirrors_and_requires_job_terminal_confirmation(tmp_path,
                                          "job_id": 7, "job_state": "running"})
         hub.active_mirrors = lambda _: [3, 4, 5]
         hub.mirror_stop = AsyncMock()
-        hub.job = AsyncMock(side_effect=[
-            {"job_id": 7, "job_state": "running", "cancel_requested": True},
-            {"job_id": 7, "job_state": "cancelled" if finishes else "running"},
-        ])
+        # A non-terminal device may be polled more than once before the
+        # deadline, depending on the platform's event-loop timer resolution.
+        def job_result(device_id, job_id, *, cancel):
+            assert (device_id, job_id) == ("device-a", 7)
+            return {"job_id": 7,
+                    "job_state": "cancelled" if finishes and not cancel else "running",
+                    "cancel_requested": cancel}
+
+        hub.job = AsyncMock(side_effect=job_result)
         try:
             if finishes:
                 await stop_session_work(service, "device-a", 0.08)
@@ -352,7 +357,9 @@ def test_rom_work_stops_mirrors_and_requires_job_terminal_confirmation(tmp_path,
                 assert ("device-a", 7) in service.jobs
             assert [call.args for call in hub.mirror_stop.await_args_list] == [
                 ("device-a", 3), ("device-a", 4), ("device-a", 5)]
-            assert [call.kwargs["cancel"] for call in hub.job.await_args_list] == [True, False]
+            cancellations = [call.kwargs["cancel"] for call in hub.job.await_args_list]
+            assert len(cancellations) >= 2 and cancellations[0] is True
+            assert not any(cancellations[1:])
             assert not hub.actions
         finally:
             store.close()
@@ -381,6 +388,7 @@ def test_unmanaged_rom_is_visible_without_opening_or_inventing_identity(tmp_path
 
 def test_host_worker_uses_reenumerated_device_path(tmp_path, monkeypatch):
     from serial.tools import list_ports
+
     from iris_gateway import host_worker
 
     operation_id = str(uuid.uuid4())

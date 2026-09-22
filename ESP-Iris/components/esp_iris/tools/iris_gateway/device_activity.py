@@ -17,15 +17,17 @@ async def stop_session_work(service: Any, device_id: str, timeout: float) -> Non
         return value
 
     for channel in hub.active_mirrors(device_id):
-        await asyncio.wait_for(hub.mirror_stop(device_id, channel), remaining())
+        wait_timeout = remaining()
+        await asyncio.wait_for(hub.mirror_stop(device_id, channel), wait_timeout)
     requested = set()
     while True:
         jobs = [key[1] for key in service.jobs if key[0] == device_id]
         if not jobs:
             return
         for job_id in jobs:
+            wait_timeout = remaining()
             result = await asyncio.wait_for(
-                hub.job(device_id, job_id, cancel=job_id not in requested), remaining())
+                hub.job(device_id, job_id, cancel=job_id not in requested), wait_timeout)
             requested.add(job_id)
             service.observe_device_activity({"kind": "job", "device_id": device_id, **result})
         if any(key[0] == device_id for key in service.jobs):
