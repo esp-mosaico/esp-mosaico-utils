@@ -25,6 +25,10 @@ typedef enum {
 typedef struct {
     factory_system_update_owner_t owner;
     esp_iris_system_update_status_t update;
+    /* Local, lock-consistent payload totals; includes the active component. */
+    uint64_t total_size;
+    uint64_t received_size;
+    uint64_t completed_size;
 } factory_system_update_status_t;
 
 /* Register the Recovery-resident, product-owned Flash-policy backend.

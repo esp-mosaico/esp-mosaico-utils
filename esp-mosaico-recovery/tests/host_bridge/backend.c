@@ -451,12 +451,28 @@ int main(void)
 
     setup();
     assert(prepare(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE, layout_manifest(true)) == 0);
+    factory_system_update_status_t telemetry;
+    assert(factory_system_update_get_status(&telemetry) == ESP_OK);
+    assert(telemetry.total_size == 4096 + 4 + 4 && telemetry.received_size == 0);
+    uint64_t accepted = 0;
     for (size_t i = 0; i < 3; i++) {
         c = s_update.plan[i].descriptor;
         assert(begin_component(&c, NULL) == 0);
+        assert(factory_system_update_get_status(&telemetry) == ESP_OK);
+        assert(telemetry.received_size == accepted && telemetry.completed_size == accepted);
         const uint8_t *data = i ? (const uint8_t *)"data" : new_table;
-        assert(write_component(&c, 0, data, c.size, NULL) == 0);
+        assert(write_component(&c, 0, data, c.size / 2, NULL) == 0);
+        assert(factory_system_update_get_status(&telemetry) == ESP_OK);
+        assert(telemetry.received_size == accepted + c.size / 2);
+        assert(write_component(&c, 0, data, c.size / 2, NULL) != ESP_OK);
+        assert(factory_system_update_get_status(&telemetry) == ESP_OK);
+        assert(telemetry.received_size == accepted + c.size / 2); /* rejected replay */
+        assert(write_component(&c, c.size / 2, data + c.size / 2, c.size - c.size / 2, NULL) == 0);
+        accepted += c.size;
         assert(end_component(&c, c.sha256, NULL) == 0);
+        assert(factory_system_update_get_status(&telemetry) == ESP_OK);
+        assert(telemetry.received_size == accepted && telemetry.completed_size == accepted);
+        assert(telemetry.update.completed_components == i + 1);
         assert(!memcmp(flash + 0x8000 + 5 * 32 + 4, "\0\0\x20\0", 4));
     }
     assert(commit_update(op, NULL) == 0);

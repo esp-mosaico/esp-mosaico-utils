@@ -123,7 +123,7 @@ static bool update_owner_is(factory_system_update_owner_t owner)
 static void update_status_start(
     factory_system_update_owner_t owner,
     const uint8_t operation_id[ESP_IRIS_SYSTEM_OPERATION_ID_BYTES],
-    size_t component_count)
+    size_t component_count, uint64_t total_size)
 {
     taskENTER_CRITICAL(&s_state_lock);
     memset(&s_status, 0, sizeof(s_status));
@@ -132,6 +132,7 @@ static void update_status_start(
            sizeof(s_status.update.operation_id));
     s_status.update.phase = ESP_IRIS_SYSTEM_UPDATE_PHASE_PREPARED;
     s_status.update.component_count = (uint8_t)component_count;
+    s_status.total_size = total_size;
     s_status.update.result = ESP_OK;
     taskEXIT_CRITICAL(&s_state_lock);
 }
@@ -157,6 +158,7 @@ static void update_status_component(uint8_t component_id, uint32_t received,
     taskENTER_CRITICAL(&s_state_lock);
     s_status.update.active_component_id = component_id;
     s_status.update.component_received = received;
+    s_status.received_size = s_status.completed_size + received;
     s_status.update.component_size = size;
     s_status.update.phase = phase;
     taskEXIT_CRITICAL(&s_state_lock);
@@ -166,6 +168,7 @@ static void update_status_component_complete(void)
 {
     taskENTER_CRITICAL(&s_state_lock);
     ++s_status.update.completed_components;
+    s_status.completed_size = s_status.received_size;
     s_status.update.active_component_id = 0;
     s_status.update.phase =
         ESP_IRIS_SYSTEM_UPDATE_PHASE_COMPONENT_VERIFIED;
@@ -709,7 +712,10 @@ static esp_err_t prepare_update_owned(
     memcpy(s_update.operation_id, manifest->operation_id,
            sizeof(s_update.operation_id));
     s_update.prepared = true;
-    update_status_start(owner, manifest->operation_id, s_update.plan_count);
+    uint64_t total_size = 0;
+    for (size_t i = 0; i < s_update.plan_count; ++i)
+        total_size += s_update.plan[i].descriptor.size;
+    update_status_start(owner, manifest->operation_id, s_update.plan_count, total_size);
     ESP_LOGW(TAG, "accepted unsigned system plan with %u component(s)",
              (unsigned)s_update.plan_count);
     return ESP_OK;

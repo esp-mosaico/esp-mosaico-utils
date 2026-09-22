@@ -69,6 +69,7 @@ jobs:
           python -m pip install --disable-pip-version-check
           -r ESP-Iris/components/esp_iris/tools/requirements.lock
           -r ESP-Iris/components/esp_iris/tools/requirements-test.txt
+          -r esp-mosaico-recovery/tests/requirements-ui.txt
       - name: Install Recovery C test dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libssl-dev

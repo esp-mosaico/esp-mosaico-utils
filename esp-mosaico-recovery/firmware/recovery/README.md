@@ -64,8 +64,14 @@ python mosaico.py iris logs
   `--json` 模式保持稳定机器输出，详细过程仍保存在运行日志中。
 - `iris logs` 先显示保留日志，再持续跟随；按 `Ctrl+C` 正常结束。
 
-Recovery 屏幕在普通 OTA 写入期间显示应用镜像接收进度、传输所有者和
-SHA-256 校验状态；完成后显示重启提示。System Update 继续复用同一进度页面。
+Recovery 屏幕在 OTA 更新期间同时显示当前阶段、已传输/总容量、百分比与速率。
+Bridge 使用 `Download`，USB/TCP 使用 `Receive`，NAND 使用 `Read`；速率单位
+为 KiB/s 或 MiB/s，按约一秒内写入后端接受的有效负载计算，不包含传输协议开销。
+首次采样、组件切换、重试及非传输阶段显示 `--`，停滞一个完整窗口后显示零速率。
+
+System Update 的主进度按整包字节数加权，并另列当前组件进度及已校验组件数。
+总大小未知时百分比显示 `--`。传输达到 100% 后仍需完成校验与提交；普通 OTA
+成功后提示重启，失败页显示错误和最后传输进度，不能把传输完成当成应用健康。
 
 ### Download Ideas 的后台配对码
 
@@ -113,11 +119,14 @@ Recovery 主动通过 HTTPS 连接 Bridge 服务，支持 `partitions`、`layout
 Origin）和 `CONFIG_IRIS_FACTORY_BRIDGE_BOARD_ID` 覆盖这两个值；任一值为空都不注册。
 
 首页主按钮为 **Download Ideas**，引导用户访问
-<https://mosaico-spark.espressif.com/> 并选择适合设备的应用。没有保存 Wi-Fi
+<https://mosaico-ideas.espressif.com/> 并选择适合设备的应用。没有保存 Wi-Fi
 配置时，点击主按钮先进入配网页；连接取得 IP 后自动继续下载流程。返回首页
 会取消这次续接。普通 **Wi-Fi** 入口不会自动开启下载。
 
 进入下载页面后，设备等待 Wi-Fi IP、注册并显示服务器配对码。
+扫描页面二维码打开上述网站，在网页输入二维码下方的配对码。网址使用小字，
+常规配对码使用 40px 大字；较长或包含其他 ASCII 字符的码使用 24px 完整显示。
+网站可能要求在浏览器完成人机验证后才能配对。
 网页配对并上传后，设备拉取任务、验证并写入；一次会话仅烧录一次。
 退出会请求异步安全停止，完成或失败后重新进入页面才能再次配对。
 
@@ -254,9 +263,18 @@ python3 tools/gsp-sim/run.py submodule/esp-mosaico-utils/esp-mosaico-recovery/fi
 ```
 
 运行 Recovery 主机测试前，设置 `GSPC_EXECUTABLE`（0.5.0）和
-`GSP_SIM_EXECUTABLE`（1.4.0）。原生模拟器测试使用真实键盘、列表和回调，
+`GSP_SIM_EXECUTABLE`（1.4.0），安装 `tests/requirements-ui.txt` 中的主机依赖。
+原生模拟器测试使用真实键盘、列表和回调，
 并检查 Wi-Fi 列表的截图像素，覆盖字形完整性、卡片间距和反复导航。
+二维码由独立解码器直接从渲染截图验证；OTA 使用确定性的时间与字节数序列，
+覆盖组件切换、停滞、重试、新任务、未知大小及传输完成后的提交失败。
 服务数据由 PC 后端模拟；模拟通过不代表真机网络或更新验收通过。
+
+网站二维码是提交到 `ui/assets/ideas-qr.png` 的静态资源，无设备端编码库。
+需要重新生成时，在主机安装 `tools/requirements-qr.txt`，运行
+`python tools/generate_ideas_qr.py`。脚本固定完整 HTTPS URL、QR version 3、
+M 级纠错、四模块白边和 5 倍整数缩放，生成 185×185 PNG；普通构建直接使用
+该文件，经现有 GSPB 与 Zopfli 压缩链路嵌入固件。
 
 固定 Recovery 槽仍为 `0x20000` / `0x1c0000`。须核对实际构建目录中的
 `factory.bin` 大小；不能仅凭 IDF 构建成功判断镜像适合较小的 factory 槽。
