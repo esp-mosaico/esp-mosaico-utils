@@ -106,7 +106,7 @@ def run(spec: dict) -> dict:
         current = resolve_usb_port(write_endpoint)
         if usb_endpoint(current) not in spec["locks"]:
             raise RuntimeError("USB endpoint identity changed before the host operation")
-        port = str(current["device"])
+        port = str(current["device_path"])
         for step in spec["commands"]:
             argv = [part.replace("{port}", port) for part in step["argv"]]
             environment = os.environ.copy()

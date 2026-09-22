@@ -41,7 +41,7 @@ def test_bridge_worker_and_transaction_gates(tmp_path, kind):
                "-I" + str(tmp_path), "-I" + str(FIXTURE), "-I" + str(headers[0].parent),
                "-I" + str(ROOT / "include"), "-I" + str(BRIDGE / "include"), "-I" + str(ROOT / "firmware/recovery/main"),
                "-I" + str(REPO / "ESP-Iris/components/esp_iris/include"),
-               str(FIXTURE / ("main.c" if kind == "worker" else kind + ".c")), str(cjson_source), "-lcrypto", "-o", str(executable)]
+               str(FIXTURE / ("main.c" if kind == "worker" else kind + ".c")), str(cjson_source), "-lcrypto", "-pthread", "-o", str(executable)]
     if kind == "worker":
         command.append(str(BRIDGE / "system_plan.c"))
     if backend:

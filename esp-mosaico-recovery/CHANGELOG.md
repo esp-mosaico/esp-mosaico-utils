@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- Separate Bridge protocol-2 PRECHECK/COMMITTING authorization from coalesced,
+  retryable progress telemetry, with an execution lease and legacy-server
+  compatibility. Reuse private HTTPS connections for control and component
+  downloads; retain explicit cancellation and the critical commit fence.
+- Persist the local update result before a final HTTPS report with a two-second
+  reboot wait budget. Keep the result available through later inventory even
+  when the cloud acknowledgement is lost. Erase only image-sized, sector-aligned
+  application ranges; retain full data-partition erasure.
+
+- Refresh the complete reviewed Recovery bundle from `151a631`, including
+  ESP-61 QR/OTA status UI, PSRAM and HTTPS throughput improvements, and the
+  device-accepted INFO splash bootloader. Keep the base partition table and
+  initial OTA data byte-identical; record the intermittent cloud progress-gate
+  failure and remaining hardware-validation limits in the bundle README.
 - Replace local HTTP triggers and URL downloads with the Recovery-owned HTTPS
   Bridge client, supporting partitions, layout and factory updates.
 - Add USB `bridge-code` with bounded asynchronous pairing; remove

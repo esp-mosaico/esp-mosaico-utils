@@ -1,3 +1,4 @@
+#include "esp_attr.h"
 #include "factory_system_update.h"
 #include "factory_recovery_version.h"
 
@@ -55,7 +56,7 @@ typedef struct {
 
 typedef struct {
     bool prepared;
-    factory_update_plan_component_t plan[FACTORY_SYSTEM_MAX_COMPONENTS];
+    factory_update_plan_component_t *plan;
     size_t plan_count;
     int active_index;
     uint32_t received;
@@ -74,7 +75,11 @@ typedef struct {
 } factory_update_state_t;
 
 static const char *TAG = "factory_sysupdate";
+/* Keep the zero-filled plan in BSS: active_index's nonzero initializer would
+ * otherwise store the entire array in the fixed Recovery flash slot. */
+static EXT_RAM_BSS_ATTR factory_update_plan_component_t s_update_plan[FACTORY_SYSTEM_MAX_COMPONENTS];
 static factory_update_state_t s_update = {
+    .plan = s_update_plan,
     .active_index = -1,
 };
 static factory_system_update_owner_t s_owner =
@@ -119,7 +124,7 @@ static bool update_owner_is(factory_system_update_owner_t owner)
 static void update_status_start(
     factory_system_update_owner_t owner,
     const uint8_t operation_id[ESP_IRIS_SYSTEM_OPERATION_ID_BYTES],
-    size_t component_count)
+    size_t component_count, uint64_t total_size)
 {
     taskENTER_CRITICAL(&s_state_lock);
     memset(&s_status, 0, sizeof(s_status));
@@ -128,6 +133,7 @@ static void update_status_start(
            sizeof(s_status.update.operation_id));
     s_status.update.phase = ESP_IRIS_SYSTEM_UPDATE_PHASE_PREPARED;
     s_status.update.component_count = (uint8_t)component_count;
+    s_status.total_size = total_size;
     s_status.update.result = ESP_OK;
     taskEXIT_CRITICAL(&s_state_lock);
 }
@@ -153,6 +159,7 @@ static void update_status_component(uint8_t component_id, uint32_t received,
     taskENTER_CRITICAL(&s_state_lock);
     s_status.update.active_component_id = component_id;
     s_status.update.component_received = received;
+    s_status.received_size = s_status.completed_size + received;
     s_status.update.component_size = size;
     s_status.update.phase = phase;
     taskEXIT_CRITICAL(&s_state_lock);
@@ -162,6 +169,7 @@ static void update_status_component_complete(void)
 {
     taskENTER_CRITICAL(&s_state_lock);
     ++s_status.update.completed_components;
+    s_status.completed_size = s_status.received_size;
     s_status.update.active_component_id = 0;
     s_status.update.phase =
         ESP_IRIS_SYSTEM_UPDATE_PHASE_COMPONENT_VERIFIED;
@@ -300,7 +308,7 @@ static void update_state_reset(void)
     s_update.active_partition = NULL;
     s_update.application_received = false;
     s_update.recovery_update = false;
-    memset(s_update.plan, 0, sizeof(s_update.plan));
+    memset(s_update.plan, 0, sizeof(s_update_plan));
     memset(s_update.operation_id, 0, sizeof(s_update.operation_id));
     memset(s_update.target_layout_sha256, 0,
            sizeof(s_update.target_layout_sha256));
@@ -705,7 +713,10 @@ static esp_err_t prepare_update_owned(
     memcpy(s_update.operation_id, manifest->operation_id,
            sizeof(s_update.operation_id));
     s_update.prepared = true;
-    update_status_start(owner, manifest->operation_id, s_update.plan_count);
+    uint64_t total_size = 0;
+    for (size_t i = 0; i < s_update.plan_count; ++i)
+        total_size += s_update.plan[i].descriptor.size;
+    update_status_start(owner, manifest->operation_id, s_update.plan_count, total_size);
     ESP_LOGW(TAG, "accepted unsigned system plan with %u component(s)",
              (unsigned)s_update.plan_count);
     return ESP_OK;
@@ -757,10 +768,8 @@ static esp_err_t begin_component(
                             ESP_ERR_NOT_FOUND, TAG, "application target missing");
         s_update.active_partition = &plan->target_partition;
         const size_t erase_size =
-            s_update.remote_bridge
-                ? s_update.active_partition->size
-                : (component->size + FACTORY_SYSTEM_FLASH_SECTOR_BYTES - 1U) &
-                      ~(FACTORY_SYSTEM_FLASH_SECTOR_BYTES - 1U);
+            (component->size + FACTORY_SYSTEM_FLASH_SECTOR_BYTES - 1U) &
+            ~(FACTORY_SYSTEM_FLASH_SECTOR_BYTES - 1U);
         ESP_LOGI(TAG,
                  "erasing application before receive: offset=0x%08" PRIx32 " size=%u",
                  s_update.active_partition->address, (unsigned)erase_size);

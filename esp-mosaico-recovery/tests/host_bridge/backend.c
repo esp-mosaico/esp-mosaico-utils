@@ -2,7 +2,7 @@
 #include <assert.h>
 #include BACKEND_SOURCE
 
-int64_t mock_time;
+_Atomic int64_t mock_time;
 bool mock_network, mock_stop_on_delay;
 int mock_create_fail, mock_alloc_fail, mock_commit_error, mock_writes, mock_commits,
     mock_reserved, mock_abort;
@@ -371,6 +371,26 @@ int main(void)
     assert(prepare(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE,
                    manifest(true, "application", 0x200000, 4)) != 0);
     assert(!erased);
+    /* Bridge APP erases only complete sectors covering the image. Tail and
+     * adjacent partitions survive; DATA still clears its entire partition. */
+    for (size_t image_size = 4096; image_size <= 4097; image_size++) {
+        setup();
+        memset(flash + 0x210000, 0x55, 0x100000);
+        assert(prepare(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE,
+                       manifest(true, "application", 0x210000, image_size)) == ESP_OK);
+        esp_iris_system_update_component_t app_component = s_update.plan[0].descriptor;
+        assert(begin_component(&app_component, NULL) == ESP_OK);
+        size_t rounded = (image_size + 4095) & ~4095U;
+        assert(flash[0x210000] == 0xff && flash[0x210000 + rounded - 1] == 0xff);
+        assert(flash[0x210000 + rounded] == 0x55 && flash[0x30ffff] == 0x55);
+    }
+    setup();
+    memset(flash + 0x200000, 0x55, 0x10000);
+    assert(prepare(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE,
+                   manifest(true, "data", 0x200000, 4)) == ESP_OK);
+    esp_iris_system_update_component_t data_component = s_update.plan[0].descriptor;
+    assert(begin_component(&data_component, NULL) == ESP_OK);
+    assert(flash[0x200000] == 0xff && flash[0x20ffff] == 0xff);
     /* Actual source table hash and protected prefix are independently checked. */
     setup();
     json = manifest(true, "data", 0x200000, 4);
@@ -451,12 +471,28 @@ int main(void)
 
     setup();
     assert(prepare(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE, layout_manifest(true)) == 0);
+    factory_system_update_status_t telemetry;
+    assert(factory_system_update_get_status(&telemetry) == ESP_OK);
+    assert(telemetry.total_size == 4096 + 4 + 4 && telemetry.received_size == 0);
+    uint64_t accepted = 0;
     for (size_t i = 0; i < 3; i++) {
         c = s_update.plan[i].descriptor;
         assert(begin_component(&c, NULL) == 0);
+        assert(factory_system_update_get_status(&telemetry) == ESP_OK);
+        assert(telemetry.received_size == accepted && telemetry.completed_size == accepted);
         const uint8_t *data = i ? (const uint8_t *)"data" : new_table;
-        assert(write_component(&c, 0, data, c.size, NULL) == 0);
+        assert(write_component(&c, 0, data, c.size / 2, NULL) == 0);
+        assert(factory_system_update_get_status(&telemetry) == ESP_OK);
+        assert(telemetry.received_size == accepted + c.size / 2);
+        assert(write_component(&c, 0, data, c.size / 2, NULL) != ESP_OK);
+        assert(factory_system_update_get_status(&telemetry) == ESP_OK);
+        assert(telemetry.received_size == accepted + c.size / 2); /* rejected replay */
+        assert(write_component(&c, c.size / 2, data + c.size / 2, c.size - c.size / 2, NULL) == 0);
+        accepted += c.size;
         assert(end_component(&c, c.sha256, NULL) == 0);
+        assert(factory_system_update_get_status(&telemetry) == ESP_OK);
+        assert(telemetry.received_size == accepted && telemetry.completed_size == accepted);
+        assert(telemetry.update.completed_components == i + 1);
         assert(!memcmp(flash + 0x8000 + 5 * 32 + 4, "\0\0\x20\0", 4));
     }
     assert(commit_update(op, NULL) == 0);
