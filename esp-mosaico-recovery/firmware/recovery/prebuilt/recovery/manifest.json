@@ -1,11 +1,11 @@
 {
-  "idf_version": "v6.2-dev-2221-g7b9cc1ac79f-dirt",
+  "idf_version": "v6.2-dev-2991-g0f1b3e3ca392",
   "images": {
     "bootloader": {
       "file": "bootloader.bin",
       "offset": "0x2000",
-      "sha256": "2caff18aac0fc37cf8bbc11a73babe51b5de09739c18a42b473d6a6309fe5031",
-      "size": 24432
+      "sha256": "3d261e652561ec82dff28d933cda65cb40a7fece3d4cae05f22cbcdadcfbdd27",
+      "size": 24560
     },
     "ota_data": {
       "file": "ota_data_initial.bin",
@@ -22,8 +22,8 @@
     "recovery": {
       "file": "factory.bin",
       "offset": "0x20000",
-      "sha256": "6c5e0d263e40076aad9cafa2898b38acac265212a9b2024c821187f425138d35",
-      "size": 1815248
+      "sha256": "b388225d5da363e89cbcf3fb031efd03165e644ea2036a9deb93fbc351bee0b8",
+      "size": 1823936
     }
   },
   "initial_boot": {
@@ -50,9 +50,9 @@
     "secure_boot": false
   },
   "source": {
-    "commit": "b520c0987c15242e4baba167d7741384e5079b8b",
-    "dirty": false
+    "commit": "7196691a3d65c52d39b4abc0e12895333fcd7bcd",
+    "dirty": true
   },
   "target": "esp32s31",
-  "version": "0.1"
+  "version": "0.1.2"
 }

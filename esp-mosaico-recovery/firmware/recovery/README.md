@@ -4,15 +4,20 @@
 其源码和评审 bundle 与 `mosaico.py recover` 一同维护。普通应用从宿主
 workspace 的 `projects/hello_world` 创建，不应将本工程作为应用安装到 `ota_0`。
 
-当前源码构建的 Recovery 固件版本为 `0.1`，由
+当前源码构建的 Recovery 固件版本为 `0.1.2`，由
 `sdkconfig.recovery.defaults` 中的 `CONFIG_APP_PROJECT_VER` 定义。
-`prebuilt/recovery` 基础包也使用 `0.1`，其 manifest 记录各镜像的大小与 SHA-256。
-2026-09-22 的预置包已纳入 ESP-61 页面、OTA 速率/PSRAM 优化及 INFO 日志 Logo
-bootloader；镜像来源、硬件验证与已知限制见[预置包记录](prebuilt/recovery/README.md)。
+`prebuilt/recovery` 基础包也使用 `0.1.2`，其 manifest 记录各镜像的大小与 SHA-256。
+2026-09-22 更新纳入 ESP-61 页面、OTA 优化及允许缺省数据分区镜像的修复。
+本次整包通过构建、布局、哈希及宿主测试；维护者于 2026-09-22 确认新版预置包
+已完成真机验收。
+源码来源与 dirty 状态以 `prebuilt/recovery/manifest.json` 为准。
+本次使用 ESP-IDF `v6.2-dev-2991-g0f1b3e3ca392` 和仓库默认配置完整构建：
+`factory.bin` 为 1,823,936 字节，固定槽位剩余 11,072 字节；INFO 日志
+`bootloader.bin` 为 24,560 字节，距离分区表仅余 16 字节，后续改动须特别关注容量。
 默认 `recover` 使用该包，`recover --source current` 使用当前源码重新构建。
 Recovery ABI 与分区布局由工程配置和包 manifest 约束。
 
-System Update 版本检查将 `0.1` 解析为 `0.1.0`，只接受同一主版本线、且
+System Update 版本检查将 `0.1.2` 解析为同一语义版本线，只接受同一主版本线、且
 最低版本要求不高于当前 Recovery 的更新包。Recovery 自更新拒绝降级或
 跨主版本线的镜像。
 
@@ -162,7 +167,13 @@ Bridge 注册响应的 `control_protocol: 2` 启用独立授权：设备向 `/au
 云端最终响应丢失不触发自动重烧，也不等同于目标应用已经健康启动。
 
 应用镜像按实际长度向上对齐 4 KiB 扇区后擦除，不再擦除整个应用分区；其余尾部
-字节保留，镜像及读回校验不变。数据分区仍完整擦除，保持文件系统尾部语义。
+字节保留，镜像及读回校验不变。提供镜像的数据分区仍完整擦除，保持文件系统尾部语义。
+
+远程布局更新允许省略数据分区镜像（包括 SPIFFS/FAT/LittleFS 等），适用于未使用
+或由应用自行初始化的分区；可变应用分区仍必须提供并校验镜像。省略的数据分区
+不会新增擦除或写入操作，但布局改变或其他镜像复用原地址时，旧数据不保证有效或
+保留。网页上传端应列出缺失的非 NVS 数据镜像，并由作者确认后继续。
+该行为需要 Recovery `0.1.2` 与配套 Bridge；旧设备固件仍可能拒绝更新。
 Recovery 的 TLS 动态分配使用 PSRAM，证书校验保持启用。批量下载期间临时关闭
 Wi-Fi 省电，退出或完成时恢复原模式；TCP 接收窗口为 65,535 字节，接收邮箱为
 48 项，避免小窗口限制公网 HTTPS 吞吐。实际速率仍包含同步 Flash 写入耗时。
@@ -281,7 +292,7 @@ ESP-Mosaico workspace 时，`mosaico.py recover` 会根据宿主 workspace 的
 ## Vibe Mode 界面与构建
 
 用户可见名称为 **Vibe Mode**；工程 `factory`、协议角色 `recovery`、
-`recover` 命令、版本 `0.1` 和 Recovery ABI 1 保持不变。
+`recover` 命令和 Recovery ABI 1 保持不变；当前固件版本为 `0.1.2`。
 九个页面由 `ui/main.json` 和可移植的 `main/vibe_ui.c` 实现，PC 与设备共享
 同一控制器及 `ui/profile.yaml` RGB565 编译配置。
 `main/factory_ui.c` 适配网络、Bridge、NAND 和更新状态；

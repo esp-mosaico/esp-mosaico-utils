@@ -1032,9 +1032,11 @@ static bool partition_entry_is_immutable(
 static bool partition_entry_requires_remote_layout_image(
     const esp_partition_info_t *entry)
 {
+    /* Omitted data may be unused or initialized by the application. Do not
+     * synthesize erases/writes; only supplied components own write ranges.
+     * Applications still need verified images when replacing the layout. */
     return entry->pos.offset >= 0x200000U &&
-           !(entry->type == ESP_PARTITION_TYPE_DATA &&
-             entry->subtype == ESP_PARTITION_SUBTYPE_DATA_NVS);
+           entry->type == ESP_PARTITION_TYPE_APP;
 }
 
 static const esp_partition_info_t *find_partition_entry_at_offset(

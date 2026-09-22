@@ -1,5 +1,5 @@
 CONFIG_APP_PROJECT_VER_FROM_CONFIG=y
-CONFIG_APP_PROJECT_VER="0.1"
+CONFIG_APP_PROJECT_VER="0.1.2"
 
 # ESP-Iris owns the separate TinyUSB High-Speed device. Keep UART as the
 # primary blocking console and avoid the built-in USB Serial/JTAG controller.

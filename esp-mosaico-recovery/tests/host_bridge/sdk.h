@@ -210,7 +210,7 @@ static inline const char *esp_get_idf_version(void)
 }
 static inline const esp_app_desc_t *esp_app_get_description(void)
 {
-    static esp_app_desc_t app = {.version = "0.1"};
+    static esp_app_desc_t app = {.version = "0.1.2"};
     return &app;
 }
 static inline const esp_partition_t *esp_ota_get_running_partition(void)

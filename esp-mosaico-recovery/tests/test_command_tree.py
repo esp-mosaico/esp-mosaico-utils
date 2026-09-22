@@ -65,7 +65,7 @@ def test_takeover_preserves_record_and_receiving_project_arguments(action, optio
 
 def test_help_exposes_only_the_public_root_groups():
     help_text = build_parser().format_help()
-    assert "{project,game,iris,doctor,recover}" in help_text
+    assert "{project,game,account,iris,doctor,recover}" in help_text
     assert "session" not in help_text
     assert "install" not in help_text
     assert "monitor" not in help_text
