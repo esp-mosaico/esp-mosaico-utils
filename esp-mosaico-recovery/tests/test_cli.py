@@ -2318,7 +2318,7 @@ class RecoveryCommandTests(unittest.TestCase):
             contexts.enter_context(
                 mock.patch(
                     "mosaico_cli.commands.load_bundle",
-                    return_value={"version": "0.1", "images": {"recovery": {}}},
+                    return_value={"version": "0.1.1", "images": {"recovery": {}}},
                 )
             )
             contexts.enter_context(

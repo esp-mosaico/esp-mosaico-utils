@@ -169,6 +169,26 @@ def build_parser() -> argparse.ArgumentParser:
     project_commands = project_parser.add_subparsers(dest="project_action", required=True)
     from .app_commands import add_commands
     add_commands(commands, project_commands)
+
+    upload_parser = project_commands.add_parser("upload", help="Upload an unsigned Iris application/version as a Mosaico Ideas draft")
+    upload_parser.set_defaults(command="project-upload")
+    upload_parser.add_argument("--project", help="Application directory with mosaico-ideas.json")
+    upload_parser.add_argument("--skip-build", action="store_true")
+    upload_parser.add_argument("--bundle", help="Existing .irisfw bundle; no build is performed")
+    upload_parser.add_argument("--version", dest="release_version", help="Exact release version; must match other version sources")
+    upload_target = upload_parser.add_mutually_exclusive_group()
+    upload_target.add_argument("--create", action="store_true")
+    upload_target.add_argument("--update", metavar="APPLICATION_ID")
+    upload_parser.add_argument("--yes", action="store_true", help="Confirm creation/update and replacement of any existing draft")
+    upload_parser.add_argument("--server", help="Mosaico Ideas HTTPS origin (or MAKER_SPARK_SERVER)")
+    account_parser = commands.add_parser("account", help="Manage browser-approved Mosaico Ideas login")
+    account_commands = account_parser.add_subparsers(dest="account_action", required=True)
+    for account_action in ("login", "status", "logout"):
+        account_child = account_commands.add_parser(account_action)
+        account_child.set_defaults(command="account")
+        account_child.add_argument("--server", help="Mosaico Ideas HTTPS origin (or MAKER_SPARK_SERVER)")
+        if account_action == "login":
+            account_child.add_argument("--open-browser", action="store_true", help="Open the verification page in the system browser")
     iris_parser = commands.add_parser("iris", help="Project Gateway and ESP-Iris device operations")
     iris_commands = iris_parser.add_subparsers(dest="iris_action", required=True)
     test_parser = iris_commands.add_parser("test", help="Test Recovery transitions, Wi-Fi and Bridge pairing")
@@ -523,7 +543,8 @@ def _normalize_globals(argv: Sequence[str]) -> list[str]:
     index = 0
     while index < len(argv):
         value = argv[index]
-        if value in {"--json", "--verbose", "--version"}:
+        upload_version_flag = value == "--version" and "project" in argv[:index] and "upload" in argv[:index]
+        if value in {"--json", "--verbose", "--version"} and not upload_version_flag:
             globals_found.append(value)
         elif value == "--workspace":
             globals_found.append(value)
@@ -646,6 +667,18 @@ def _main(
         else:
             print(f"mosaico: {message}", file=sys.stderr)
         return 3
+    if arguments.command == "account":
+        from .platform_account import account
+        try:
+            result = account(arguments)
+        except MosaicoError as error:
+            _emit_error(error, arguments.json, arguments.verbose)
+            return error.exit_code
+        if arguments.json:
+            print(json.dumps({"ok": True, **result}, ensure_ascii=False, sort_keys=True))
+        else:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        return 0
     try:
         workspace = load_workspace(
             (tool_root or TOOL_ROOT).resolve(), explicit=arguments.workspace
@@ -661,6 +694,20 @@ def _main(
         except MosaicoError as error:
             _emit_error(error, arguments.json, arguments.verbose)
             return error.exit_code
+
+    if arguments.command == "project-upload":
+        from .platform_upload import project_upload
+        try:
+            result = project_upload(arguments, RunContext(workspace, arguments.command, arguments.verbose, arguments.json))
+        except MosaicoError as error:
+            _emit_error(error, arguments.json, arguments.verbose)
+            return error.exit_code
+        if arguments.json:
+            print(json.dumps({"ok": True, **result}, ensure_ascii=False, sort_keys=True))
+        else:
+            print("Draft saved: {} ({})".format(result["application_id"], result["version"]))
+            print("Draft URL: " + result["draft_url"])
+        return 0
 
     if arguments.command in {"session", "device"}:
         try:

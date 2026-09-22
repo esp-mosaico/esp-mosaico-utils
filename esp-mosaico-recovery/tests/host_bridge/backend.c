@@ -442,7 +442,7 @@ int main(void)
     s_update.received = 0x1c0000;
     assert(end_component(&c, c.sha256, NULL) == ESP_ERR_IMAGE_INVALID);
     assert(!erased && !mock_writes);
-    /* Layout still requires every non-NVS mutable target. */
+    /* Layout still requires every mutable application image. */
     setup();
     assert(prepare(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE, layout_manifest(false)) == 0);
     c = s_update.plan[0].descriptor;
@@ -451,7 +451,34 @@ int main(void)
     assert(end_component(&c, c.sha256, NULL) != 0);
     assert(!erased);
 
-    /* An omitted NVS image preserves its bytes; other data remains required. */
+    /* Omitted filesystem data is allowed, including when the target moves.
+     * No implicit initialization/erase: untouched source and target bytes stay
+     * intact. Only the explicit app and final table writes are performed. */
+    const uint8_t data_subtypes[] = {0x81, 0x82, 0x83};
+    for (size_t subtype = 0; subtype < sizeof(data_subtypes); ++subtype) {
+        setup();
+        ((esp_partition_info_t *)(flash + 0x8000))[5].subtype =
+            data_subtypes[subtype];
+        memset(flash + 0x200000, 0x55, 0x10000);
+        memset(flash + 0x310000, 0x66, 0x10000);
+        assert(prepare(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE,
+                       layout_manifest_without_data()) == ESP_OK);
+        for (size_t i = 0; i < 2; i++) {
+            c = s_update.plan[i].descriptor;
+            assert(begin_component(&c, NULL) == ESP_OK);
+            const uint8_t *data = i ? (const uint8_t *)"data" : new_table;
+            assert(write_component(&c, 0, data, c.size, NULL) == ESP_OK);
+            assert(end_component(&c, c.sha256, NULL) == ESP_OK);
+        }
+        assert(commit_update(op, NULL) == ESP_OK);
+        assert(erased == 2 && mock_writes == 2 && last_write == 0x8000);
+        for (size_t i = 0; i < 0x10000; ++i) {
+            assert(flash[0x200000 + i] == 0x55);
+            assert(flash[0x310000 + i] == 0x66);
+        }
+    }
+
+    /* An omitted NVS image remains supported. */
     setup();
     esp_partition_info_t *mutable =
         &((esp_partition_info_t *)(flash + 0x8000))[5];
@@ -508,7 +535,7 @@ int main(void)
     esp_image_segment_header_t segment = {.data_len = sizeof(esp_app_desc_t)};
     memcpy(image + sizeof(header), &segment, sizeof(segment));
     esp_app_desc_t app = {.magic_word = ESP_APP_DESC_MAGIC_WORD,
-                          .version = "0.1"};
+                          .version = "0.1.2"};
     memcpy(image + sizeof(header) + sizeof(segment), &app, sizeof(app));
     size_t end = (sizeof(header) + sizeof(segment) + sizeof(app) + 1 + 15) &
                  ~(size_t)15;
@@ -528,7 +555,7 @@ int main(void)
     assert(
         factory_system_update_source_needs_restart(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE));
     assert(last_write == 0x20000 && !memcmp(flash + 0x20000, image, 0x1c0000));
-    /* Pre-1.0 Recovery images cannot replace the 0.1 release line. */
+    /* Older Recovery images cannot replace the 0.1.2 release. */
     setup();
     esp_app_desc_t *old_app =
         (void *)(image + sizeof(header) + sizeof(segment));
