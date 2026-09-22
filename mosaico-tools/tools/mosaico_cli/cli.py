@@ -167,6 +167,8 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="group", required=True)
     project_parser = commands.add_parser("project", help="Create application projects")
     project_commands = project_parser.add_subparsers(dest="project_action", required=True)
+    from .app_commands import add_commands
+    add_commands(commands, project_commands)
     iris_parser = commands.add_parser("iris", help="Project Gateway and ESP-Iris device operations")
     iris_commands = iris_parser.add_subparsers(dest="iris_action", required=True)
     test_parser = iris_commands.add_parser("test", help="Test Recovery transitions, Wi-Fi and Bridge pairing")
@@ -651,6 +653,14 @@ def _main(
     except MosaicoError as error:
         _emit_error(error, arguments.json, arguments.verbose)
         return error.exit_code
+
+    if arguments.command in {"game", "sim"}:
+        from .app_commands import run
+        try:
+            return run(arguments, workspace)
+        except MosaicoError as error:
+            _emit_error(error, arguments.json, arguments.verbose)
+            return error.exit_code
 
     if arguments.command in {"session", "device"}:
         try:
