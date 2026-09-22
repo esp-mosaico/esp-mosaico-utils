@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Refresh the complete reviewed Recovery bundle from `151a631`, including
+  ESP-61 QR/OTA status UI, PSRAM and HTTPS throughput improvements, and the
+  device-accepted INFO splash bootloader. Keep the base partition table and
+  initial OTA data byte-identical; record the intermittent cloud progress-gate
+  failure and remaining hardware-validation limits in the bundle README.
 - Replace local HTTP triggers and URL downloads with the Recovery-owned HTTPS
   Bridge client, supporting partitions, layout and factory updates.
 - Add USB `bridge-code` with bounded asynchronous pairing; remove

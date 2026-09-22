@@ -7,6 +7,8 @@ workspace 的 `projects/hello_world` 创建，不应将本工程作为应用安�
 当前源码构建的 Recovery 固件版本为 `0.1`，由
 `sdkconfig.recovery.defaults` 中的 `CONFIG_APP_PROJECT_VER` 定义。
 `prebuilt/recovery` 基础包也使用 `0.1`，其 manifest 记录各镜像的大小与 SHA-256。
+2026-09-22 的预置包已纳入 ESP-61 页面、OTA 速率/PSRAM 优化及 INFO 日志 Logo
+bootloader；镜像来源、硬件验证与已知限制见[预置包记录](prebuilt/recovery/README.md)。
 默认 `recover` 使用该包，`recover --source current` 使用当前源码重新构建。
 Recovery ABI 与分区布局由工程配置和包 manifest 约束。
 
