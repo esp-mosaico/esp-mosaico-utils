@@ -16,12 +16,13 @@ Service ID 为 `0x6A03`，方法如下：
 | 6 | 标记计划重启，并在随后三次启动中断言崩溃 |
 | 7 | 显式清除崩溃循环计数 |
 
-方法 2–6 的请求为一个小端 u64 测试 token。自动验收入口为：
+方法 2–6 的请求为一个小端 u64 测试 token。自动验收入口从已配置的 vibe 工作区运行；`--application` 相对 `--workspace` 解析：
 
 ```text
 python3 submodule/esp-mosaico-utils/esp-mosaico-recovery/tests/iris_crash_acceptance/run.py --workspace . --application projects/my_app
 ```
 
 运行器将证据写入 `.codex-runs/iris-crash/`，最后重新安装
-显式传入的生成应用。测试报告必须保留 Device ID、每次 Boot ID、安装 operation、
+显式传入的生成应用。跨工程时通过 Gateway takeover 转交设备，安装与恢复均使用
+`iris system-update`，以支持测试固件与用户应用的不同布局/资源。原有 Gateway 不被终止。测试报告必须保留 Device ID、每次 Boot ID、安装 operation、
 原始 Core Dump、精确 ELF SHA-256、解码器输出和源码位置。

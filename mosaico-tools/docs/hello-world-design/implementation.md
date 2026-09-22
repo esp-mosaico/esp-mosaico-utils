@@ -35,8 +35,8 @@
 ## 验证结果
 
 - 原生 C 后端交互测试通过：101 次问候，覆盖文字点击、箭头点击、按钮外点击、长按、
-  按钮按压边角、百次彩蛋、彩纸帧变化、庆祝期间忽略点击、自动归零和正常关闭。测试入口：
-  [`tests/hello_world_ui/run.py`](https://github.com/esp-mosaico/esp-mosaico-vibe/blob/main/tests/hello_world_ui/run.py)。
+  按钮按压边角、百次彩蛋、彩纸帧变化、庆祝期间忽略点击、自动归零和正常关闭。
+  该工作区交互测试脚本现已移除；本条保留当时的验证结果。
 - 相关回归测试：33 passed、29 subtests passed；最终模板文档调整后再次运行生成器测试，7 passed。
 - Hello World 固件构建通过，零警告：ESP32-S31。
 - 由模板生成的嵌套 `init_smoke` 工程完整构建通过，零警告。
