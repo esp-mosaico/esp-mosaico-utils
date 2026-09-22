@@ -26,7 +26,8 @@ class Runner:
     def __init__(self, device_id: str | None, timeout: float, workspace: Path, application: Path) -> None:
         stamp = time.strftime("%Y%m%d-%H%M%S")
         self.workspace = workspace.resolve()
-        self.application = application.resolve()
+        self.application = (application if application.is_absolute() else self.workspace / application).resolve()
+        self.active_project = self.application
         self.evidence = self.workspace / ".codex-runs" / "iris-crash" / stamp
         self.evidence.mkdir(parents=True)
         self.device_id = device_id
@@ -41,7 +42,10 @@ class Runner:
     def command(
         self, name: str, *arguments: str, timeout: float | None = None
     ) -> dict[str, Any]:
-        argv = [sys.executable, str(self.workspace / "mosaico.py"), "--json", *arguments]
+        if arguments[0] in {"iris", "recover"} and "--project" not in arguments:
+            arguments = (*arguments, "--project", str(self.active_project))
+        argv = [sys.executable, str(self.workspace / "mosaico.py"),
+                "--workspace", str(self.workspace), "--json", *arguments]
         completed = subprocess.run(
             argv,
             cwd=self.workspace,
@@ -86,7 +90,7 @@ class Runner:
         return value
 
     def list_device(self, name: str = "list") -> dict[str, Any]:
-        value = self.command(name, "list", "--details", timeout=20)
+        value = self.command(name, "iris", "list", "--details", timeout=20)
         devices = [
             item
             for item in value.get("devices", [])
@@ -144,7 +148,7 @@ class Runner:
         self, name: str, method: int, *, token: int | None = None
     ) -> dict[str, Any]:
         arguments = [
-            "rpc",
+            "iris", "rpc",
             SERVICE_ID,
             str(method),
             "--device-id",
@@ -167,7 +171,7 @@ class Runner:
         core = self.evidence / f"{name}.core.bin"
         value = self.command(
             f"{name}-crash",
-            "crash",
+            "iris", "crash",
             "--device-id",
             str(self.device_id),
             "--archive",
@@ -214,6 +218,18 @@ class Runner:
         if report.get("crash_count") != 0:
             raise AcceptanceFailure(f"{name} crash counter did not reset")
 
+    def install_project(self, name: str, project: Path) -> dict[str, Any]:
+        # A project owns its Gateway. Transfer via the product command before
+        # switching projects; never terminate another Gateway or use direct USB.
+        if project != self.active_project:
+            self.command(name + "-takeover", "iris", "takeover", "start",
+                         "--project", str(project), "--device-id", str(self.device_id))
+            self.active_project = project
+        return self.command(name, "iris", "system-update", "--project", str(project),
+                            "--device-id", str(self.device_id),
+                            "--timeout", str(int(max(self.timeout, 180))),
+                            timeout=max(self.timeout, 3600))
+
     def run(self, refresh_recovery: bool) -> None:
         self.command("doctor", "doctor", timeout=120)
         if refresh_recovery:
@@ -231,23 +247,15 @@ class Runner:
                 *recovery_arguments,
                 timeout=max(self.timeout, 900),
             )
+        claim_args = ("--device-id", self.device_id) if self.device_id else ()
+        self.command("claim-device", "iris", "claim", *claim_args)
         initial = self.wait_for_device("initial-device")
         self.results["device_id"] = self.device_id
         self.results["initial"] = initial
         fixture_installed = False
         try:
             fixture_installed = True
-            install = self.command(
-                "install-fixture",
-                "install",
-                "--project",
-                str(FIXTURE),
-                "--device-id",
-                str(self.device_id),
-                "--timeout",
-                str(int(max(self.timeout, 180))),
-                timeout=max(self.timeout, 900),
-            )
+            install = self.install_project("install-fixture", FIXTURE)
             self.results["fixture_install"] = install
             current = self.list_device("fixture-device")
 
@@ -334,17 +342,7 @@ class Runner:
                 )
         finally:
             if fixture_installed:
-                restore = self.command(
-                    "restore-hello-world",
-                    "install",
-                    "--project",
-                    str(self.application),
-                    "--device-id",
-                    str(self.device_id),
-                    "--timeout",
-                    str(int(max(self.timeout, 180))),
-                    timeout=max(self.timeout, 900),
-                )
+                restore = self.install_project("restore-application", self.application)
                 restored = self.list_device("restored-device")
                 self.results["restore"] = {
                     "install": restore,
