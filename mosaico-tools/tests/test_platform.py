@@ -9,7 +9,7 @@ import sys
 import tempfile
 import unittest
 import urllib.error
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
@@ -42,12 +42,23 @@ class PlatformTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        # Windows temporary paths may use 8.3 aliases; production resolves paths.
+        self.root = Path(self.temporary.name).resolve()
         patch = mock.patch.dict(
-            os.environ, {"XDG_STATE_HOME": str(self.root / "state")}, clear=True
+            os.environ,
+            {
+                "XDG_STATE_HOME": str(self.root / "state"),
+                "LOCALAPPDATA": str(self.root / "state"),
+            },
+            clear=True,
         )
         patch.start()
         self.addCleanup(patch.stop)
+        # Keep home lookup valid after clearing the environment, including on
+        # Windows, and isolate macOS state (which uses the home directory).
+        home_patch = mock.patch("pathlib.Path.home", return_value=self.root)
+        home_patch.start()
+        self.addCleanup(home_patch.stop)
         self.manifest = {
             "schema": "mosaico-ideas/project-upload/v1",
             "project": {"title": "Demo", "categories": ["sensors"], "license": "MIT"},
@@ -115,13 +126,15 @@ class PlatformTests(unittest.TestCase):
             )
 
     def test_account_without_workspace(self):
-        with (
-            mock.patch("mosaico_cli.cli.load_workspace") as load,
-            mock.patch(
-                "mosaico_cli.platform_account.account", return_value={"status": "ok"}
-            ),
-            redirect_stdout(io.StringIO()),
-        ):
+        with ExitStack() as stack:
+            load = stack.enter_context(mock.patch("mosaico_cli.cli.load_workspace"))
+            stack.enter_context(
+                mock.patch(
+                    "mosaico_cli.platform_account.account",
+                    return_value={"status": "ok"},
+                )
+            )
+            stack.enter_context(redirect_stdout(io.StringIO()))
             self.assertEqual(
                 main(["account", "status", "--server", "https://ideas.test", "--json"]),
                 0,
@@ -157,17 +170,19 @@ class PlatformTests(unittest.TestCase):
         for path in ("../secret", "/etc/passwd", "C:\\secret", "a/../cover.png"):
             with self.subTest(path=path), self.assertRaises(SelectionError):
                 local_path(self.root, path)
-        (self.root / "escape").symlink_to("/etc/passwd")
-        with self.assertRaises(SelectionError):
-            local_path(self.root, "escape")
+        with tempfile.TemporaryDirectory() as outside:
+            target = Path(outside) / "secret.txt"
+            target.write_text("outside project", encoding="utf-8")
+            (self.root / "escape").symlink_to(target)
+            with self.assertRaises(SelectionError):
+                local_path(self.root, "escape")
 
     def test_readme_path_escape(self):
         for destination in ("../secret", "/etc/passwd", "%2e%2e/secret"):
             (self.root / "README.md").write_text("[x](" + destination + ")")
-            with (
-                self.subTest(destination=destination),
-                self.assertRaises(SelectionError),
-            ):
+            with ExitStack() as stack:
+                stack.enter_context(self.subTest(destination=destination))
+                stack.enter_context(self.assertRaises(SelectionError))
                 load_manifest(self.root)
 
     def test_bad_manifest_category(self):
@@ -187,10 +202,9 @@ class PlatformTests(unittest.TestCase):
             ({}, " 1", None),
             ({}, "a/b", None),
         ):
-            with (
-                self.subTest(plan=plan, explicit=explicit),
-                self.assertRaises(SelectionError),
-            ):
+            with ExitStack() as stack:
+                stack.enter_context(self.subTest(plan=plan, explicit=explicit))
+                stack.enter_context(self.assertRaises(SelectionError))
                 upload_version(plan, explicit, build)
 
     def test_bundle_policy(self):
@@ -250,20 +264,20 @@ class PlatformTests(unittest.TestCase):
                 "draft_revision_id": "r",
             }
         ]
-        with (
-            mock.patch("sys.stdin.isatty", return_value=True),
-            mock.patch("builtins.input", side_effect=["c", "y"]),
-        ):
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("sys.stdin.isatty", return_value=True))
+            stack.enter_context(mock.patch("builtins.input", side_effect=["c", "y"]))
             self.assertIsNone(
                 select_target(
                     self.args(create=False, json=False, yes=False), client, "2"
                 )
             )
-        with (
-            mock.patch("sys.stdin.isatty", return_value=True),
-            mock.patch("builtins.input", side_effect=["u", "1", "y"]),
-            redirect_stderr(io.StringIO()),
-        ):
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("sys.stdin.isatty", return_value=True))
+            stack.enter_context(
+                mock.patch("builtins.input", side_effect=["u", "1", "y"])
+            )
+            stack.enter_context(redirect_stderr(io.StringIO()))
             self.assertEqual(
                 select_target(
                     self.args(create=False, json=False, yes=False), client, "2"
@@ -271,11 +285,21 @@ class PlatformTests(unittest.TestCase):
                 "mine",
             )
 
+    def test_private_state_is_isolated_on_all_host_platforms(self):
+        for platform in ("windows", "macos", "linux"):
+            with self.subTest(platform=platform), mock.patch(
+                "mosaico_cli.host.host_platform", return_value=platform
+            ):
+                path = private_root("https://ideas.test")
+                self.assertTrue(path.is_dir())
+                path.resolve().relative_to(self.root)
+
     def test_private_credentials_and_environment_priority(self):
         path = private_root("https://ideas.test") / "credential.json"
         write_state(path, {"access_token": "stored"})
         self.assertEqual(credential("https://ideas.test"), "stored")
-        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        if os.name != "nt":
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600)
         with mock.patch.dict(os.environ, {"MAKER_SPARK_TOKEN": "environment"}):
             self.assertEqual(credential("https://ideas.test"), "environment")
 
@@ -393,13 +417,14 @@ class PlatformTests(unittest.TestCase):
             {"access_token": "token-secret", "expires_in": 3600},
         ]
         stderr = io.StringIO()
-        with (
-            mock.patch(
-                "mosaico_cli.platform_account.PlatformClient", return_value=client
-            ),
-            mock.patch("mosaico_cli.platform_account.time.sleep"),
-            redirect_stderr(stderr),
-        ):
+        with ExitStack() as stack:
+            stack.enter_context(
+                mock.patch(
+                    "mosaico_cli.platform_account.PlatformClient", return_value=client
+                )
+            )
+            stack.enter_context(mock.patch("mosaico_cli.platform_account.time.sleep"))
+            stack.enter_context(redirect_stderr(stderr))
             result = account(self.args(account_action="login", open_browser=False))
         self.assertNotIn("secret", json.dumps(result) + stderr.getvalue())
         self.assertIn("1234", stderr.getvalue())
@@ -451,20 +476,30 @@ class PlatformTests(unittest.TestCase):
 
         client.request.side_effect = request
         context = SimpleNamespace(workspace=SimpleNamespace())
-        with (
-            mock.patch.dict(os.environ, {"MAKER_SPARK_TOKEN": "secret"}),
-            mock.patch(
-                "mosaico_cli.platform_upload.PlatformClient", return_value=client
-            ),
-            mock.patch(
-                "mosaico_cli.platform_upload.resolve_project", return_value=self.root
-            ),
-            mock.patch(
-                "mosaico_cli.platform_upload.inspect_bundle_plan",
-                return_value=self.plan(),
-            ),
-            mock.patch("mosaico_cli.platform_upload.run_idf_target") as build,
-        ):
+        with ExitStack() as stack:
+            stack.enter_context(
+                mock.patch.dict(os.environ, {"MAKER_SPARK_TOKEN": "secret"})
+            )
+            stack.enter_context(
+                mock.patch(
+                    "mosaico_cli.platform_upload.PlatformClient", return_value=client
+                )
+            )
+            stack.enter_context(
+                mock.patch(
+                    "mosaico_cli.platform_upload.resolve_project",
+                    return_value=self.root,
+                )
+            )
+            stack.enter_context(
+                mock.patch(
+                    "mosaico_cli.platform_upload.inspect_bundle_plan",
+                    return_value=self.plan(),
+                )
+            )
+            build = stack.enter_context(
+                mock.patch("mosaico_cli.platform_upload.run_idf_target")
+            )
             with self.assertRaises(PlatformError):
                 project_upload(self.args(), context)
             result = project_upload(self.args(), context)
@@ -553,12 +588,14 @@ class PlatformTests(unittest.TestCase):
             },
         ):
             client.request.return_value = response
-            with (
-                mock.patch(
-                    "mosaico_cli.platform_account.PlatformClient", return_value=client
-                ),
-                self.assertRaises(PlatformError),
-            ):
+            with ExitStack() as stack:
+                stack.enter_context(
+                    mock.patch(
+                        "mosaico_cli.platform_account.PlatformClient",
+                        return_value=client,
+                    )
+                )
+                stack.enter_context(self.assertRaises(PlatformError))
                 account(self.args(account_action="login", open_browser=False))
 
     def test_unreferenced_resource_rejected(self):
@@ -597,31 +634,46 @@ class PlatformTests(unittest.TestCase):
         )
         (self.root / "build/demo-system-update.irisfw").write_bytes(b"bundle")
         for skip_build in (False, True):
-            with (
-                mock.patch.dict(os.environ, {"MAKER_SPARK_TOKEN": "secret"}),
-                mock.patch(
-                    "mosaico_cli.platform_upload.resolve_project",
-                    return_value=self.root,
-                ),
-                mock.patch(
-                    "mosaico_cli.platform_upload.inspect_bundle_plan",
-                    return_value=self.plan(),
-                ),
-                mock.patch("mosaico_cli.platform_upload.run_idf_target") as build,
-                mock.patch("mosaico_cli.gateway.ensure_gateway") as gateway,
-                mock.patch(
-                    "mosaico_cli.platform_upload.ensure_iris_tools",
-                    return_value=(Path("python"), Path("iris")),
-                ),
-                mock.patch(
-                    "mosaico_cli.platform_upload.resolve_idf_path",
-                    return_value=self.root,
-                ),
-                mock.patch(
-                    "mosaico_cli.platform_upload.select_target",
-                    side_effect=SelectionError("stop"),
-                ) as select,
-            ):
+            with ExitStack() as stack:
+                stack.enter_context(
+                    mock.patch.dict(os.environ, {"MAKER_SPARK_TOKEN": "secret"})
+                )
+                stack.enter_context(
+                    mock.patch(
+                        "mosaico_cli.platform_upload.resolve_project",
+                        return_value=self.root,
+                    )
+                )
+                stack.enter_context(
+                    mock.patch(
+                        "mosaico_cli.platform_upload.inspect_bundle_plan",
+                        return_value=self.plan(),
+                    )
+                )
+                build = stack.enter_context(
+                    mock.patch("mosaico_cli.platform_upload.run_idf_target")
+                )
+                gateway = stack.enter_context(
+                    mock.patch("mosaico_cli.gateway.ensure_gateway")
+                )
+                stack.enter_context(
+                    mock.patch(
+                        "mosaico_cli.platform_upload.ensure_iris_tools",
+                        return_value=(Path("python"), Path("iris")),
+                    )
+                )
+                stack.enter_context(
+                    mock.patch(
+                        "mosaico_cli.platform_upload.resolve_idf_path",
+                        return_value=self.root,
+                    )
+                )
+                select = stack.enter_context(
+                    mock.patch(
+                        "mosaico_cli.platform_upload.select_target",
+                        side_effect=SelectionError("stop"),
+                    )
+                )
                 with self.assertRaisesRegex(SelectionError, "stop"):
                     project_upload(
                         self.args(bundle=None, skip_build=skip_build),
