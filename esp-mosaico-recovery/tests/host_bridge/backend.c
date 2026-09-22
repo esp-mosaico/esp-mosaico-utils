@@ -2,7 +2,7 @@
 #include <assert.h>
 #include BACKEND_SOURCE
 
-int64_t mock_time;
+_Atomic int64_t mock_time;
 bool mock_network, mock_stop_on_delay;
 int mock_create_fail, mock_alloc_fail, mock_commit_error, mock_writes, mock_commits,
     mock_reserved, mock_abort;

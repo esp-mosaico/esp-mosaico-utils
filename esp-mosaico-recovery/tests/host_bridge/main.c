@@ -1,11 +1,14 @@
 #include "sdk.h"
 #include <assert.h>
 #include <setjmp.h>
+#include <pthread.h>
+#include <time.h>
 #include BRIDGE_SOURCE
 
 #define TEST_PAIRING_EXPIRY "2026-09-11T20:10:00.123456789+08:00"
 
-int64_t mock_time;
+_Atomic int64_t mock_time;
+wifi_ps_type_t mock_wifi_ps = WIFI_PS_MIN_MODEM;
 bool mock_network, mock_stop_on_delay;
 int mock_create_fail, mock_alloc_fail, mock_commit_error, mock_writes, mock_commits,
     mock_reserved, mock_abort;
@@ -24,18 +27,74 @@ static int pairing_snapshots;
 static bool expire_on_delay;
 static int activate_after_delays;
 static bool pause_on_poll;
+static pthread_t poll_thread;
+static bool poll_joinable, mock_keep_alive;
+static _Thread_local bool in_poll;
+static atomic_bool poll_sleeping, poll_blocked, release_poll;
+static bool slow_poll, download_during_poll, direct_poll_time;
+static int64_t request_started[32];
+static int http_allocations, http_live;
+static void host_pause(void)
+{
+    const struct timespec pause = {.tv_nsec = 1000000};
+    nanosleep(&pause, NULL);
+}
+static void join_poll_thread(void)
+{
+    if (poll_joinable) {
+        assert(pthread_join(poll_thread, NULL) == 0);
+        poll_joinable = false;
+    }
+}
+static void *poll_entry(void *arg)
+{
+    in_poll = true;
+    cancel_poll_run(arg);
+    return NULL;
+}
+int xTaskCreate(void (*fn)(void *), const char *name, int stack,
+                void *arg, int pri, TaskHandle_t *task)
+{
+    (void)name; (void)stack; (void)pri; (void)task;
+    if (mock_create_fail)
+        return 0;
+    if (fn == cancel_poll_run) {
+        join_poll_thread();
+        atomic_store(&poll_sleeping, false);
+        assert(pthread_create(&poll_thread, NULL, poll_entry, arg) == 0);
+        poll_joinable = true;
+        while (!atomic_load(&poll_sleeping)) host_pause();
+    } else {
+        mock_worker = fn;
+    }
+    return pdPASS;
+}
 static struct reply {
     const char *path, *body;
     int status;
     bool stop;
-} replies[16];
+    const char *retry_after;
+    int64_t delay_us;
+} replies[32];
 struct mock_http {
     struct reply *reply;
     size_t offset;
+    char url[768];
+    void *user_data;
+    esp_err_t (*event_handler)(esp_http_client_event_t *);
 };
 
 void vTaskDelay(unsigned ms)
 {
+    if (in_poll) {
+        atomic_store(&poll_sleeping, true);
+        host_pause();
+        return;
+    }
+    if (atomic_load(&cancel_poll_running) && !direct_poll_time) {
+        host_pause();
+        return;
+    }
     mock_time += (int64_t)ms * 1000;
     if (activate_after_delays && --activate_after_delays == 0) {
         assert(requests == 1); /* No background polling or re-registration. */
@@ -52,10 +111,15 @@ void vTaskDelay(unsigned ms)
 void vTaskDelete(void *arg)
 {
     (void)arg;
+    if (in_poll) pthread_exit(NULL);
+    join_poll_thread();
     longjmp(worker_exit, 1);
 }
 void esp_restart(void)
 {
+    assert(!atomic_load(&cancel_poll_running));
+    assert(mock_wifi_ps == WIFI_PS_MIN_MODEM);
+    join_poll_thread();
     restart_count++;
     longjmp(worker_exit, 2);
 }
@@ -75,12 +139,23 @@ esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *co
 {
     assert(config->disable_auto_redirect);
     assert(!strncmp(config->url, "https://flash.example.com/", 26));
+    struct mock_http *h = calloc(1, sizeof(*h));
+    strlcpy(h->url, config->url, sizeof(h->url));
+    h->user_data = config->user_data;
+    h->event_handler = config->event_handler;
+    http_allocations++;
+    http_live++;
+    return h;
+}
+esp_err_t esp_http_client_open(esp_http_client_handle_t h, size_t length)
+{
+    (void)length;
     if (reply_index >= replies_count)
-        fprintf(stderr, "case %d unexpected URL %s\n", test_case, config->url);
+        fprintf(stderr, "case %d unexpected URL %s\n", test_case, h->url);
     assert(reply_index < replies_count);
     struct reply *r = &replies[reply_index++];
-    assert(strstr(config->url, r->path));
-    if (strstr(config->url, "/poll")) {
+    assert(strstr(h->url, r->path));
+    if (strstr(h->url, "/poll") && !in_poll) {
         iris_bridge_snapshot_t pairing;
         iris_bridge_get_snapshot(&pairing);
         if (!strcmp(pairing.state, "PAIRING")) {
@@ -88,15 +163,17 @@ esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *co
             pairing_snapshots++;
         }
     }
-    struct mock_http *h = calloc(1, sizeof(*h));
     h->reply = r;
-    requests++;
-    return h;
-}
-esp_err_t esp_http_client_open(esp_http_client_handle_t h, size_t length)
-{
-    (void)length;
-    return h->reply->status ? 0 : ESP_FAIL;
+    h->offset = 0;
+    request_started[requests++] = mock_time;
+    mock_time += r->delay_us;
+    if (r->retry_after) {
+        esp_http_client_event_t event = {.event_id = HTTP_EVENT_ON_HEADER,
+            .header_key = "Retry-After", .header_value = r->retry_after,
+            .user_data = h->user_data};
+        h->event_handler(&event);
+    }
+    return r->status ? 0 : ESP_FAIL;
 }
 int esp_http_client_fetch_headers(esp_http_client_handle_t h)
 {
@@ -108,6 +185,14 @@ int esp_http_client_get_status_code(esp_http_client_handle_t h)
 }
 int esp_http_client_read(esp_http_client_handle_t h, char *out, size_t n)
 {
+    if (in_poll && slow_poll) {
+        atomic_store(&poll_blocked, true);
+        while (!atomic_load(&release_poll)) host_pause();
+    }
+    if (!in_poll && download_during_poll && strstr(h->url, "/files/")) {
+        atomic_store(&mock_time, 6000000);
+        while (!atomic_load(&poll_blocked)) host_pause();
+    }
     size_t left = strlen(h->reply->body) - h->offset;
     if (n > left)
         n = left;
@@ -152,7 +237,13 @@ void esp_http_client_close(esp_http_client_handle_t h)
 }
 void esp_http_client_cleanup(esp_http_client_handle_t h)
 {
+    http_live--;
     free(h);
+}
+bool esp_http_client_is_persistent_connection(esp_http_client_handle_t h)
+{
+    (void)h;
+    return mock_keep_alive;
 }
 esp_err_t factory_system_metadata_load_last_result(factory_sysmeta_record_t *out)
 {
@@ -241,6 +332,7 @@ esp_err_t factory_system_update_source_write_component(
     (void)offset;
     (void)data;
     (void)n;
+    assert(mock_wifi_ps == WIFI_PS_NONE || !mock_reserved);
     mock_writes++;
     return 0;
 }
@@ -336,6 +428,16 @@ static iris_bridge_config_t config = {.server_url = "https://flash.example.com",
                                       .network_ready = ready};
 static void reset(void)
 {
+    assert(mock_wifi_ps == WIFI_PS_MIN_MODEM);
+    assert(!atomic_load(&cancel_poll_running));
+    join_poll_thread();
+    assert(http_live == 0);
+    http_allocations = 0;
+    mock_keep_alive = slow_poll = download_during_poll = direct_poll_time = false;
+    atomic_store(&poll_sleeping, false);
+    atomic_store(&poll_blocked, false);
+    atomic_store(&release_poll, false);
+    atomic_store(&cancel_poll_stop, false);
     test_case++;
     system_prepares = 0;
     system_allow_bootloader = false;
@@ -366,7 +468,6 @@ static void reset(void)
     replies_count = 0;
     reply_index = 0;
     cancelled = false;
-    last_cancel_check = 0;
     set_state("IDLE", 0, 0);
 }
 static void reply(const char *path, int status, const char *body, bool stop)
@@ -423,6 +524,91 @@ static cJSON *system_plan(void)
     cJSON_AddItemToArray(components, component(1, "data", 0x210000, 4,
                                              str(im, "sha256"), "image"));
     return p;
+}
+
+static void run_poll_clock(void)
+{
+    direct_poll_time = true;
+    atomic_store(&cancel_poll_running, true);
+    if (!setjmp(worker_exit))
+        cancel_poll_run(NULL);
+    assert(!atomic_load(&cancel_poll_running));
+    direct_poll_time = false;
+}
+static void test_cancel_poll(void)
+{
+    /* A slow HTTPS cancellation response must not stop payload reads/writes. */
+    reset();
+    descriptor = (esp_iris_system_update_component_t){
+        .id = 1, .kind = ESP_IRIS_SYSTEM_UPDATE_COMPONENT_DATA, .size = 4};
+    digest("data", 4, descriptor.sha256);
+    slow_poll = download_during_poll = true;
+    reply("/files/", 200, "data", false);
+    reply("/poll", 200, "{\"flash\":{\"cancel_requested\":true}}", false);
+    assert(cancel_poll_start() == ESP_OK);
+    assert(transfer("image", &descriptor, NULL) == ESP_OK);
+    assert(mock_writes == 1 && atomic_load(&poll_blocked) && !cancelled);
+    /* Deliver remote cancellation only after the file made progress. */
+    atomic_store(&release_poll, true);
+    while (atomic_load(&cancel_poll_running)) host_pause();
+    cancel_poll_join();
+    assert(should_cancel() && !http_live);
+
+    /* Completed polls reuse one TLS client and retain a remote cancellation. */
+    reset();
+    mock_keep_alive = true;
+    reply("/poll", 200, "{\"flash\":{\"cancel_requested\":false}}", false);
+    reply("/poll", 200, "{\"flash\":{\"cancel_requested\":true}}", false);
+    run_poll_clock();
+    assert(requests == 2 && http_allocations == 1 && !http_live && cancelled);
+    assert(request_started[0] == 5000000 && request_started[1] == 10000000);
+
+    /* A slow failed poll backs off from completion and respects Retry-After.
+     * It cannot overwrite the foreground request's status/header state. */
+    reset();
+    mock_keep_alive = true;
+    main_response = (http_response_t){.status = 202, .retry_after_seconds = 77};
+    reply("/poll", 503, "{}", false);
+    replies[0].delay_us = 7000000;
+    replies[0].retry_after = "12";
+    reply("/poll", 200, "{}", false);
+    reply("/poll", 410, "{}", false);
+    run_poll_clock();
+    assert(request_started[0] == 5000000 && request_started[1] == 24000000 &&
+           request_started[2] == 29000000);
+    assert(http_allocations == 2 && !http_live && cancelled);
+    assert(main_response.status == 202 && main_response.retry_after_seconds == 77);
+
+    /* Malformed responses discard the connection; never reuse unread/error data. */
+    reset();
+    mock_keep_alive = true;
+    reply("/poll", 200, "{", false);
+    reply("/poll", 200, "{\"flash\":{\"cancel_requested\":true}}", false);
+    run_poll_clock();
+    assert(http_allocations == 2 && !http_live && cancelled);
+    assert(request_started[1] == 15000000);
+
+    /* Local stop during a blocked query joins and releases its HTTP client. */
+    reset();
+    slow_poll = true;
+    reply("/poll", 200, "{}", false);
+    assert(cancel_poll_start() == ESP_OK);
+    mock_time = 6000000;
+    while (!atomic_load(&poll_blocked)) host_pause();
+    iris_bridge_stop();
+    assert(should_cancel());
+    atomic_store(&release_poll, true);
+    cancel_poll_join();
+    assert(!http_live);
+
+    /* Failing to allocate the observer must abort before any component write. */
+    reset();
+    mock_create_fail = 1;
+    cJSON *p = plan("partitions");
+    assert(execute("12345678901234567890123456789012", p) == ESP_ERR_NO_MEM);
+    assert(!mock_reserved && !requests && !mock_writes && !mock_commits);
+    cJSON_Delete(p);
+    reset();
 }
 
 int main(void)
@@ -658,5 +844,6 @@ int main(void)
     assert(system_prepares == 1 && system_allow_bootloader);
     assert(mock_writes == 1 && mock_commits == 1 && restart_count == 1);
     cJSON_Delete(p);
+    test_cancel_poll();
     puts("Bridge worker, cancellation and transaction gates passed");
 }

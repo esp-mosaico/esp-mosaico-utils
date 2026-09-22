@@ -9,15 +9,18 @@
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_mac.h"
+#include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_random.h"
 #include "esp_secure_boot.h"
 #include "esp_system.h"
 #include "esp_timer.h"
+#include "esp_wifi.h"
 #include "factory_system_metadata.h"
 #include "factory_system_update.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/idf_additions.h"
 #include "mbedtls/base64.h"
 #include "nvs.h"
 #include "psa/crypto.h"
@@ -34,10 +37,15 @@ static char session[80], token[160], boot_id[33], mac[18];
 static atomic_bool stop_requested;
 static atomic_bool bridge_running;
 static atomic_bool bridge_active;
-static int last_http_status;
-static unsigned retry_after_seconds;
-static int64_t last_cancel_check;
-static bool cancelled;
+typedef struct {
+    int status;
+    unsigned retry_after_seconds;
+} http_response_t;
+/* Only the Bridge worker uses this response; the cancellation task owns its own. */
+static http_response_t main_response;
+static atomic_bool cancelled;
+static atomic_bool cancel_poll_running;
+static atomic_bool cancel_poll_stop;
 static char server_url[IRIS_BRIDGE_ORIGIN_BYTES];
 static char board_id[IRIS_BRIDGE_BOARD_BYTES];
 static char device_id[33];
@@ -141,30 +149,34 @@ static bool flash_hash(uint32_t offset, uint32_t size, char out[65])
  * bundle. */
 static esp_err_t response_header(esp_http_client_event_t *event)
 {
-    if (event->event_id == HTTP_EVENT_ON_HEADER && event->header_key &&
+    http_response_t *response = event->user_data;
+    if (response && event->event_id == HTTP_EVENT_ON_HEADER && event->header_key &&
         event->header_value && !strcasecmp(event->header_key, "Retry-After")) {
         char *end = NULL;
         unsigned long seconds = strtoul(event->header_value, &end, 10);
         if (end != event->header_value && !*end && seconds <= 3600)
-            retry_after_seconds = (unsigned)seconds;
+            response->retry_after_seconds = (unsigned)seconds;
     }
     return ESP_OK;
 }
-static esp_http_client_handle_t open_request(const char *path, const char *body)
+static esp_http_client_handle_t open_request_with_response(
+    const char *path, const char *body, http_response_t *response,
+    esp_http_client_handle_t h, int timeout_ms)
 {
-    last_http_status = 0;
-    retry_after_seconds = 0;
+    memset(response, 0, sizeof(*response));
     char url[768], auth[180];
     if (path[0] != '/' ||
         snprintf(url, sizeof(url), "%s%s", cfg.server_url, path) >= (int)sizeof(url))
-        return NULL;
+        goto fail;
     esp_http_client_config_t c = {.url = url,
                                   .event_handler = response_header,
-                                  .timeout_ms = 15000,
+                                  .user_data = response,
+                                  .timeout_ms = timeout_ms,
                                   .disable_auto_redirect = true,
                                   .crt_bundle_attach = esp_crt_bundle_attach,
                                   .buffer_size = 4096};
-    esp_http_client_handle_t h = esp_http_client_init(&c);
+    if (!h)
+        h = esp_http_client_init(&c);
     if (!h)
         return NULL;
     if (token[0]) {
@@ -184,22 +196,35 @@ static esp_http_client_handle_t open_request(const char *path, const char *body)
     }
     if (esp_http_client_fetch_headers(h) < 0)
         goto fail;
-    last_http_status = esp_http_client_get_status_code(h);
-    if (last_http_status < 200 || last_http_status >= 300)
+    response->status = esp_http_client_get_status_code(h);
+    if (response->status < 200 || response->status >= 300)
         goto fail;
     return h;
 fail:
-    esp_http_client_close(h);
-    esp_http_client_cleanup(h);
+    if (h) {
+        esp_http_client_close(h);
+        esp_http_client_cleanup(h);
+    }
     return NULL;
 }
-static cJSON *request(const char *path, const cJSON *body)
+static esp_http_client_handle_t open_request(const char *path, const char *body)
 {
-    int64_t deadline = esp_timer_get_time() + 30000000;
+    return open_request_with_response(path, body, &main_response, NULL, 15000);
+}
+/* A reusable client is private to the cancellation task and always uses /poll.
+ * Keep it only after a complete, valid response on a persistent connection. */
+static cJSON *request_with_response(const char *path, const cJSON *body,
+                                    http_response_t *response,
+                                    esp_http_client_handle_t *reusable)
+{
+    int64_t deadline = esp_timer_get_time() + (reusable ? 10000000 : 30000000);
     char *encoded = body ? cJSON_PrintUnformatted(body) : NULL;
     if (body && !encoded)
         return NULL;
-    esp_http_client_handle_t h = open_request(path, encoded);
+    esp_http_client_handle_t h = open_request_with_response(
+        path, encoded, response, reusable ? *reusable : NULL, reusable ? 5000 : 15000);
+    if (reusable)
+        *reusable = h;
     free(encoded);
     if (!h)
         return NULL;
@@ -207,8 +232,13 @@ static cJSON *request(const char *path, const cJSON *body)
     size_t used = 0;
     cJSON *result = NULL;
     if (buf) {
-        while (used < LIMIT && esp_timer_get_time() < deadline) {
-            int n = esp_http_client_read(h, buf + used, LIMIT - used);
+        while (used < LIMIT && esp_timer_get_time() < deadline &&
+               (!reusable || (!atomic_load(&cancel_poll_stop) &&
+                              !atomic_load(&stop_requested)))) {
+            size_t wanted = LIMIT - used;
+            if (wanted > 4096)
+                wanted = 4096;
+            int n = esp_http_client_read(h, buf + used, wanted);
             if (n < 0)
                 break;
             if (n == 0) {
@@ -222,9 +252,17 @@ static cJSON *request(const char *path, const cJSON *body)
         }
         free(buf);
     }
-    esp_http_client_close(h);
-    esp_http_client_cleanup(h);
+    if (!result || !reusable || !esp_http_client_is_persistent_connection(h)) {
+        esp_http_client_close(h);
+        esp_http_client_cleanup(h);
+        if (reusable)
+            *reusable = NULL;
+    }
     return result;
+}
+static cJSON *request(const char *path, const cJSON *body)
+{
+    return request_with_response(path, body, &main_response, NULL);
 }
 static void path_session(char out[256], const char *suffix)
 {
@@ -242,37 +280,84 @@ static bool event(const char *state, unsigned progress, esp_err_t error)
         cJSON_AddStringToObject(j, "error", esp_err_to_name(error));
     cJSON *r = request(path, j);
     bool ok = r != NULL;
-    cancelled |= atomic_load(&stop_requested);
-    if (r)
-        cancelled |=
-            cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(r, "cancel_requested"));
+    if (atomic_load(&stop_requested) ||
+        (r && cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(r, "cancel_requested"))))
+        atomic_store(&cancelled, true);
     cJSON_Delete(r);
     cJSON_Delete(j);
     return ok;
 }
+/* Never do network I/O in the file read/write loop. Cancellation is latched:
+ * a later successful poll must not undo an earlier local/remote cancellation. */
 static bool should_cancel(void)
 {
-    if (atomic_load(&stop_requested)) {
-        cancelled = true;
-        return true;
-    }
-    int64_t now = esp_timer_get_time();
-    if (now - last_cancel_check < 5000000)
-        return cancelled;
-    last_cancel_check = now;
-    char path[256];
-    path_session(path, "/poll");
-    cJSON *r = request(path, NULL);
-    if (!r &&
-        (last_http_status == 401 || last_http_status == 404 || last_http_status == 410))
-        cancelled = true;
-    if (r) {
-        const cJSON *o = cJSON_GetObjectItemCaseSensitive(r, "flash");
-        cancelled =
-            cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(o, "cancel_requested"));
+    return atomic_load(&stop_requested) || atomic_load(&cancelled);
+}
+static void cancel_poll_run(void *unused)
+{
+    (void)unused;
+    http_response_t response = {0};
+    esp_http_client_handle_t client = NULL;
+    unsigned interval = 5;
+    while (!atomic_load(&cancel_poll_stop) && !should_cancel()) {
+        /* Measure from completion, including failures, so a slow query cannot
+         * cause an immediate retry. The short sleeps also make stop/join cheap. */
+        const int64_t next = esp_timer_get_time() + (int64_t)interval * 1000000;
+        while (esp_timer_get_time() < next) {
+            if (atomic_load(&cancel_poll_stop) || should_cancel())
+                goto done;
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+        if (atomic_load(&cancel_poll_stop) || should_cancel())
+            break;
+        char path[256];
+        path_session(path, "/poll");
+        const int64_t started = esp_timer_get_time();
+        cJSON *r = request_with_response(path, NULL, &response, &client);
+        const bool ok = r != NULL;
+        if (r) {
+            const cJSON *flash = cJSON_GetObjectItemCaseSensitive(r, "flash");
+            if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(flash, "cancel_requested")))
+                atomic_store(&cancelled, true);
+        } else if (response.status == 401 || response.status == 404 ||
+                   response.status == 410) {
+            atomic_store(&cancelled, true);
+        }
         cJSON_Delete(r);
+        interval = ok ? 5 : (interval < 15 ? interval * 2 : 30);
+        if (response.retry_after_seconds > interval)
+            interval = response.retry_after_seconds;
+        if (!ok && !atomic_load(&cancel_poll_stop) && !should_cancel())
+            ESP_LOGW("iris_bridge", "cancel poll failed: http=%d elapsed=%lld ms; retry in %u s",
+                     response.status, (long long)((esp_timer_get_time() - started) / 1000),
+                     interval);
     }
-    return cancelled;
+done:
+    if (client) {
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+    }
+    /* No access to the session, token, or client is allowed after this store. */
+    atomic_store(&cancel_poll_running, false);
+    vTaskDeleteWithCaps(NULL);
+}
+static esp_err_t cancel_poll_start(void)
+{
+    atomic_store(&cancel_poll_stop, false);
+    atomic_store(&cancel_poll_running, true);
+    if (xTaskCreateWithCaps(cancel_poll_run, "iris_cancel", 8192, NULL, 4, NULL,
+                            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS)
+        return ESP_OK;
+    atomic_store(&cancel_poll_running, false);
+    return ESP_ERR_NO_MEM;
+}
+static void cancel_poll_join(void)
+{
+    atomic_store(&cancel_poll_stop, true);
+    /* Let a bounded HTTP request unwind itself; deleting a task while it owns
+     * TLS/HTTP allocations would leak memory or leave shared locks held. */
+    while (atomic_load(&cancel_poll_running))
+        vTaskDelay(pdMS_TO_TICKS(10));
 }
 static cJSON *identity(void)
 {
@@ -469,19 +554,24 @@ static cJSON *component(unsigned id, const char *kind, uint32_t offset, uint32_t
 static esp_err_t transfer(const char *file, const esp_iris_system_update_component_t *c,
                           const uint8_t *table)
 {
+    const int64_t started = esp_timer_get_time();
     esp_http_client_handle_t h = NULL;
-    uint8_t buf[4096], hash[32];
+    uint8_t *buf = heap_caps_malloc(4096, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    uint8_t hash[32];
     size_t written = 0;
     uint32_t received = 0;
+    int64_t read_us = 0, write_us = 0, max_read_us = 0;
     esp_err_t err = ESP_FAIL;
     psa_hash_operation_t digest_op = PSA_HASH_OPERATION_INIT;
+    if (!buf)
+        return ESP_ERR_NO_MEM;
     if (!table) {
         char path[256];
         snprintf(path, sizeof(path), "/api/v1/device-sessions/%s/files/%s", session,
                  file);
         h = open_request(path, NULL);
         if (!h)
-            return ESP_FAIL;
+            goto done;
     }
     if (psa_hash_setup(&digest_op, PSA_ALG_SHA_256) != PSA_SUCCESS)
         goto done;
@@ -530,8 +620,8 @@ static esp_err_t transfer(const char *file, const esp_iris_system_update_compone
             goto done;
         }
         size_t wanted = c->size - received;
-        if (wanted > sizeof(buf))
-            wanted = sizeof(buf);
+        if (wanted > 4096)
+            wanted = 4096;
         int n;
         if (preloaded) {
             n = preloaded;
@@ -539,8 +629,14 @@ static esp_err_t transfer(const char *file, const esp_iris_system_update_compone
         } else if (table) {
             memcpy(buf, table + received, wanted);
             n = wanted;
-        } else
+        } else {
+            const int64_t read_started = esp_timer_get_time();
             n = esp_http_client_read(h, (char *)buf, wanted);
+            const int64_t elapsed = esp_timer_get_time() - read_started;
+            read_us += elapsed;
+            if (elapsed > max_read_us)
+                max_read_us = elapsed;
+        }
         if (n <= 0) {
             err = ESP_FAIL;
             goto done;
@@ -549,8 +645,10 @@ static esp_err_t transfer(const char *file, const esp_iris_system_update_compone
             err = ESP_FAIL;
             goto done;
         }
+        const int64_t write_started = esp_timer_get_time();
         err = factory_system_update_source_write_component(
             FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE, c, received, buf, n);
+        write_us += esp_timer_get_time() - write_started;
         if (err != ESP_OK)
             goto done;
         received += n;
@@ -572,10 +670,17 @@ static esp_err_t transfer(const char *file, const esp_iris_system_update_compone
                                                      c, hash);
 done:
     psa_hash_abort(&digest_op);
+    free(buf);
     if (h) {
         esp_http_client_close(h);
         esp_http_client_cleanup(h);
     }
+    ESP_LOGI("iris_bridge", "component %u: received=%lu/%lu bytes elapsed=%lld ms read=%lld ms write=%lld ms max_read=%lld ms stack_free=%u result=%s",
+             (unsigned)c->id, (unsigned long)received, (unsigned long)c->size,
+             (long long)((esp_timer_get_time() - started) / 1000),
+             (long long)(read_us / 1000), (long long)(write_us / 1000),
+             (long long)(max_read_us / 1000),
+             (unsigned)uxTaskGetStackHighWaterMark(NULL), esp_err_to_name(err));
     return err;
 }
 
@@ -586,7 +691,6 @@ static esp_err_t execute(const char *op, const cJSON *plan)
     cancelled = atomic_load(&stop_requested);
     if (cancelled)
         return ESP_ERR_INVALID_STATE;
-    last_cancel_check = esp_timer_get_time();
     const char *mode = str(plan, "mode");
     bool system = strcmp(mode, "system_update") == 0;
     bool layout = strcmp(mode, "layout") == 0;
@@ -608,7 +712,10 @@ static esp_err_t execute(const char *op, const cJSON *plan)
             return ESP_ERR_INVALID_VERSION;
     }
     uint8_t *recovery = NULL;
-    uint8_t opid[16], table[4096];
+    wifi_ps_type_t saved_ps = WIFI_PS_MIN_MODEM;
+    bool restore_ps = false;
+    uint8_t opid[16];
+    uint8_t *table = NULL;
     if (strlen(op) != 32)
         return ESP_ERR_INVALID_ARG;
     for (size_t i = 0; i < 16; i++) {
@@ -629,6 +736,13 @@ static esp_err_t execute(const char *op, const cJSON *plan)
         err = ESP_ERR_INVALID_VERSION;
         goto abort;
     }
+    /* Bulk HTTPS should not wait for DTIM wakeups. Restore the caller's mode
+     * on every abort and after the final server acknowledgement. */
+    if (esp_wifi_get_ps(&saved_ps) == ESP_OK && saved_ps != WIFI_PS_NONE)
+        restore_ps = esp_wifi_set_ps(WIFI_PS_NONE) == ESP_OK;
+    err = cancel_poll_start();
+    if (err != ESP_OK)
+        goto abort;
     if (system) {
         const cJSON *manifest = cJSON_GetObjectItemCaseSensitive(plan, "system_manifest");
         err = factory_system_update_source_prepare_bridge(
@@ -638,6 +752,11 @@ static esp_err_t execute(const char *op, const cJSON *plan)
         goto prepared;
     }
     if (layout) {
+        table = heap_caps_malloc(4096, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        if (!table) {
+            err = ESP_ERR_NO_MEM;
+            goto abort;
+        }
         err = get_table(plan, table);
         if (err != ESP_OK)
             goto abort;
@@ -787,6 +906,9 @@ prepared:;
             goto abort;
         }
     }
+    free(table);
+    table = NULL;
+    cancel_poll_join();
     if (!event("VERIFYING", 95, ESP_OK) || cancelled || atomic_load(&stop_requested)) {
         err = ESP_ERR_INVALID_STATE;
         goto abort;
@@ -805,6 +927,8 @@ prepared:;
                 FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE)) {
             event("FAILED", 100, err);
             free(recovery);
+            if (restore_ps)
+                (void)esp_wifi_set_ps(saved_ps);
             esp_restart();
         }
         goto abort;
@@ -813,12 +937,18 @@ prepared:;
     recovery = NULL;
     err = save_boot(plan);
     event(err == ESP_OK ? "DONE" : "FAILED", 100, err);
+    if (restore_ps)
+        (void)esp_wifi_set_ps(saved_ps);
     memset(session, 0, sizeof(session));
     memset(token, 0, sizeof(token));
     /* The raw layout may have changed: never resume with a stale IDF cache. */
     esp_restart();
     return ESP_OK;
 abort:
+    free(table);
+    cancel_poll_join();
+    if (restore_ps)
+        (void)esp_wifi_set_ps(saved_ps);
     free(recovery);
     factory_system_update_source_abort(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE, opid, err);
     return err;
@@ -928,8 +1058,8 @@ static void run(void *unused)
                     break;
                 }
                 cJSON_Delete(r);
-            } else if (last_http_status == 401 || last_http_status == 404 ||
-                       last_http_status == 410) {
+            } else if (main_response.status == 401 || main_response.status == 404 ||
+                       main_response.status == 410) {
                 set_state("ENDED", 0, ESP_ERR_INVALID_STATE);
                 break;
             } else {
@@ -938,7 +1068,8 @@ static void run(void *unused)
         }
         if (session[0] && !atomic_load(&bridge_active)) continue;
         unsigned wait_seconds =
-            retry_after_seconds > backoff ? retry_after_seconds : backoff;
+            main_response.retry_after_seconds > backoff
+                ? main_response.retry_after_seconds : backoff;
         unsigned remaining_ms = wait_seconds * 1000 + esp_random() % 1000;
         while (remaining_ms && !atomic_load(&stop_requested)) {
             if (session[0] && !atomic_load(&bridge_active)) break;
@@ -1031,7 +1162,9 @@ esp_err_t iris_bridge_start(const iris_bridge_config_t *config)
     cancelled = false;
     atomic_store(&bridge_active, !config->prefetch_only);
     atomic_store(&stop_requested, false);
-    if (xTaskCreate(run, "iris_bridge", 24576, NULL, 4, NULL) == pdPASS)
+    /* This task also writes Flash/NVS, so keep its stack internal. The cloud
+     * update path uses about 15.2 KiB; leave headroom for TLS/error paths. */
+    if (xTaskCreate(run, "iris_bridge", 20480, NULL, 4, NULL) == pdPASS)
         return ESP_OK;
     err = ESP_ERR_NO_MEM;
 fail:

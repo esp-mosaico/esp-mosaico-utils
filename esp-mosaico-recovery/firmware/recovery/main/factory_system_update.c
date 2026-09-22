@@ -1,3 +1,4 @@
+#include "esp_attr.h"
 #include "factory_system_update.h"
 #include "factory_recovery_version.h"
 
@@ -76,7 +77,7 @@ typedef struct {
 static const char *TAG = "factory_sysupdate";
 /* Keep the zero-filled plan in BSS: active_index's nonzero initializer would
  * otherwise store the entire array in the fixed Recovery flash slot. */
-static factory_update_plan_component_t s_update_plan[FACTORY_SYSTEM_MAX_COMPONENTS];
+static EXT_RAM_BSS_ATTR factory_update_plan_component_t s_update_plan[FACTORY_SYSTEM_MAX_COMPONENTS];
 static factory_update_state_t s_update = {
     .plan = s_update_plan,
     .active_index = -1,

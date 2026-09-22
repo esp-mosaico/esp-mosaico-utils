@@ -1,3 +1,4 @@
+#include "esp_attr.h"
 // SPDX-License-Identifier: Apache-2.0
 #include "factory_ui.h"
 #include "factory_ui_input.h"
@@ -23,8 +24,8 @@
 #include <string.h>
 
 static const char *TAG = "vibe_ui";
-static vibe_ui_t s_ui;
-static factory_nand_update_snapshot_t s_nand;
+static EXT_RAM_BSS_ATTR vibe_ui_t s_ui;
+static EXT_RAM_BSS_ATTR factory_nand_update_snapshot_t s_nand;
 static esp_iris_system_update_phase_t s_phase;
 static factory_nand_update_state_t s_nand_state;
 static uint32_t s_ota_job;
