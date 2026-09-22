@@ -371,6 +371,26 @@ int main(void)
     assert(prepare(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE,
                    manifest(true, "application", 0x200000, 4)) != 0);
     assert(!erased);
+    /* Bridge APP erases only complete sectors covering the image. Tail and
+     * adjacent partitions survive; DATA still clears its entire partition. */
+    for (size_t image_size = 4096; image_size <= 4097; image_size++) {
+        setup();
+        memset(flash + 0x210000, 0x55, 0x100000);
+        assert(prepare(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE,
+                       manifest(true, "application", 0x210000, image_size)) == ESP_OK);
+        esp_iris_system_update_component_t app_component = s_update.plan[0].descriptor;
+        assert(begin_component(&app_component, NULL) == ESP_OK);
+        size_t rounded = (image_size + 4095) & ~4095U;
+        assert(flash[0x210000] == 0xff && flash[0x210000 + rounded - 1] == 0xff);
+        assert(flash[0x210000 + rounded] == 0x55 && flash[0x30ffff] == 0x55);
+    }
+    setup();
+    memset(flash + 0x200000, 0x55, 0x10000);
+    assert(prepare(FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE,
+                   manifest(true, "data", 0x200000, 4)) == ESP_OK);
+    esp_iris_system_update_component_t data_component = s_update.plan[0].descriptor;
+    assert(begin_component(&data_component, NULL) == ESP_OK);
+    assert(flash[0x200000] == 0xff && flash[0x20ffff] == 0xff);
     /* Actual source table hash and protected prefix are independently checked. */
     setup();
     json = manifest(true, "data", 0x200000, 4);

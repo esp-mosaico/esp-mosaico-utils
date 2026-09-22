@@ -42,7 +42,15 @@ typedef struct {
     unsigned retry_after_seconds;
 } http_response_t;
 /* Only the Bridge worker uses this response; the cancellation task owns its own. */
-static http_response_t main_response;
+static http_response_t main_response, download_response;
+/* Handles have one owner at a time: worker, observer, or final reporter. */
+static esp_http_client_handle_t main_client, download_client;
+static bool separate_authorization;
+static int64_t write_deadline;
+static atomic_uint telemetry_revision, telemetry_progress;
+static atomic_bool writing_acknowledged;
+static atomic_bool report_running;
+static esp_err_t final_result;
 static atomic_bool cancelled;
 static atomic_bool cancel_poll_running;
 static atomic_bool cancel_poll_stop;
@@ -179,9 +187,14 @@ static esp_http_client_handle_t open_request_with_response(
         h = esp_http_client_init(&c);
     if (!h)
         return NULL;
+    if (esp_http_client_set_url(h, url) != ESP_OK ||
+        esp_http_client_set_timeout_ms(h, timeout_ms) != ESP_OK)
+        goto fail;
     if (token[0]) {
         snprintf(auth, sizeof(auth), "Bearer %s", token);
         esp_http_client_set_header(h, "Authorization", auth);
+    } else {
+        esp_http_client_delete_header(h, "Authorization");
     }
     esp_http_client_set_header(h, "Content-Type", "application/json");
     esp_http_client_set_method(h, body ? HTTP_METHOD_POST : HTTP_METHOD_GET);
@@ -207,24 +220,40 @@ fail:
     }
     return NULL;
 }
+static void close_client(esp_http_client_handle_t *client)
+{
+    if (*client) {
+        esp_http_client_close(*client);
+        esp_http_client_cleanup(*client);
+        *client = NULL;
+    }
+}
 static esp_http_client_handle_t open_request(const char *path, const char *body)
 {
-    return open_request_with_response(path, body, &main_response, NULL, 15000);
+    download_client = open_request_with_response(path, body, &download_response,
+                                                  download_client, 15000);
+    return download_client;
 }
-/* A reusable client is private to the cancellation task and always uses /poll.
- * Keep it only after a complete, valid response on a persistent connection. */
+static void finish_download(bool valid)
+{
+    if (download_client && (!valid ||
+        !esp_http_client_is_complete_data_received(download_client) ||
+        !esp_http_client_is_persistent_connection(download_client)))
+        close_client(&download_client);
+}
+/* Reuse only a fully consumed, valid response. Each task owns its own handle. */
 static cJSON *request_with_response(const char *path, const cJSON *body,
                                     http_response_t *response,
-                                    esp_http_client_handle_t *reusable)
+                                    esp_http_client_handle_t *reusable,
+                                    int timeout_ms, bool observer)
 {
-    int64_t deadline = esp_timer_get_time() + (reusable ? 10000000 : 30000000);
+    int64_t deadline = esp_timer_get_time() + (int64_t)timeout_ms * 2000;
     char *encoded = body ? cJSON_PrintUnformatted(body) : NULL;
     if (body && !encoded)
         return NULL;
     esp_http_client_handle_t h = open_request_with_response(
-        path, encoded, response, reusable ? *reusable : NULL, reusable ? 5000 : 15000);
-    if (reusable)
-        *reusable = h;
+        path, encoded, response, *reusable, timeout_ms);
+    *reusable = h;
     free(encoded);
     if (!h)
         return NULL;
@@ -233,7 +262,7 @@ static cJSON *request_with_response(const char *path, const cJSON *body,
     cJSON *result = NULL;
     if (buf) {
         while (used < LIMIT && esp_timer_get_time() < deadline &&
-               (!reusable || (!atomic_load(&cancel_poll_stop) &&
+               (!observer || (!atomic_load(&cancel_poll_stop) &&
                               !atomic_load(&stop_requested)))) {
             size_t wanted = LIMIT - used;
             if (wanted > 4096)
@@ -252,17 +281,13 @@ static cJSON *request_with_response(const char *path, const cJSON *body,
         }
         free(buf);
     }
-    if (!result || !reusable || !esp_http_client_is_persistent_connection(h)) {
-        esp_http_client_close(h);
-        esp_http_client_cleanup(h);
-        if (reusable)
-            *reusable = NULL;
-    }
+    if (!result || !esp_http_client_is_persistent_connection(h))
+        close_client(reusable);
     return result;
 }
 static cJSON *request(const char *path, const cJSON *body)
 {
-    return request_with_response(path, body, &main_response, NULL);
+    return request_with_response(path, body, &main_response, &main_client, 15000, false);
 }
 static void path_session(char out[256], const char *suffix)
 {
@@ -279,7 +304,10 @@ static bool event(const char *state, unsigned progress, esp_err_t error)
     if (error != ESP_OK)
         cJSON_AddStringToObject(j, "error", esp_err_to_name(error));
     cJSON *r = request(path, j);
-    bool ok = r != NULL;
+    bool ok = r != NULL && !strcmp(str(r, "phase"), state);
+    if (!ok)
+        ESP_LOGW("iris_bridge", "phase %s failed: http=%d response=%s", state,
+                 main_response.status, r ? "unexpected phase" : "missing/invalid");
     if (atomic_load(&stop_requested) ||
         (r && cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(r, "cancel_requested"))))
         atomic_store(&cancelled, true);
@@ -291,59 +319,79 @@ static bool event(const char *state, unsigned progress, esp_err_t error)
  * a later successful poll must not undo an earlier local/remote cancellation. */
 static bool should_cancel(void)
 {
-    return atomic_load(&stop_requested) || atomic_load(&cancelled);
+    return atomic_load(&stop_requested) || atomic_load(&cancelled) ||
+           (write_deadline && esp_timer_get_time() >= write_deadline);
+}
+/* Coalesce ordinary WRITING telemetry in RAM. A failed report cannot revoke
+ * write permission; only explicit cancellation/expired authority can stop it. */
+static void notify_progress(unsigned progress)
+{
+    set_state("WRITING", progress, ESP_OK);
+    atomic_store(&telemetry_progress, progress);
+    atomic_fetch_add(&telemetry_revision, 1);
 }
 static void cancel_poll_run(void *unused)
 {
     (void)unused;
     http_response_t response = {0};
     esp_http_client_handle_t client = NULL;
-    unsigned interval = 5;
+    unsigned interval = 5, sent = 0;
+    int64_t next_poll = esp_timer_get_time() + 5000000;
+    int64_t next_progress = esp_timer_get_time() + 1000000;
     while (!atomic_load(&cancel_poll_stop) && !should_cancel()) {
-        /* Measure from completion, including failures, so a slow query cannot
-         * cause an immediate retry. The short sleeps also make stop/join cheap. */
-        const int64_t next = esp_timer_get_time() + (int64_t)interval * 1000000;
-        while (esp_timer_get_time() < next) {
-            if (atomic_load(&cancel_poll_stop) || should_cancel())
-                goto done;
+        unsigned revision = atomic_load(&telemetry_revision);
+        bool telemetry = revision != sent && esp_timer_get_time() >= next_progress;
+        if (!telemetry && esp_timer_get_time() < next_poll) {
             vTaskDelay(pdMS_TO_TICKS(100));
+            continue;
         }
-        if (atomic_load(&cancel_poll_stop) || should_cancel())
-            break;
         char path[256];
-        path_session(path, "/poll");
+        path_session(path, telemetry ? "/progress" : "/poll");
+        cJSON *body = NULL;
+        if (telemetry) {
+            body = cJSON_CreateObject();
+            if (!body) { next_progress = esp_timer_get_time() + 1000000; continue; }
+            cJSON_AddStringToObject(body, "phase", "WRITING");
+            cJSON_AddNumberToObject(body, "progress", atomic_load(&telemetry_progress));
+        }
         const int64_t started = esp_timer_get_time();
-        cJSON *r = request_with_response(path, NULL, &response, &client);
-        const bool ok = r != NULL;
+        cJSON *r = request_with_response(path, body, &response, &client, 5000, true);
+        cJSON_Delete(body);
+        const bool ok = r != NULL && (!telemetry || !strcmp(str(r, "phase"), "WRITING"));
         if (r) {
-            const cJSON *flash = cJSON_GetObjectItemCaseSensitive(r, "flash");
-            if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(flash, "cancel_requested")))
+            const cJSON *flash = telemetry ? r : cJSON_GetObjectItemCaseSensitive(r, "flash");
+            if (cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(flash, "cancel_requested"))) {
+                ESP_LOGW("iris_bridge", "remote cancellation received via %s", telemetry ? "progress" : "poll");
                 atomic_store(&cancelled, true);
-        } else if (response.status == 401 || response.status == 404 ||
-                   response.status == 410) {
+            }
+        } else if (response.status == 401 || response.status == 404 || response.status == 410) {
+            ESP_LOGW("iris_bridge", "write authority ended: http=%d", response.status);
             atomic_store(&cancelled, true);
         }
         cJSON_Delete(r);
+        if (ok && telemetry) {
+            sent = revision;
+            atomic_store(&writing_acknowledged, true);
+        }
         interval = ok ? 5 : (interval < 15 ? interval * 2 : 30);
         if (response.retry_after_seconds > interval)
             interval = response.retry_after_seconds;
+        next_poll = esp_timer_get_time() + (int64_t)interval * 1000000;
+        next_progress = esp_timer_get_time() + (int64_t)(ok ? 1 : interval) * 1000000;
         if (!ok && !atomic_load(&cancel_poll_stop) && !should_cancel())
-            ESP_LOGW("iris_bridge", "cancel poll failed: http=%d elapsed=%lld ms; retry in %u s",
-                     response.status, (long long)((esp_timer_get_time() - started) / 1000),
-                     interval);
+            ESP_LOGW("iris_bridge", "%s failed: http=%d elapsed=%lld ms; retry in %u s",
+                     telemetry ? "telemetry" : "cancel poll", response.status,
+                     (long long)((esp_timer_get_time() - started) / 1000), interval);
     }
-done:
-    if (client) {
-        esp_http_client_close(client);
-        esp_http_client_cleanup(client);
-    }
-    /* No access to the session, token, or client is allowed after this store. */
+    close_client(&client);
     atomic_store(&cancel_poll_running, false);
     vTaskDeleteWithCaps(NULL);
 }
 static esp_err_t cancel_poll_start(void)
 {
     atomic_store(&cancel_poll_stop, false);
+    atomic_store(&telemetry_revision, 0);
+    atomic_store(&writing_acknowledged, false);
     atomic_store(&cancel_poll_running, true);
     if (xTaskCreateWithCaps(cancel_poll_run, "iris_cancel", 8192, NULL, 4, NULL,
                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS)
@@ -535,8 +583,7 @@ static esp_err_t get_table(const cJSON *plan, uint8_t raw[4096])
         matches(raw, 4096, str(plan, "target_table_sha256")))
         err = ESP_OK;
 done:
-    esp_http_client_close(h);
-    esp_http_client_cleanup(h);
+    finish_download(err == ESP_OK);
     return err;
 }
 static cJSON *component(unsigned id, const char *kind, uint32_t offset, uint32_t size,
@@ -671,10 +718,8 @@ static esp_err_t transfer(const char *file, const esp_iris_system_update_compone
 done:
     psa_hash_abort(&digest_op);
     free(buf);
-    if (h) {
-        esp_http_client_close(h);
-        esp_http_client_cleanup(h);
-    }
+    if (h)
+        finish_download(err == ESP_OK);
     ESP_LOGI("iris_bridge", "component %u: received=%lu/%lu bytes elapsed=%lld ms read=%lld ms write=%lld ms max_read=%lld ms stack_free=%u result=%s",
              (unsigned)c->id, (unsigned long)received, (unsigned long)c->size,
              (long long)((esp_timer_get_time() - started) / 1000),
@@ -682,6 +727,78 @@ done:
              (long long)(max_read_us / 1000),
              (unsigned)uxTaskGetStackHighWaterMark(NULL), esp_err_to_name(err));
     return err;
+}
+
+static bool authorize_commit(void)
+{
+    if (should_cancel())
+        return false;
+    if (!separate_authorization) {
+        /* Legacy services still require ordered phases. Ordinary reports may
+         * be lost; reconcile them once at the commit boundary. */
+        if (!atomic_load(&writing_acknowledged) && !event("WRITING", 90, ESP_OK))
+            return false;
+        if (!event("VERIFYING", 95, ESP_OK) || should_cancel())
+            return false;
+        return event("COMMITTING", 98, ESP_OK);
+    }
+    set_state("COMMITTING", 98, ESP_OK);
+    char path[256];
+    path_session(path, "/authorize");
+    cJSON *body = cJSON_CreateObject();
+    if (!body) return false;
+    cJSON_AddStringToObject(body, "phase", "COMMITTING");
+    cJSON_AddNumberToObject(body, "progress", 98);
+    cJSON *r = request(path, body);
+    bool ok = r && !strcmp(str(r, "phase"), "COMMITTING") &&
+              cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(r, "authorized"));
+    if (!ok)
+        ESP_LOGW("iris_bridge", "commit authorization failed: http=%d response=%s",
+                 main_response.status, r ? "denied/malformed" : "missing/invalid");
+    cJSON_Delete(r);
+    cJSON_Delete(body);
+    return ok;
+}
+/* Owns the foreground HTTP client after commit. No Flash/NVS work here: the
+ * worker may reboot at its deadline even if DNS/TLS is still blocked. */
+static void report_result_run(void *unused)
+{
+    (void)unused;
+    char path[256];
+    path_session(path, "/progress");
+    cJSON *body = cJSON_CreateObject();
+    if (body) {
+        cJSON_AddStringToObject(body, "phase", final_result == ESP_OK ? "DONE" : "FAILED");
+        cJSON_AddNumberToObject(body, "progress", 100);
+        if (final_result != ESP_OK)
+            cJSON_AddStringToObject(body, "error", esp_err_to_name(final_result));
+        cJSON *r = request_with_response(path, body, &main_response, &main_client, 1500, false);
+        if (!r)
+            ESP_LOGW("iris_bridge", "result delivery unconfirmed: http=%d; local result retained", main_response.status);
+        cJSON_Delete(r);
+        cJSON_Delete(body);
+    }
+    close_client(&main_client);
+    atomic_store(&report_running, false);
+    vTaskDeleteWithCaps(NULL);
+}
+static void report_result_bounded(esp_err_t result)
+{
+    final_result = result;
+    set_state(result == ESP_OK ? "DONE" : "FAILED", 100, result);
+    atomic_store(&report_running, true);
+    const int64_t deadline = esp_timer_get_time() + 2000000;
+    if (xTaskCreateWithCaps(report_result_run, "iris_result", 8192, NULL, 4, NULL,
+                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
+        atomic_store(&report_running, false);
+        ESP_LOGW("iris_bridge", "result reporter unavailable; local result retained");
+        return;
+    }
+    while (atomic_load(&report_running) && esp_timer_get_time() < deadline)
+        vTaskDelay(pdMS_TO_TICKS(10));
+    if (atomic_load(&report_running))
+        ESP_LOGW("iris_bridge", "result delivery deadline reached; rebooting with persisted result");
+    /* Do not delete a task owning TLS locks, or mutate its token/session. */
 }
 
 /* Backend validates target partition types and bounds; transport never grants
@@ -803,8 +920,7 @@ static esp_err_t execute(const char *op, const cJSON *plan)
         bool complete = !should_cancel() && done == length &&
                         esp_http_client_read(h, &extra, 1) == 0 &&
                         esp_http_client_is_complete_data_received(h);
-        esp_http_client_close(h);
-        esp_http_client_cleanup(h);
+        finish_download(complete);
         if (!complete || !matches(recovery, length, str(im, "sha256"))) {
             err = ESP_ERR_INVALID_CRC;
             goto abort;
@@ -884,7 +1000,8 @@ static esp_err_t execute(const char *op, const cJSON *plan)
 prepared:;
     size_t count = factory_system_update_source_component_count(
         FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE);
-    if (!event("WRITING", 0, ESP_OK) || cancelled) {
+    notify_progress(0);
+    if (should_cancel()) {
         err = ESP_ERR_INVALID_STATE;
         goto abort;
     }
@@ -901,7 +1018,8 @@ prepared:;
                            : (factory ? recovery : NULL));
         if (err != ESP_OK)
             goto abort;
-        if (!event("WRITING", (i + 1) * 90 / count, ESP_OK) || cancelled) {
+        notify_progress((i + 1) * 90 / count);
+        if (should_cancel()) {
             err = ESP_ERR_INVALID_STATE;
             goto abort;
         }
@@ -909,13 +1027,11 @@ prepared:;
     free(table);
     table = NULL;
     cancel_poll_join();
-    if (!event("VERIFYING", 95, ESP_OK) || cancelled || atomic_load(&stop_requested)) {
-        err = ESP_ERR_INVALID_STATE;
-        goto abort;
-    }
+    set_state("VERIFYING", 95, ESP_OK);
+    close_client(&download_client);
     /* A successful COMMITTING acknowledgement authorizes the critical write.
      * A local stop arriving after that acknowledgement cannot revoke it. */
-    if (!event("COMMITTING", 98, ESP_OK)) {
+    if (!authorize_commit()) {
         err = ESP_ERR_INVALID_STATE;
         goto abort;
     }
@@ -925,7 +1041,7 @@ prepared:;
          * Discard all cached descriptors after an attempted critical commit. */
         if (factory_system_update_source_needs_restart(
                 FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE)) {
-            event("FAILED", 100, err);
+            report_result_bounded(err);
             free(recovery);
             if (restore_ps)
                 (void)esp_wifi_set_ps(saved_ps);
@@ -936,17 +1052,21 @@ prepared:;
     free(recovery);
     recovery = NULL;
     err = save_boot(plan);
-    event(err == ESP_OK ? "DONE" : "FAILED", 100, err);
+    if (err != ESP_OK) {
+        esp_err_t stored = factory_system_metadata_store_last_result(opid, err);
+        ESP_LOGW("iris_bridge", "boot intent failed: %s; result persistence=%s",
+                 esp_err_to_name(err), esp_err_to_name(stored));
+    }
+    report_result_bounded(err);
     if (restore_ps)
         (void)esp_wifi_set_ps(saved_ps);
-    memset(session, 0, sizeof(session));
-    memset(token, 0, sizeof(token));
     /* The raw layout may have changed: never resume with a stale IDF cache. */
     esp_restart();
     return ESP_OK;
 abort:
     free(table);
     cancel_poll_join();
+    close_client(&download_client);
     if (restore_ps)
         (void)esp_wifi_set_ps(saved_ps);
     free(recovery);
@@ -998,6 +1118,8 @@ static void run(void *unused)
                 }
                 strlcpy(session, id, sizeof(session));
                 strlcpy(token, secret, sizeof(token));
+                separate_authorization = num(r, "control_protocol") >= 2;
+                ESP_LOGI("iris_bridge", "control protocol %u", separate_authorization ? 2 : 1);
                 pairing_deadline = registered_at + 600LL * 1000000;
                 set_state("PAIRING", 0, ESP_OK);
                 taskENTER_CRITICAL(&snapshot_lock);
@@ -1037,15 +1159,19 @@ static void run(void *unused)
                 if (!atomic_load(&stop_requested) && atomic_load(&bridge_active) &&
                     !strcmp(str(flash, "phase"), "QUEUED")) {
                     /* Never replay after an uncertain PRECHECK acknowledgement. */
-                    path_session(path, "/progress");
+                    path_session(path, separate_authorization ? "/authorize" : "/progress");
                     cJSON *start = cJSON_CreateObject();
                     cJSON_AddStringToObject(start, "phase", "PRECHECK");
                     cJSON_AddNumberToObject(start, "progress", 0);
                     set_state("PRECHECK", 0, ESP_OK);
+                    const int64_t requested_at = esp_timer_get_time();
                     cJSON *accepted = request(path, start);
                     cJSON_Delete(start);
                     esp_err_t err = ESP_ERR_INVALID_RESPONSE;
-                    if (accepted && atomic_load(&bridge_active) &&
+                    uint32_t ttl = num(accepted, "write_authorization_ttl_ms");
+                    write_deadline = separate_authorization ? requested_at + (int64_t)ttl * 1000 : 0;
+                    if ((!separate_authorization || (ttl && !should_cancel())) &&
+                        accepted && atomic_load(&bridge_active) &&
                         !strcmp(str(accepted, "phase"), "PRECHECK"))
                         err = execute(session, accepted);
                     if (err != ESP_OK)
@@ -1084,6 +1210,8 @@ static void run(void *unused)
         else
             set_state("CANCELLED", 0, ESP_OK);
     }
+    close_client(&main_client);
+    close_client(&download_client);
     memset(session, 0, sizeof(session));
     memset(token, 0, sizeof(token));
     atomic_store(&bridge_running, false);
@@ -1160,6 +1288,8 @@ esp_err_t iris_bridge_start(const iris_bridge_config_t *config)
     strlcpy(snapshot.state, "WAITING_NETWORK", sizeof(snapshot.state));
     taskEXIT_CRITICAL(&snapshot_lock);
     cancelled = false;
+    write_deadline = 0;
+    separate_authorization = false;
     atomic_store(&bridge_active, !config->prefetch_only);
     atomic_store(&stop_requested, false);
     /* This task also writes Flash/NVS, so keep its stack internal. The cloud

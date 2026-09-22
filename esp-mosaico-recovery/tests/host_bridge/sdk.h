@@ -285,6 +285,9 @@ static inline int mbedtls_base64_encode(unsigned char *out, size_t cap, size_t *
 }
 #define esp_crt_bundle_attach NULL
 esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *config);
+esp_err_t esp_http_client_set_url(esp_http_client_handle_t h, const char *url);
+esp_err_t esp_http_client_set_timeout_ms(esp_http_client_handle_t h, int timeout);
+esp_err_t esp_http_client_delete_header(esp_http_client_handle_t h, const char *name);
 esp_err_t esp_http_client_open(esp_http_client_handle_t h, size_t length);
 int esp_http_client_fetch_headers(esp_http_client_handle_t h);
 int esp_http_client_get_status_code(esp_http_client_handle_t h);

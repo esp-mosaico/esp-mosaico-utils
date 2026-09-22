@@ -27,7 +27,12 @@ static int pairing_snapshots;
 static bool expire_on_delay;
 static int activate_after_delays;
 static bool pause_on_poll;
-static pthread_t poll_thread;
+static pthread_t poll_thread, result_thread;
+static bool result_joinable, block_result;
+static atomic_bool result_started, release_result;
+static _Thread_local bool in_result;
+static int persisted_results;
+static int64_t restarted_at;
 static bool poll_joinable, mock_keep_alive;
 static _Thread_local bool in_poll;
 static atomic_bool poll_sleeping, poll_blocked, release_poll;
@@ -52,6 +57,13 @@ static void *poll_entry(void *arg)
     cancel_poll_run(arg);
     return NULL;
 }
+static void *result_entry(void *arg)
+{
+    in_result = true;
+    atomic_store(&result_started, true);
+    report_result_run(arg);
+    return NULL;
+}
 int xTaskCreate(void (*fn)(void *), const char *name, int stack,
                 void *arg, int pri, TaskHandle_t *task)
 {
@@ -64,6 +76,12 @@ int xTaskCreate(void (*fn)(void *), const char *name, int stack,
         assert(pthread_create(&poll_thread, NULL, poll_entry, arg) == 0);
         poll_joinable = true;
         while (!atomic_load(&poll_sleeping)) host_pause();
+    } else if (fn == report_result_run) {
+        assert(persisted_results || mock_commit_error);
+        atomic_store(&result_started, false);
+        assert(pthread_create(&result_thread, NULL, result_entry, arg) == 0);
+        result_joinable = true;
+        while (!atomic_load(&result_started)) host_pause();
     } else {
         mock_worker = fn;
     }
@@ -95,6 +113,7 @@ void vTaskDelay(unsigned ms)
         host_pause();
         return;
     }
+    if (atomic_load(&report_running)) host_pause();
     mock_time += (int64_t)ms * 1000;
     if (activate_after_delays && --activate_after_delays == 0) {
         assert(requests == 1); /* No background polling or re-registration. */
@@ -111,7 +130,7 @@ void vTaskDelay(unsigned ms)
 void vTaskDelete(void *arg)
 {
     (void)arg;
-    if (in_poll) pthread_exit(NULL);
+    if (in_poll || in_result) pthread_exit(NULL);
     join_poll_thread();
     longjmp(worker_exit, 1);
 }
@@ -120,6 +139,14 @@ void esp_restart(void)
     assert(!atomic_load(&cancel_poll_running));
     assert(mock_wifi_ps == WIFI_PS_MIN_MODEM);
     join_poll_thread();
+    restarted_at = mock_time;
+    if (result_joinable) {
+        atomic_store(&release_result, true);
+        assert(pthread_join(result_thread, NULL) == 0);
+        result_joinable = false;
+    }
+    close_client(&main_client);
+    close_client(&download_client);
     restart_count++;
     longjmp(worker_exit, 2);
 }
@@ -146,6 +173,21 @@ esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *co
     http_allocations++;
     http_live++;
     return h;
+}
+esp_err_t esp_http_client_set_url(esp_http_client_handle_t h, const char *url)
+{
+    strlcpy(h->url, url, sizeof(h->url));
+    return ESP_OK;
+}
+esp_err_t esp_http_client_set_timeout_ms(esp_http_client_handle_t h, int timeout)
+{
+    (void)h;
+    assert(timeout > 0);
+    return ESP_OK;
+}
+esp_err_t esp_http_client_delete_header(esp_http_client_handle_t h, const char *name)
+{
+    (void)h; (void)name; return ESP_OK;
 }
 esp_err_t esp_http_client_open(esp_http_client_handle_t h, size_t length)
 {
@@ -185,6 +227,8 @@ int esp_http_client_get_status_code(esp_http_client_handle_t h)
 }
 int esp_http_client_read(esp_http_client_handle_t h, char *out, size_t n)
 {
+    if (in_result && block_result)
+        while (!atomic_load(&release_result)) host_pause();
     if (in_poll && slow_poll) {
         atomic_store(&poll_blocked, true);
         while (!atomic_load(&release_poll)) host_pause();
@@ -244,6 +288,12 @@ bool esp_http_client_is_persistent_connection(esp_http_client_handle_t h)
 {
     (void)h;
     return mock_keep_alive;
+}
+esp_err_t factory_system_metadata_store_last_result(const uint8_t *op, esp_err_t result)
+{
+    (void)op; (void)result;
+    persisted_results++;
+    return ESP_OK;
 }
 esp_err_t factory_system_metadata_load_last_result(factory_sysmeta_record_t *out)
 {
@@ -350,6 +400,7 @@ esp_err_t factory_system_update_source_commit(factory_system_update_owner_t owne
     (void)owner;
     (void)op;
     mock_commits++;
+    if (!mock_commit_error) persisted_results++;
     return mock_commit_error;
 }
 bool factory_system_update_source_needs_restart(factory_system_update_owner_t owner)
@@ -431,7 +482,17 @@ static void reset(void)
     assert(mock_wifi_ps == WIFI_PS_MIN_MODEM);
     assert(!atomic_load(&cancel_poll_running));
     join_poll_thread();
+    /* Direct execute() calls below emulate the worker cleanup on return. */
+    close_client(&main_client);
+    close_client(&download_client);
     assert(http_live == 0);
+    persisted_results = 0;
+    block_result = false;
+    atomic_store(&release_result, false);
+    write_deadline = 0;
+    separate_authorization = false;
+    atomic_store(&telemetry_revision, 0);
+    atomic_store(&report_running, false);
     http_allocations = 0;
     mock_keep_alive = slow_poll = download_during_poll = direct_poll_time = false;
     atomic_store(&poll_sleeping, false);
@@ -611,6 +672,106 @@ static void test_cancel_poll(void)
     reset();
 }
 
+static void test_authorization_and_result(void)
+{
+    /* Dropped/coalesced telemetry cannot block a protocol-2 commit. */
+    reset();
+    separate_authorization = true;
+    mock_keep_alive = true;
+    cJSON *p = plan("partitions");
+    reply("/files/", 200, "data", false);
+    reply("/authorize", 200, "{\"phase\":\"COMMITTING\",\"authorized\":true}", false);
+    reply("/progress", 200, "{\"phase\":\"DONE\"}", false);
+    if (!setjmp(worker_exit)) execute("12345678901234567890123456789012", p);
+    assert(mock_commits == 1 && persisted_results == 1 && restart_count == 1);
+    assert(http_allocations == 2 && !http_live); /* File and control, DONE reuses control. */
+    cJSON_Delete(p);
+
+    /* Registration negotiation and PRECHECK lease, then a denied commit. */
+    reset();
+    p = plan("partitions");
+    cJSON_AddStringToObject(p, "phase", "PRECHECK");
+    cJSON_AddNumberToObject(p, "write_authorization_ttl_ms", 60000);
+    char *accepted = cJSON_PrintUnformatted(p);
+    cJSON *reg = cJSON_Parse(registration);
+    cJSON_AddNumberToObject(reg, "control_protocol", 2);
+    char *registered = cJSON_PrintUnformatted(reg);
+    cJSON_Delete(reg);
+    mock_keep_alive = true;
+    reply("device-sessions", 201, registered, false);
+    reply("/poll", 200, "{\"flash\":{\"phase\":\"QUEUED\"}}", false);
+    reply("/authorize", 200, accepted, false);
+    reply("/files/", 200, "data", false);
+    reply("/authorize", 409, "{}", false);
+    reply("/progress", 200, "{\"phase\":\"FAILED\"}", false);
+    assert(iris_bridge_start(&config) == ESP_OK);
+    run_worker();
+    assert(mock_writes == 1 && mock_commits == 0 && restart_count == 0 && requests == 6);
+    assert(http_allocations == 3 && !http_live && write_deadline > mock_time);
+    free(registered); free(accepted); cJSON_Delete(p);
+
+    /* Fully consumed component downloads reuse one handle across file URLs. */
+    reset();
+    mock_keep_alive = true;
+    descriptor = (esp_iris_system_update_component_t){.id=1, .kind=ESP_IRIS_SYSTEM_UPDATE_COMPONENT_DATA, .size=4};
+    digest("data", 4, descriptor.sha256);
+    reply("/files/one", 200, "data", false);
+    reply("/files/two", 200, "data", false);
+    assert(transfer("one", &descriptor, NULL) == ESP_OK);
+    assert(transfer("two", &descriptor, NULL) == ESP_OK);
+    assert(http_allocations == 1 && http_live == 1 && mock_writes == 2);
+
+    /* HTTP 200 alone does not grant critical write permission. */
+    reset();
+    separate_authorization = true;
+    p = plan("partitions");
+    reply("/files/", 200, "data", false);
+    reply("/authorize", 200, "{}", false);
+    assert(execute("12345678901234567890123456789012", p) != ESP_OK);
+    assert(mock_writes && !mock_commits && !mock_reserved);
+    cJSON_Delete(p);
+
+    /* A stalled final HTTPS body cannot postpone reboot beyond 2 seconds. */
+    reset();
+    separate_authorization = true;
+    block_result = true;
+    p = plan("partitions");
+    reply("/files/", 200, "data", false);
+    reply("/authorize", 200, "{\"phase\":\"COMMITTING\",\"authorized\":true}", false);
+    reply("/progress", 200, "{\"phase\":\"DONE\"}", false);
+    if (!setjmp(worker_exit)) execute("12345678901234567890123456789012", p);
+    assert(restarted_at == 2000000 && mock_commits == 1 && persisted_results == 1);
+    cJSON_Delete(p);
+
+    /* Changed URLs reuse a fully consumed connection; failures discard it. */
+    reset();
+    mock_keep_alive = true;
+    reply("/first", 200, "{}", false);
+    reply("/second", 200, "{}", false);
+    reply("/third", 503, "{}", false);
+    reply("/fourth", 200, "{}", false);
+    cJSON_Delete(request("/first", NULL));
+    cJSON_Delete(request("/second", NULL));
+    assert(http_allocations == 1 && http_live == 1);
+    assert(!request("/third", NULL) && !http_live);
+    cJSON_Delete(request("/fourth", NULL));
+    assert(http_allocations == 2 && http_live == 1);
+
+    /* A lost progress POST is retried; explicit remote cancellation still stops. */
+    reset();
+    reply("/progress", 503, "{}", false);
+    reply("/progress", 200, "{\"phase\":\"WRITING\",\"cancel_requested\":true}", false);
+    notify_progress(30);
+    run_poll_clock();
+    assert(requests == 2 && request_started[0] == 1000000 &&
+           request_started[1] == 11000000 && cancelled);
+    reset();
+    write_deadline = 1;
+    mock_time = 2;
+    assert(should_cancel() && !authorize_commit() && !requests);
+    reset();
+}
+
 int main(void)
 {
     iris_bridge_snapshot_t out;
@@ -732,10 +893,9 @@ int main(void)
     /* A rejected critical acknowledgement must never invoke commit. */
     reset();
     p = plan("partitions");
-    reply("/progress", 200, "{}", false);
     reply("/files/", 200, "data", false);
-    reply("/progress", 200, "{}", false);
-    reply("/progress", 200, "{}", false);
+    reply("/progress", 200, "{\"phase\":\"WRITING\"}", false);
+    reply("/progress", 200, "{\"phase\":\"VERIFYING\"}", false);
     reply("/progress", 409, "{}", false);
     assert(execute("12345678901234567890123456789012", p) != 0);
     assert(mock_writes == 1 && !mock_commits && !mock_reserved);
@@ -743,25 +903,23 @@ int main(void)
     /* Once authorized, local cancellation cannot interrupt critical commit. */
     reset();
     p = plan("partitions");
-    reply("/progress", 200, "{}", false);
     reply("/files/", 200, "data", false);
-    reply("/progress", 200, "{}", false);
-    reply("/progress", 200, "{}", false);
-    reply("/progress", 200, "{}", true);
+    reply("/progress", 200, "{\"phase\":\"WRITING\"}", false);
+    reply("/progress", 200, "{\"phase\":\"VERIFYING\"}", false);
+    reply("/progress", 200, "{\"phase\":\"COMMITTING\"}", true);
     reply("/progress", 401, "{}", false);
     if (!setjmp(worker_exit))
         execute("12345678901234567890123456789012", p);
-    assert(mock_commits == 1 && restart_count == 1 && !token[0]);
+    assert(mock_commits == 1 && restart_count == 1);
     cJSON_Delete(p);
     reset();
     p = plan("partitions");
     mock_commit_error = ESP_FAIL;
-    reply("/progress", 200, "{}", false);
     reply("/files/", 200, "data", false);
-    reply("/progress", 200, "{}", false);
-    reply("/progress", 200, "{}", false);
-    reply("/progress", 200, "{}", false);
-    reply("/progress", 200, "{}", false);
+    reply("/progress", 200, "{\"phase\":\"WRITING\"}", false);
+    reply("/progress", 200, "{\"phase\":\"VERIFYING\"}", false);
+    reply("/progress", 200, "{\"phase\":\"COMMITTING\"}", false);
+    reply("/progress", 200, "{\"phase\":\"DONE\"}", false);
     if (!setjmp(worker_exit))
         execute("12345678901234567890123456789012", p);
     assert(mock_commits == 1 && restart_count == 1);
@@ -833,17 +991,17 @@ int main(void)
     cfg.enable_system_update = true;
     cfg.enable_bootloader_update = true;
     p = system_plan();
-    reply("/progress", 200, "{}", false);
     reply("/files/", 200, "data", false);
-    reply("/progress", 200, "{}", false);
-    reply("/progress", 200, "{}", false);
-    reply("/progress", 200, "{}", false);
-    reply("/progress", 200, "{}", false);
+    reply("/progress", 200, "{\"phase\":\"WRITING\"}", false);
+    reply("/progress", 200, "{\"phase\":\"VERIFYING\"}", false);
+    reply("/progress", 200, "{\"phase\":\"COMMITTING\"}", false);
+    reply("/progress", 200, "{\"phase\":\"DONE\"}", false);
     if (!setjmp(worker_exit))
         execute("12345678901234567890123456789012", p);
     assert(system_prepares == 1 && system_allow_bootloader);
     assert(mock_writes == 1 && mock_commits == 1 && restart_count == 1);
     cJSON_Delete(p);
     test_cancel_poll();
+    test_authorization_and_result();
     puts("Bridge worker, cancellation and transaction gates passed");
 }

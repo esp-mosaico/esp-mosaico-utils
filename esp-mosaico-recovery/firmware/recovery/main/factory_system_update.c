@@ -768,10 +768,8 @@ static esp_err_t begin_component(
                             ESP_ERR_NOT_FOUND, TAG, "application target missing");
         s_update.active_partition = &plan->target_partition;
         const size_t erase_size =
-            s_update.remote_bridge
-                ? s_update.active_partition->size
-                : (component->size + FACTORY_SYSTEM_FLASH_SECTOR_BYTES - 1U) &
-                      ~(FACTORY_SYSTEM_FLASH_SECTOR_BYTES - 1U);
+            (component->size + FACTORY_SYSTEM_FLASH_SECTOR_BYTES - 1U) &
+            ~(FACTORY_SYSTEM_FLASH_SECTOR_BYTES - 1U);
         ESP_LOGI(TAG,
                  "erasing application before receive: offset=0x%08" PRIx32 " size=%u",
                  s_update.active_partition->address, (unsigned)erase_size);
