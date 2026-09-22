@@ -30,9 +30,19 @@ Logo 完整写入后通过 LP STORE15 发布一次性屏幕交接标记。支持
 保留 Logo 直至应用首帧覆盖。Logo 初始化或传输失败时不发布标记，BSP 自动
 回到原来的完整初始化流程。
 
-bootloader 默认关闭串口日志，以适配 `0x2000` 到 `0x8000` 的 24 KiB 固定
-空间；Logo 和分区选择失败仍通过安全回退或复位处理。分区布局、OTA 选择、
-Recovery Boot 按键和恢复协议不变。维护者必须
+bootloader 默认启用 INFO 串口日志，输出启动信息、分区选择、Logo 成功信息及
+警告/错误；使用默认 UART0、115200 波特率。此阶段 ESP-Iris 尚未启动，
+`iris logs` 不会回放这些早期串口日志。
+
+Logo 的 SPI2 总线固定为 40 MHz、半双工只写，通过 ESP-IDF LL 配置发送，
+不引入通用 SPI HAL 的 RX、DMA 与动态事务配置。板型读取使用 ESP32-S31
+USER_DATA 的低 16 位只读寄存器，虚拟 eFuse 构建保留原字段读取 API。
+单字节屏幕初始化指令使用紧凑表；字模、像素、短震、失败回退和屏幕交接保持不变。
+ESP-IDF `7b9cc1ac79f8` 实测 INFO bootloader 为 24,432 字节，比优化前同级
+日志的 26,720 字节缩小 2,288 字节，在 `0x2000` 到 `0x8000` 的 24 KiB
+固定空间内剩余 144 字节。后续修改仍须通过 bootloader 容量检查。
+
+分区布局、OTA 选择、Recovery Boot 按键和恢复协议不变。维护者必须
 在更新源码后重新生成并校验 `prebuilt/recovery` 的完整包，不能只替换其中一个
 镜像；普通应用更新仍使用宿主 workspace 的 `mosaico.py iris app-update`。
 
