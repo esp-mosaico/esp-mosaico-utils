@@ -79,7 +79,15 @@ class Runner:
             raise AcceptanceFailure(
                 f"{name} returned non-JSON output; see {name}.command.json"
             )
-        if completed.returncode != 0 or value.get("ok") is not True:
+        succeeded = value.get("ok") is True
+        if arguments[:3] == ("iris", "takeover", "start"):
+            record = value.get("takeover", {})
+            succeeded = record.get("state") == "completed" and record.get("device_id") == self.device_id
+        elif arguments[:2] == ("iris", "claim"):
+            device = value.get("device") or {}
+            succeeded = bool(device.get("device_id")) and (
+                self.device_id is None or device.get("device_id") == self.device_id)
+        if completed.returncode != 0 or not succeeded:
             raise AcceptanceFailure(
                 f"{name} failed: {value.get('message', value)}"
             )

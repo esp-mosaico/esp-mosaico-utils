@@ -30,6 +30,12 @@ class CrashRunnerCommandsTests(unittest.TestCase):
         self.assertEqual(args.workspace, str(self.workspace))
         self.assertEqual(kwargs["cwd"], self.workspace)
         self.calls.append(args)
+        if args.public_command == "iris takeover start":
+            return SimpleNamespace(returncode=0, stdout=json.dumps({
+                "takeover": {"state": "completed", "device_id": "device"}}), stderr="")
+        if args.public_command == "iris claim":
+            return SimpleNamespace(returncode=0, stdout=json.dumps({
+                "device": {"device_id": "device"}}), stderr="")
         return SimpleNamespace(returncode=0, stdout=json.dumps({
             "ok": True, "devices": [{"device_id": "device", "online": True}],
             "report": {"reports": [{}]}, "archive": {}}), stderr="")
@@ -47,13 +53,23 @@ class CrashRunnerCommandsTests(unittest.TestCase):
     def test_read_rpc_and_recovery_commands_keep_the_selected_project(self):
         self.runner.active_project = acceptance.FIXTURE
         with patch.object(acceptance.subprocess, "run", side_effect=self.command):
+            self.runner.command("claim", "iris", "claim", "--device-id", "device")
             self.runner.list_device()
             self.runner.rpc("test-rpc", 1)
             self.runner.inspect_crash("test-report")
             self.runner.command("test-recover", "recover", "--source", "current")
         self.assertEqual([args.public_command for args in self.calls], [
-            "iris list", "iris rpc", "iris crash", "recover"])
+            "iris claim", "iris list", "iris rpc", "iris crash", "recover"])
         self.assertTrue(all(args.project == str(acceptance.FIXTURE) for args in self.calls))
+
+    def test_incomplete_transfer_never_starts_an_install(self):
+        response = SimpleNamespace(returncode=0, stderr="", stdout=json.dumps({
+            "takeover": {"state": "pending", "device_id": "device"}}))
+        with patch.object(acceptance.subprocess, "run", return_value=response) as run:
+            with self.assertRaises(acceptance.AcceptanceFailure):
+                self.runner.install_project("fixture", acceptance.FIXTURE)
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(self.runner.active_project, self.runner.application)
 
 
 if __name__ == "__main__":
