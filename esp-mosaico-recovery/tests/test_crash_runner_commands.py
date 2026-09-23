@@ -21,7 +21,8 @@ class CrashRunnerCommandsTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        self.workspace = Path(temporary.name)
+        # Match Runner's canonical paths (macOS /var and Windows 8.3 aliases).
+        self.workspace = Path(temporary.name).resolve()
         self.runner = acceptance.Runner("device", 240, self.workspace, Path("projects/custom_app"))
         self.calls = []
 
