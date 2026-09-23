@@ -978,12 +978,10 @@ static void iris_worker(void *argument)
         } else if (runtime->link_connected && progressed) {
             (void)ulTaskNotifyTake(pdTRUE, 0);
             taskYIELD();
-        } else {
-            if (ulTaskNotifyTake(pdTRUE, idle_ticks) == 0) {
-                /* A timeout guarantees we blocked. An already-pending
-                 * notification does not, so keep the deadline in that case. */
-                yield_deadline_us = esp_timer_get_time() + IRIS_WORKER_RUN_BUDGET_US;
-            }
+        } else if (ulTaskNotifyTake(pdTRUE, idle_ticks) == 0) {
+            /* A timeout guarantees we blocked. An already-pending
+             * notification does not, so keep the deadline in that case. */
+            yield_deadline_us = esp_timer_get_time() + IRIS_WORKER_RUN_BUDGET_US;
         }
     }
     end_session(runtime);
