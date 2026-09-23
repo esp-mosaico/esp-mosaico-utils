@@ -527,6 +527,13 @@ coredump and crash-evidence partitions are never OTA targets. Crash collection
 is an independent evidence workflow; the Gateway does not infer that a crash
 was caused by an OTA operation.
 
+After END verifies the image and successfully selects its boot partition,
+Iris calls `esp_iris_platform_ota_committed()`. Its weak default does nothing,
+preserving host-controlled restarts for existing products. A retained
+Recovery writer may override it to schedule its own delayed restart, so a
+lost END response or disconnected host cannot leave the committed image
+waiting to boot. The hook is never called for a failed or cancelled OTA.
+
 ## Compatibility vectors
 
 [`golden_vectors.json`](golden_vectors.json) is the normative byte-level v1

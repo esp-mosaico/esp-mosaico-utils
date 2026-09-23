@@ -1,6 +1,7 @@
 #include "esp_attr.h"
 // SPDX-License-Identifier: Apache-2.0
 #include "factory_ui.h"
+#include "factory_ui_dispatch.h"
 #include "factory_ui_input.h"
 #include "vibe_ui.h"
 #include "board_display.h"
@@ -17,8 +18,6 @@
 #include "iris_bridge.h"
 #include "iris_screen_mirror.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/semphr.h"
-#include "freertos/queue.h"
 #include "sdkconfig.h"
 #include <stdio.h>
 #include <string.h>
@@ -33,13 +32,6 @@ static int s_ota_state;
 static uint32_t s_revision;
 static uint8_t s_operation_id[ESP_IRIS_SYSTEM_OPERATION_ID_BYTES];
 static enum { UPDATE_NONE, UPDATE_OTA, UPDATE_SYSTEM, UPDATE_NAND } s_update_source;
-static SemaphoreHandle_t s_initialized;
-static esp_err_t s_init_result;
-static bool s_init_attempted;
-static QueueHandle_t s_open_requests;
-static SemaphoreHandle_t s_open_lock, s_open_done;
-static esp_err_t s_open_result;
-static void *s_command_timer;
 
 static int service_command(void *ctx, vibe_command_t cmd, const char *a, const char *b)
 {
@@ -188,22 +180,6 @@ static void service_snapshot(void *ctx, vibe_snapshot_t *out)
     COPY(update_owner, system.owner == FACTORY_SYSTEM_UPDATE_OWNER_NAND ? "NAND" : system.owner == FACTORY_SYSTEM_UPDATE_OWNER_BRIDGE ? "Bridge" : out->usb_owner ? "USB" : "TCP");
     COPY(update_verified, "Unsigned");
 }
-static void process_commands(esp_gsp_handle_t ui, void *ctx)
-{
-    (void)ctx;
-    if (!s_init_attempted) {
-        s_init_attempted = true;
-        const vibe_services_t services = {.snapshot = service_snapshot, .command = service_command};
-        s_init_result = vibe_ui_init(&s_ui, ui, &services);
-        xSemaphoreGive(s_initialized);
-    }
-    if (s_init_result != ESP_OK) return;
-    uint8_t request;
-    if (xQueueReceive(s_open_requests, &request, 0) == pdTRUE) {
-        s_open_result = vibe_ui_open_bridge(&s_ui);
-        xSemaphoreGive(s_open_done);
-    }
-}
 esp_gsp_handle_t factory_ui_handle(void) { return s_ui.ui; }
 esp_err_t factory_ui_start(void)
 {
@@ -212,11 +188,6 @@ esp_err_t factory_ui_start(void)
     esp_lcd_touch_handle_t touch = NULL;
     ESP_RETURN_ON_ERROR(board_touch_init(&touch), TAG, "touch");
     ESP_RETURN_ON_ERROR(iris_screen_mirror_init(), TAG, "screen backend");
-    s_open_requests = xQueueCreate(1, sizeof(uint8_t));
-    s_open_lock = xSemaphoreCreateMutex();
-    s_open_done = xSemaphoreCreateBinary();
-    s_initialized = xSemaphoreCreateBinary();
-    ESP_RETURN_ON_FALSE(s_open_requests && s_open_lock && s_open_done && s_initialized, ESP_ERR_NO_MEM, TAG, "UI command queue");
     esp_gsp_config_t config;
     ESP_RETURN_ON_ERROR(vibe_bundle_open(&config), TAG, "embedded GSP bundle");
     esp_gsp_esp_lcd_config_t lcd = ESP_GSP_ESP_LCD_CONFIG_INIT();
@@ -224,23 +195,12 @@ esp_err_t factory_ui_start(void)
     esp_gsp_handle_t ui;
     ESP_RETURN_ON_ERROR(esp_gsp_esp_lcd_start(&config, &lcd, &ui), TAG, "GSP start");
     ESP_RETURN_ON_ERROR(iris_screen_mirror_attach(ui), TAG, "screen attach");
-    s_command_timer = esp_gsp_timer_create(ui, 50, process_commands, NULL);
-    ESP_RETURN_ON_FALSE(s_command_timer, ESP_ERR_NO_MEM, TAG, "command timer");
-    xSemaphoreTake(s_initialized, portMAX_DELAY);
-    ESP_RETURN_ON_ERROR(s_init_result, TAG, "Vibe UI");
+    const vibe_services_t services = {.snapshot = service_snapshot, .command = service_command};
+    ESP_RETURN_ON_ERROR(factory_ui_dispatch_start(ui, &s_ui, &services), TAG, "Vibe UI");
     ESP_LOGI(TAG, "Vibe Mode GSP UI ready at 480x480");
     return ESP_OK;
 }
 esp_err_t factory_ui_open_bridge(void)
 {
-    if (!s_command_timer) return ESP_ERR_INVALID_STATE;
-    if (xSemaphoreTake(s_open_lock, pdMS_TO_TICKS(1000)) != pdTRUE) return ESP_ERR_TIMEOUT;
-    const uint8_t request = 1;
-    /* Serialize callers and keep the request storage alive until the render
-     * task completes it; no timed-out stack pointer is ever queued. */
-    xQueueSend(s_open_requests, &request, portMAX_DELAY);
-    xSemaphoreTake(s_open_done, portMAX_DELAY);
-    esp_err_t result = s_open_result;
-    xSemaphoreGive(s_open_lock);
-    return result;
+    return factory_ui_dispatch_open_bridge();
 }

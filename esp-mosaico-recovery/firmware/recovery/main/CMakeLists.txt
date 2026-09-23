@@ -9,6 +9,7 @@ idf_component_register(
         "factory_system_metadata.c"
         "factory_system_update.c"
         "factory_ui.c"
+        "factory_ui_dispatch.c"
         "vibe_ui.c"
         "vibe_transfer.c"
         "vibe_bundle.c"

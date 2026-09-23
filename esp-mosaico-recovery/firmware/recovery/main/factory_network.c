@@ -1,5 +1,6 @@
 #include "factory_network.h"
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -13,6 +14,7 @@
 #include "esp_netif.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "esp_wifi_default.h"
 #include "factory_system_metadata.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -34,10 +36,14 @@ typedef struct {
     int64_t connect_started_us;
     bool pending_credentials;
     bool mdns_started;
+    bool wifi_initialized;
 } factory_network_context_t;
 
 static const char *TAG = "factory_network";
 static factory_network_context_t s_network;
+static atomic_flag s_starting = ATOMIC_FLAG_INIT;
+
+static esp_err_t request_scan_started(void);
 
 static void snapshot_set_error(esp_err_t error,
                                factory_network_state_t state)
@@ -325,65 +331,108 @@ static void network_event(void *arg, esp_event_base_t base, int32_t id,
     }
 }
 
-esp_err_t factory_network_start(void)
+/* The snapshot mutex survives failed attempts: UI/USB readers and any event
+ * callback already in flight must never observe a deleted semaphore. The
+ * shared event loop and esp-netif core also belong to the whole firmware. */
+static void cleanup_failed_start(void)
 {
-    if (s_network.lock != NULL) {
-        return ESP_OK;
+    if (s_network.wifi_events) {
+        (void)esp_event_handler_instance_unregister(
+            WIFI_EVENT, ESP_EVENT_ANY_ID, s_network.wifi_events);
+        s_network.wifi_events = NULL;
     }
-    s_network.lock = xSemaphoreCreateMutex();
+    if (s_network.ip_events) {
+        (void)esp_event_handler_instance_unregister(
+            IP_EVENT, IP_EVENT_STA_GOT_IP, s_network.ip_events);
+        s_network.ip_events = NULL;
+    }
+    if (s_network.wifi_initialized) {
+        (void)esp_wifi_stop();
+        (void)esp_wifi_deinit();
+        s_network.wifi_initialized = false;
+    }
+    if (s_network.netif) {
+        esp_netif_destroy_default_wifi(s_network.netif);
+        s_network.netif = NULL;
+    }
+}
+
+static esp_err_t start_network(void)
+{
+    if (!s_network.lock) s_network.lock = xSemaphoreCreateMutex();
     ESP_RETURN_ON_FALSE(s_network.lock, ESP_ERR_NO_MEM, TAG,
                         "create network mutex");
-    s_network.snapshot.state = FACTORY_NETWORK_STOPPED;
+    xSemaphoreTake(s_network.lock, portMAX_DELAY);
+    const bool started = s_network.snapshot.started;
+    xSemaphoreGive(s_network.lock);
+    if (started) return ESP_OK;
 
-    esp_err_t err = esp_netif_init();
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        return err;
-    }
-    err = esp_event_loop_create_default();
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        return err;
-    }
+    esp_err_t ret = esp_netif_init();
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) goto fail;
+    ret = esp_event_loop_create_default();
+    if (ret != ESP_OK && ret != ESP_ERR_INVALID_STATE) goto fail;
     s_network.netif = esp_netif_create_default_wifi_sta();
-    ESP_RETURN_ON_FALSE(s_network.netif, ESP_ERR_NO_MEM, TAG,
-                        "create station netif");
+    if (!s_network.netif) {
+        ret = ESP_ERR_NO_MEM;
+        goto fail;
+    }
     wifi_init_config_t config = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_RETURN_ON_ERROR(esp_wifi_init(&config), TAG, "initialize Wi-Fi");
-    ESP_RETURN_ON_ERROR(esp_event_handler_instance_register(
-                            WIFI_EVENT, ESP_EVENT_ANY_ID, network_event, NULL,
-                            &s_network.wifi_events),
-                        TAG, "register Wi-Fi events");
-    ESP_RETURN_ON_ERROR(esp_event_handler_instance_register(
-                            IP_EVENT, IP_EVENT_STA_GOT_IP, network_event, NULL,
-                            &s_network.ip_events),
-                        TAG, "register IP events");
-    ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), TAG,
-                        "keep factory credentials out of default NVS");
-    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG,
-                        "set station mode");
-    ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "start Wi-Fi");
-
+    ESP_GOTO_ON_ERROR(esp_wifi_init(&config), fail, TAG, "initialize Wi-Fi");
+    s_network.wifi_initialized = true;
+    ESP_GOTO_ON_ERROR(esp_event_handler_instance_register(
+                          WIFI_EVENT, ESP_EVENT_ANY_ID, network_event, NULL,
+                          &s_network.wifi_events), fail, TAG, "register Wi-Fi events");
+    ESP_GOTO_ON_ERROR(esp_event_handler_instance_register(
+                          IP_EVENT, IP_EVENT_STA_GOT_IP, network_event, NULL,
+                          &s_network.ip_events), fail, TAG, "register IP events");
+    ESP_GOTO_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), fail, TAG,
+                      "set Wi-Fi storage");
+    ESP_GOTO_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), fail, TAG, "set station mode");
+    ESP_GOTO_ON_ERROR(esp_wifi_start(), fail, TAG, "start Wi-Fi");
     xSemaphoreTake(s_network.lock, portMAX_DELAY);
     s_network.snapshot.started = true;
     s_network.snapshot.state = FACTORY_NETWORK_NO_CREDENTIALS;
+    s_network.snapshot.last_error = ESP_OK;
     xSemaphoreGive(s_network.lock);
 
     char ssid[FACTORY_NETWORK_SSID_BYTES] = {0};
     char password[FACTORY_NETWORK_PASSWORD_BYTES] = {0};
-    err = credentials_load(ssid, password);
-    if (err == ESP_OK && ssid[0] != '\0') {
+    ret = credentials_load(ssid, password);
+    if (ret == ESP_OK && ssid[0] != '\0') {
         xSemaphoreTake(s_network.lock, portMAX_DELAY);
         s_network.snapshot.credentials_saved = true;
         xSemaphoreGive(s_network.lock);
-        ESP_RETURN_ON_ERROR(apply_station_config(ssid, password), TAG,
-                            "connect saved factory network");
-    } else if (err != ESP_ERR_NVS_NOT_FOUND) {
-        snapshot_set_error(err, FACTORY_NETWORK_FAILED);
+        ret = apply_station_config(ssid, password);
+        if (ret != ESP_OK) snapshot_set_error(ret, FACTORY_NETWORK_FAILED);
+    } else if (ret != ESP_ERR_NVS_NOT_FOUND) {
+        snapshot_set_error(ret, FACTORY_NETWORK_FAILED);
     }
-    (void)factory_network_request_scan();
+    /* A bad saved connection does not invalidate the initialized driver:
+     * provisioning a different network must remain possible. */
+    (void)request_scan_started();
     return ESP_OK;
+fail:
+    cleanup_failed_start();
+    xSemaphoreTake(s_network.lock, portMAX_DELAY);
+    s_network.snapshot.started = false;
+    s_network.snapshot.scanning = false;
+    s_network.snapshot.state = FACTORY_NETWORK_FAILED;
+    s_network.snapshot.last_error = ret;
+    xSemaphoreGive(s_network.lock);
+    return ret;
 }
 
-esp_err_t factory_network_request_scan(void)
+esp_err_t factory_network_start(void)
+{
+    /* Startup may be retried by the render task or USB provisioning. Do not
+     * let two callers initialize or tear down the same Wi-Fi resources. */
+    if (atomic_flag_test_and_set(&s_starting)) return ESP_ERR_INVALID_STATE;
+    const esp_err_t err = start_network();
+    atomic_flag_clear(&s_starting);
+    return err;
+}
+
+static esp_err_t request_scan_started(void)
 {
     ESP_RETURN_ON_FALSE(s_network.lock, ESP_ERR_INVALID_STATE, TAG,
                         "factory network is not started");
@@ -404,9 +453,15 @@ esp_err_t factory_network_request_scan(void)
     return err;
 }
 
+esp_err_t factory_network_request_scan(void)
+{
+    ESP_RETURN_ON_ERROR(factory_network_start(), TAG, "start network for scan");
+    return request_scan_started();
+}
+
 esp_err_t factory_network_connect(const char *ssid, const char *password)
 {
-    ESP_RETURN_ON_FALSE(s_network.lock && ssid && password,
+    ESP_RETURN_ON_FALSE(ssid && password,
                         ESP_ERR_INVALID_ARG, TAG, "invalid connection request");
     const size_t ssid_size = strnlen(ssid, FACTORY_NETWORK_SSID_BYTES);
     const size_t password_size =
@@ -430,6 +485,7 @@ esp_err_t factory_network_connect(const char *ssid, const char *password)
     ESP_RETURN_ON_FALSE(password_valid,
                         ESP_ERR_INVALID_SIZE, TAG, "invalid password length");
 
+    ESP_RETURN_ON_ERROR(factory_network_start(), TAG, "start network for provisioning");
     xSemaphoreTake(s_network.lock, portMAX_DELAY);
     strlcpy(s_network.pending_ssid, ssid, sizeof(s_network.pending_ssid));
     strlcpy(s_network.pending_password, password,

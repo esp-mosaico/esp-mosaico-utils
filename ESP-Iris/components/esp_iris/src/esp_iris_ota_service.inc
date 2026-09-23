@@ -317,6 +317,9 @@ static bool handle_ota(iris_service_call_t *runtime,
         if (err == ESP_OK) {
             err = esp_ota_set_boot_partition(ota->partition);
         }
+        if (err == ESP_OK) {
+            esp_iris_platform_ota_committed();
+        }
         esp_iris_job_handle_t job = ota->job;
         uint32_t job_id = 0;
         if (job != NULL) {
