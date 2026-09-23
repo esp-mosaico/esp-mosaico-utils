@@ -10,6 +10,9 @@ The old `mosaico.py`, Python import path and build-runner entrypoint forward to
 that implementation for compatibility. New consumers use `mosaico-tools`.
 Integration and firmware tests remain under `tests/`.
 
+To add Recovery and Iris to an existing application, follow the
+[migration guide (中文)](../docs/recovery-iris-migration.zh-CN.md).
+
 Firmware and reviewed images stay under `firmware/recovery`; moving host tools
 does not rebuild or replace the reviewed bundle. Perform device operations
 through the consuming workspace's `mosaico.py` launcher.
