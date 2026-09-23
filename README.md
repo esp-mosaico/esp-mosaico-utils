@@ -40,6 +40,10 @@ workspace owns `.mosaico.json`, application projects, the BSP pin, and device
 operation evidence. This utilities repository is not itself an application
 workspace.
 
+For existing ESP-Mosaico applications, see the
+[Recovery and Iris migration guide (中文)](docs/recovery-iris-migration.zh-CN.md)
+to add Recovery to the existing partition table and optionally enable Iris logs.
+
 ## Development checks
 
 Create a Python environment and install the ESP-Iris host test dependencies,

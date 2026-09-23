@@ -1,5 +1,9 @@
 # Application integration
 
+For Recovery installation and optional Iris logging in an existing application,
+start with the [migration guide (中文)](../../docs/recovery-iris-migration.zh-CN.md).
+The integration below adds the complete Mosaico application update workflow.
+
 The tools repository owns `templates/hello_world/mosaico-template.json` and the
 public `mosaico.py project init` / `project sim` commands. Creation needs Python
 3.8+ and this utilities checkout, with no IDF, BSP or device requirement.
