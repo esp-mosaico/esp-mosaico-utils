@@ -20,6 +20,9 @@ if(NOT SDKCONFIG_DEFAULTS)
         "sdkconfig.defaults;sdkconfig.recovery.defaults")
 endif()
 
+# Use the same standalone compiler bootstrap as generated applications. Without
+# this, ESP-GSP falls back to importing an unprovisioned Python gsp module.
+include("${CMAKE_CURRENT_LIST_DIR}/../../../mosaico-tools/cmake/gsp_compiler.cmake")
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(factory)
 

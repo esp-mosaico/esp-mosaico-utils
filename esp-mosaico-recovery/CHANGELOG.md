@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Raise Recovery to `0.1.4` on the merged `0.1.3` baseline. Bootstrap the pinned
+  standalone GSP compiler before ESP-IDF configures Recovery, and retain the
+  eight-component / 3 KiB manifest limits and immutable Recovery layout.
+
 - Raise Recovery to `0.1.3` with eight components per USB/TCP or
   NAND System Update and a 3 KiB manifest limit shared with the Iris host tools.
   Regenerate the complete prebuilt bundle after ROM flashing, image-hash and

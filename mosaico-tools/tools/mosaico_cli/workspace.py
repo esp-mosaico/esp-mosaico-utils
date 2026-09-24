@@ -10,6 +10,7 @@ import sys
 from typing import Any
 
 from .errors import EnvironmentError
+from .host import CONFIGDEP_POLICIES
 
 
 CONFIG_NAME = ".mosaico.json"
@@ -33,6 +34,7 @@ class WorkspaceConfig:
     init_template: Path | None = None
     gateway_source_policy: str = "compatible"
     raylib_path: Path | None = None
+    configdep: str = "auto"
 
     def resolve(self, value: str) -> Path:
         path = Path(value).expanduser()
@@ -134,6 +136,9 @@ def load_workspace(
     workspace = _object(value.get("workspace"), "workspace")
     dependencies = _object(value.get("dependencies"), "dependencies")
     build = _object(value.get("build"), "build")
+    configdep = build.get("configdep", "auto")
+    if configdep not in CONFIGDEP_POLICIES:
+        raise EnvironmentError("build.configdep must be auto, on or off")
     devices_value = value.get("devices")
     if not isinstance(devices_value, list) or not devices_value:
         raise EnvironmentError(
@@ -187,6 +192,7 @@ def load_workspace(
             dependencies.get("esp_iris"), "dependencies.esp_iris"
         ),
         build_runner=build_runner,
+        configdep=configdep,
         devices=tuple(dict(item) for item in devices_value),
         gateway_source_policy=source_policy,
         raylib_path=workspace_path(dependencies.get("raylib", "submodule/raylib-lite-engine"), "dependencies.raylib"),

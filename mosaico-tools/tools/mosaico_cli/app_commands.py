@@ -12,6 +12,7 @@ from .project import resolve_project
 from .scaffold import initialize_project
 
 GAME_TEMPLATES = {"shooter": "raylib_shooter", "sky-hop": "sky_hop", "tower-defense": "tower_defense"}
+DEFAULT_GAME_TEMPLATE = "blank"
 
 
 def add_commands(commands, project_commands):
@@ -26,13 +27,14 @@ def add_commands(commands, project_commands):
     preview.add_argument("--frames", type=int)
     preview.add_argument("--fps", type=int)
     preview.add_argument("--dump-ppm")
-    game = commands.add_parser("game", help="Create BSP game examples or use the Raylib Host simulator")
+    game = commands.add_parser("game", help="Create blank games or BSP examples and use the Raylib Host simulator")
     actions = game.add_subparsers(dest="game_action", required=True)
     for name in ("create", "new"):
-        create = actions.add_parser(name, help="Create a game from BSP examples")
+        create = actions.add_parser(name, help="Create a blank game or a complete BSP example")
         create.set_defaults(command="game", public_command="game " + name)
         create.add_argument("name")
-        create.add_argument("--template", choices=tuple(GAME_TEMPLATES), default="shooter")
+        create.add_argument("--template", choices=(DEFAULT_GAME_TEMPLATE, *GAME_TEMPLATES),
+                            default=DEFAULT_GAME_TEMPLATE, help="Game template (default: blank)")
         create.add_argument("--dry-run", action="store_true")
     for name in ("sim", "run", "build"):
         child = actions.add_parser(name)
@@ -66,9 +68,12 @@ def run(arguments, workspace):
         return subprocess.call(command)
 
     if arguments.game_action in {"create", "new"}:
-        template = workspace.bsp_path / "examples" / GAME_TEMPLATES[arguments.template] / "mosaico-template.json"
+        template = (tools_root / "templates/blank_game/mosaico-template.json"
+                    if arguments.template == DEFAULT_GAME_TEMPLATE else
+                    workspace.bsp_path / "examples" / GAME_TEMPLATES[arguments.template] / "mosaico-template.json")
         if not template.is_file():
-            raise EnvironmentError("Initialize the BSP submodule containing the selected game template: " + str(template))
+            owner = "utils" if arguments.template == DEFAULT_GAME_TEMPLATE else "BSP"
+            raise EnvironmentError(f"Initialize the {owner} submodule containing the selected game template: " + str(template))
         engine = workspace.raylib_path
         if engine is None or not (engine / "cmake/mosaico_game_sdk.cmake").is_file():
             raise EnvironmentError("Initialize the configured Raylib Lite Engine dependency before creating a game.")

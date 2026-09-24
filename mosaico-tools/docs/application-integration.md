@@ -11,9 +11,17 @@ public `mosaico.py project init` / `project sim` commands. Creation needs Python
 Template schema v1 provides `workspace`, `template`, `utils`, `tools`, `bsp`,
 `esp_iris`, and `engine` path anchors. Paths are rendered relative to each
 output file. `workspace.init_template` remains configurable. `game create/new`
-uses BSP `examples/<game>/mosaico-template.json`, with the same exclusive writer,
+defaults to the tools-owned `templates/blank_game/mosaico-template.json`.
+`--template shooter`, `sky-hop` or `tower-defense` selects a complete game from
+BSP `examples/<game>/mosaico-template.json`. All use the same exclusive writer,
 name validation, dry-run and rollback behavior. Configure `dependencies.raylib`
 for the engine location; it is only required for games.
+
+The blank game provides shared C state/update/rendering with separate device and
+Host adapters, generated project identity and the retained Recovery layout. It
+uses the engine's `mosaico_game_app` runtime for display, input, Iris startup and
+first-frame health acceptance. It contains no example assets or external resource
+partition; its GSP canvas placeholder is generated and embedded during the build.
 
 Normal apps include `esp-mosaico-recovery/cmake/mosaico_idf_project.cmake`
 before project(), supplying MOSAICO_BSP_ROOT for the board-owned splash handoff.
