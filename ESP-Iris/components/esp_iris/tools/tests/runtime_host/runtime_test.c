@@ -413,6 +413,10 @@ static void flash_hook(void) {
     assert(executor_dispatch(responsive_runtime, &cancel, now_us));
     responsive_runtime->tx_wire_length = 0;
 }
+static void disconnect_after_ota_commit(void) {
+    iris_services_session_end(responsive_runtime);
+    responsive_runtime->session_id++;
+}
 static void test_executor_ota(void) {
     iris_runtime_t rt = {.session_id = 700, .hello_acked = true};
     iris_service_state_t state = {.magic = IRIS_SERVICE_STATE_MAGIC};
@@ -420,8 +424,13 @@ static void test_executor_ota(void) {
     uint8_t begin[40] = {4}; uint8_t data[8] = {0,0,0,0,1,2,3,4};
     iris_decoded_frame_t request = {.header = {.channel = ESP_IRIS_CHANNEL_OTA,
         .request_id = 1}, .payload = begin};
-    flash_writes = boot_selections = flash_aborts = 0;
-    for (unsigned mode = 0; mode < 3; ++mode) {
+    flash_writes = boot_selections = flash_aborts = ota_commits = 0;
+    for (unsigned mode = 0; mode < 7; ++mode) {
+        boot_selections = 0;
+        ota_end_error = mode == 3 ? ESP_FAIL : ESP_OK;
+        boot_select_error = mode == 4 ? ESP_FAIL : ESP_OK;
+        begin[4] = mode == 2 ? 1 : 0; /* Expected digest mismatch. */
+        during_ota_commit = mode == 6 ? disconnect_after_ota_commit : NULL;
         during_flash = NULL; request.header.type = ESP_IRIS_OTA_BEGIN;
         request.header.payload_size = sizeof(begin); request.payload = begin;
         rt.tx_wire_length = 0;
@@ -432,14 +441,26 @@ static void test_executor_ota(void) {
         during_flash = mode == 0 ? flash_hook : NULL;
         assert(executor_dispatch(&rt, &request, now_us)); executor_run_one();
         assert(executor_queue_next(&rt));
-        if (mode == 0) { assert(!(state.ota != NULL && state.ota->active) && flash_aborts == 1); continue; }
+        if (mode == 0) {
+            assert(!(state.ota != NULL && state.ota->active) && flash_aborts == 1);
+            assert(ota_commits == 0);
+            continue;
+        }
         request.header.type = ESP_IRIS_OTA_END; request.header.payload_size = 0;
         rt.tx_wire_length = 0; during_flash = mode == 1 ? flash_hook : NULL;
         assert(executor_dispatch(&rt, &request, now_us)); executor_run_one();
-        assert(executor_queue_next(&rt) && !(state.ota != NULL && state.ota->active));
-        assert(boot_selections == (mode == 2 ? 1U : 0U));
+        if (mode == 6) {
+            assert(!executor_queue_next(&rt) && !executor_busy());
+        } else {
+            assert(executor_queue_next(&rt));
+        }
+        assert(!(state.ota != NULL && state.ota->active));
+        assert(boot_selections == (mode >= 4 ? 1U : 0U));
+        assert(ota_commits == (mode >= 5 ? mode - 4 : 0U));
     }
-    assert(flash_writes == 3); during_flash = NULL; test_release_contexts(s_services); s_services = NULL; responsive_runtime = NULL;
+    assert(flash_writes == 7);
+    during_ota_commit = NULL; during_flash = NULL;
+    test_release_contexts(s_services); s_services = NULL; responsive_runtime = NULL;
 }
 #endif
 #if CONFIG_ESP_IRIS_SYSTEM_UPDATE

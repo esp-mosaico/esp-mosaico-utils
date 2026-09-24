@@ -16,6 +16,10 @@ esp_err_t __attribute__((weak)) esp_iris_platform_mark_planned_restart(void)
     return ESP_ERR_NOT_SUPPORTED;
 }
 
+void __attribute__((weak)) esp_iris_platform_ota_committed(void)
+{
+}
+
 esp_err_t esp_iris_platform_select_recovery_target(uint32_t *target_address)
     __attribute__((weak));
 esp_err_t esp_iris_platform_select_recovery_target(uint32_t *target_address)

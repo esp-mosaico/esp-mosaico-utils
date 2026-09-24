@@ -13,6 +13,8 @@
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
 #include "esp_rom_sys.h"
+#include "esp_system.h"
+#include "esp_timer.h"
 #include "factory_system_metadata.h"
 #include "nvs.h"
 
@@ -20,6 +22,34 @@
 #define OTA_STATE_METHOD_ID 1U
 
 static const char *TAG = "recovery_ota";
+static esp_timer_handle_t s_ota_restart_timer;
+
+static void restart_after_ota(void *arg)
+{
+    (void)arg;
+    esp_restart();
+}
+
+void esp_iris_platform_ota_committed(void)
+{
+    /* Give OTA_END_RESPONSE time to drain, but do not depend on a host
+     * RESTART, session lifetime, or the Iris worker making further progress. */
+    const esp_err_t mark_err = esp_iris_mark_planned_restart();
+    if (mark_err != ESP_OK) {
+        ESP_LOGW(TAG, "could not mark committed OTA restart: %s",
+                 esp_err_to_name(mark_err));
+    }
+    if (esp_timer_is_active(s_ota_restart_timer)) {
+        return;
+    }
+    const esp_err_t err = esp_timer_start_once(s_ota_restart_timer, 1000000);
+    if (err != ESP_OK) {
+        /* The image and boot target are already committed. Even a timer
+         * failure must not leave Recovery waiting for another host command. */
+        ESP_LOGE(TAG, "could not schedule OTA restart: %s", esp_err_to_name(err));
+        esp_restart();
+    }
+}
 
 static bool is_ota_partition(const esp_partition_t *partition)
 {
@@ -165,6 +195,13 @@ static esp_err_t state_rpc(const esp_iris_rpc_request_t *request,
 
 void recovery_ota_support_start(void)
 {
+    /* Reserve the timer before accepting any OTA; committing an image does
+     * not need to allocate another task or timer under memory pressure. */
+    const esp_timer_create_args_t restart_args = {
+        .callback = restart_after_ota,
+        .name = "recovery_ota_restart",
+    };
+    ESP_ERROR_CHECK(esp_timer_create(&restart_args, &s_ota_restart_timer));
     ESP_ERROR_CHECK(esp_iris_rpc_register(OTA_SERVICE_ID, OTA_STATE_METHOD_ID,
                                           state_rpc, NULL));
     ESP_ERROR_CHECK(esp_iris_start());

@@ -191,6 +191,10 @@ esp_err_t esp_iris_platform_select_ota_target(uint32_t default_address,
                                                uint32_t *target_address);
 esp_err_t esp_iris_platform_prepare_ota(uint32_t running_address,
                                         uint32_t target_address);
+/* Called only after OTA verification and boot selection succeed, from the
+ * service worker. The default is a no-op. Products may schedule a delayed
+ * restart independent of the transport/session; do not wait for the host. */
+void esp_iris_platform_ota_committed(void);
 
 /* Writes a lowercase, NUL-terminated 32-character device ID. */
 esp_err_t esp_iris_format_device_id(char out[33]);
