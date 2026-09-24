@@ -38,7 +38,8 @@ def test_firmware_runtime(tmp_path: Path, multi_transport: bool, service_profile
     if service_profile in {"ota-large", "system-update-large"}:
         flags += ["-DCONFIG_ESP_IRIS_OTA_CHUNK_BYTES=3968"]
     if service_profile == "system-update-large":
-        flags += ["-DCONFIG_ESP_IRIS_SYSTEM_UPDATE_MANIFEST_BYTES=3072",
+        flags += ["-DCONFIG_ESP_IRIS_SYSTEM_UPDATE_MAX_COMPONENTS=8",
+                  "-DCONFIG_ESP_IRIS_SYSTEM_UPDATE_MANIFEST_BYTES=3072",
                   "-DCONFIG_ESP_IRIS_SYSTEM_UPDATE_SIGNATURE_BYTES=512",
                   "-DCONFIG_ESP_IRIS_SYSTEM_UPDATE_CHUNK_BYTES=2048"]
     if multi_transport:

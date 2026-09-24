@@ -148,6 +148,38 @@ def test_unsigned_bundle_round_trip_requires_no_key(tmp_path) -> None:
     assert bundle.as_dict()["minimum_recovery_version"] is None
 
 
+@pytest.mark.parametrize("count", [8, 9])
+def test_bundle_component_capacity_with_large_manifest(tmp_path, count) -> None:
+    private, public = _keys()
+    (tmp_path / "partition-table.bin").write_bytes(b"partition")
+    (tmp_path / "ota_0.bin").write_bytes(_application_image())
+    manifest = _manifest("00" * 32)
+    manifest["release"] = "r" * 64
+    manifest["minimum_recovery_version"] = "0.1.3"
+    manifest["signature"]["key_id"] = "k" * 64
+    for index in range(2, count):
+        filename = "resource_{}{}.bin".format(index, "x" * 80)
+        (tmp_path / filename).write_bytes(bytes([index]) * 4096)
+        manifest["components"].append({
+            "id": index + 1,
+            "kind": "data",
+            "target_offset": 0x200000 + index * 4096,
+            "file": filename,
+        })
+    output = tmp_path / "capacity.irisfw"
+    if count > 8:
+        with pytest.raises(ValueError, match="components must contain 1..8 entries"):
+            build_system_update_bundle(output, manifest, tmp_path,
+                                       signing_private_key=private)
+        assert not output.exists()
+        return
+    build_system_update_bundle(output, manifest, tmp_path, signing_private_key=private)
+    bundle = load_system_update_bundle(output, trusted_public_key=public)
+    assert len(bundle.components) == 8
+    assert 2048 < len(bundle.manifest_bytes) <= 3072
+    assert bundle.components[-1].data == bytes([7]) * 4096
+
+
 @pytest.mark.parametrize("length", [1, 64])
 def test_bundle_inspection_preserves_release_and_recovery_version(tmp_path, length) -> None:
     (tmp_path / "partition-table.bin").write_bytes(b"partition")
