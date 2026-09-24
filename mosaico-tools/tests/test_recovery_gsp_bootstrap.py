@@ -19,10 +19,15 @@ def test_recovery_bootstraps_without_python_gsp_package(tmp_path):
     python_root = tmp_path / "clean python"
     venv.EnvBuilder(with_pip=False).create(python_root)
     python = python_root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    cache = tmp_path / "compiler cache"
-    cache.mkdir()
+    cache_root = tmp_path / "compiler cache"
+    cache = cache_root / "esp-mosaico/gspc/0.5.0"
+    cache.mkdir(parents=True)
     binary = cache / ("gspc.exe" if os.name == "nt" else "gspc")
     binary.write_bytes(b"cached compiler: resolution only")
+    # An application compiler is also cached. Recovery must select its own pin.
+    application_compiler = cache.parent / "0.6.1" / binary.name
+    application_compiler.parent.mkdir()
+    application_compiler.write_bytes(b"application compiler: wrong for Recovery")
     fake_idf = tmp_path / "idf"
     entry = fake_idf / "tools/cmake/project.cmake"
     entry.parent.mkdir(parents=True)
@@ -32,8 +37,8 @@ def test_recovery_bootstraps_without_python_gsp_package(tmp_path):
         'message(FATAL_ERROR "test reached IDF configuration boundary")\n',
         encoding="utf-8",
     )
-    environment = dict(os.environ, IDF_PATH=str(fake_idf), GSPC_CACHE_DIR=str(cache))
-    for name in ("GSPC_EXECUTABLE", "PYTHONPATH", "PYTHONHOME"):
+    environment = dict(os.environ, IDF_PATH=str(fake_idf), XDG_CACHE_HOME=str(cache_root))
+    for name in ("GSPC_EXECUTABLE", "GSPC_CACHE_DIR", "PYTHONPATH", "PYTHONHOME"):
         environment.pop(name, None)
     build = tmp_path / "build"
     result = subprocess.run(

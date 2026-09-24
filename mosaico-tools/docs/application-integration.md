@@ -39,6 +39,10 @@ policy stays in the template's board_display.c. Both components retain ESP-GSP
 Use `cmake/gsp_compiler.cmake` before IDF to resolve the pinned GSPC. Include
 `cmake/gsp_bundle.cmake` in the application component, then call
 `mosaico_gsp_add_ui_bundle(${COMPONENT_LIB} "../ui/main.json")`.
+Applications use GSPC 0.6.1 with ESP-GSP 1.5.1. Recovery independently retains
+GSPC 0.5.0 with ESP-GSP 1.4.0, selecting `MOSAICO_GSPC_VERSION` before including
+the shared compiler bootstrap. Explicit `GSPC_EXECUTABLE` overrides must match
+the project's component version.
 Include `cmake/system_update.cmake` after project() to declare System Update
 artifacts and reject unsafe direct IDF flash/app-flash targets. Other resources
 use MOSAICO_SYSTEM_UPDATE_DATA_LABELS and per-label IMAGE/TARGET global properties.

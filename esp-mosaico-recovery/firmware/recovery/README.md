@@ -4,8 +4,11 @@
 其源码和评审 bundle 与 `mosaico.py recover` 一同维护。普通应用从宿主
 workspace 的 `projects/hello_world` 创建，不应将本工程作为应用安装到 `ota_0`。
 
-当前源码构建的 Recovery 固件版本为 `0.1.3`，由
+当前源码构建的 Recovery 固件版本为 `0.1.4`，由
 `sdkconfig.recovery.defaults` 中的 `CONFIG_APP_PROJECT_VER` 定义。
+`0.1.4` 保持 ESP-GSP `1.4.0` 和 GSPC `0.5.0`，源码构建自动准备
+独立 GSP 编译器。应用模板的 GSP 升级不改变 Recovery 的依赖版本；
+已评审的预编译包版本见下文及包 manifest。
 `0.1.3` 将 USB/TCP System Update 与 NAND 本地安装的组件上限从 4 提高到 8，
 manifest 上限同步提高到 3 KiB；标准应用包可包含分区表、应用和六个资源镜像。
 使用新容量的包需要先升级 Recovery；Bridge 的独立组件上限保持不变。
@@ -313,23 +316,23 @@ ESP-Mosaico workspace 时，`mosaico.py recover` 会根据宿主 workspace 的
 ## Vibe Mode 界面与构建
 
 用户可见名称为 **Vibe Mode**；工程 `factory`、协议角色 `recovery`、
-`recover` 命令和 Recovery ABI 1 保持不变；当前源码固件版本为 `0.1.3`。
+`recover` 命令和 Recovery ABI 1 保持不变；当前源码固件版本为 `0.1.4`。
 九个页面由 `ui/main.json` 和可移植的 `main/vibe_ui.c` 实现，PC 与设备共享
 同一控制器及 `ui/profile.yaml` RGB565 编译配置。
 `main/factory_ui.c` 适配网络、Bridge、NAND 和更新状态；
 异步状态在 GSP 渲染上下文汇总，外部打开下载页的请求通过队列提交。
 
-使用 Component Registry 的 **ESP-GSP 1.5.1**，BSP 开启硬件显示但关闭
+使用 Component Registry 的 **ESP-GSP 1.4.0**，BSP 开启硬件显示但关闭
 `CONFIG_BSP_DISPLAY_LVGL_ENABLE`。该 BSP 选项默认开启，保留现有 LVGL
 应用行为。构建必须使用包含该选项的 workspace BSP；旧版 BSP 不支持此模式。
-GSP 1.4 在调用方同步创建、校验 UI，Recovery 将
+GSP 在调用方同步创建、校验 UI，Recovery 将
 `CONFIG_ESP_MAIN_TASK_STACK_SIZE` 设为 20480；仅增加渲染任务栈不能覆盖该阶段。
 启动日志记录 UI 初始化后的主任务栈余量，便于检查后续资源改动。
 
 场景、字形与键盘图标全部嵌入 Recovery，不依赖应用资源分区。
 GSPB 在构建时无损 Deflate 压缩，启动时使用 ROM 解压器还原到 PSRAM；
 GSP 继续执行原始 bundle 校验。界面仅使用预烘焙字形，不启用运行时字体；
-通过 GSP 1.4 的 `CONFIG_ESP_GSP_ENABLE_JPEG=n` 排除 JPEG 解码器，
+通过 `CONFIG_ESP_GSP_ENABLE_JPEG=n` 排除 JPEG 解码器，
 现有图标仍为编译后的 RGB565_A8。32 px 更新标题与百分比只打包对应状态文案
 和数字所需的字形，网络名称与密码仍保留完整的既有字符集。
 若增加运行时字体或 JPEG 图片，必须同步启用相应能力并重新验证大小和功能。
@@ -342,8 +345,8 @@ GSP 继续执行原始 bundle 校验。界面仅使用预烘焙字形，不启�
 python3 tools/gsp-sim/run.py submodule/esp-mosaico-utils/esp-mosaico-recovery/firmware/recovery/ui/main.json --headless
 ```
 
-运行 Recovery 主机测试前，设置 `GSPC_EXECUTABLE`（0.6.1）和
-`GSP_SIM_EXECUTABLE`（1.5.1），安装 `tests/requirements-ui.txt` 中的主机依赖。
+运行 Recovery 主机测试前，设置 `GSPC_EXECUTABLE`（0.5.0）和
+`GSP_SIM_EXECUTABLE`（1.4.0），安装 `tests/requirements-ui.txt` 中的主机依赖。
 原生模拟器测试使用真实键盘、列表和回调，
 并检查 Wi-Fi 列表的截图像素，覆盖字形完整性、卡片间距和反复导航。
 二维码由独立解码器直接从渲染截图验证；OTA 使用确定性的时间与字节数序列，
