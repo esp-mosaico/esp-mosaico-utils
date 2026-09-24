@@ -4,20 +4,30 @@
 其源码和评审 bundle 与 `mosaico.py recover` 一同维护。普通应用从宿主
 workspace 的 `projects/hello_world` 创建，不应将本工程作为应用安装到 `ota_0`。
 
-当前源码构建的 Recovery 固件版本为 `0.1.2`，由
+当前源码构建的 Recovery 固件版本为 `0.1.3`，由
 `sdkconfig.recovery.defaults` 中的 `CONFIG_APP_PROJECT_VER` 定义。
-`prebuilt/recovery` 基础包也使用 `0.1.2`，其 manifest 记录各镜像的大小与 SHA-256。
-2026-09-22 更新纳入 ESP-61 页面、OTA 优化及允许缺省数据分区镜像的修复。
-本次整包通过构建、布局、哈希及宿主测试；维护者于 2026-09-22 确认新版预置包
-已完成真机验收。
+`0.1.3` 将 USB/TCP System Update 与 NAND 本地安装的组件上限从 4 提高到 8，
+manifest 上限同步提高到 3 KiB；标准应用包可包含分区表、应用和六个资源镜像。
+使用新容量的包需要先升级 Recovery；Bridge 的独立组件上限保持不变。
+`prebuilt/recovery` 基础包使用 `0.1.3`，其 manifest 记录各镜像的大小与 SHA-256。
+本包基于远端 `main` 的 `4088ed0` 重建，包含 Recovery UI 等待超时、Wi-Fi 启动
+重试和 OTA 完成后重启修复；版本继续保持 `0.1.3`。
+2026-09-24 在 ESP32-S31（Base MAC `30:ed:a0:f4:60:56`）上通过应用工作区的
+`mosaico.py recover --source current` 完成整包 ROM 烧录及哈希校验，重连确认
+Recovery `0.1.3`、相同硬件身份、OTA/System Update 能力及匹配的 ELF SHA-256。
+操作 ID 为 `6aa7aa44-a27b-4328-bdee-0d7695261e43`，Boot ID 为
+`3606744914958349586`；正式预编译包与这次实测包逐字节一致。
+8 个组件和 3 KiB manifest 的接收边界通过宿主 C 运行时与制包回归测试；
+本次真机验收覆盖 ROM 烧录、Recovery 启动和通信，未执行 8 组件应用更新。
 源码来源与 dirty 状态以 `prebuilt/recovery/manifest.json` 为准。
-本次使用 ESP-IDF `v6.2-dev-2991-g0f1b3e3ca392` 和仓库默认配置完整构建：
-`factory.bin` 为 1,823,936 字节，固定槽位剩余 11,072 字节；INFO 日志
-`bootloader.bin` 为 24,560 字节，距离分区表仅余 16 字节，后续改动须特别关注容量。
+本次使用 CI 固定的 ESP-IDF `v6.2-dev-2221-g7b9cc1ac79f` 和仓库默认配置完整构建，
+BSP 固定于组件 manifest 中的 `05e067de0613a0aa3fe2af42e75616804decbf4b`：
+`factory.bin` 为 1,817,024 字节，固定槽位剩余 17,984 字节；INFO 日志
+`bootloader.bin` 为 24,432 字节，距离分区表剩余 144 字节。
 默认 `recover` 使用该包，`recover --source current` 使用当前源码重新构建。
 Recovery ABI 与分区布局由工程配置和包 manifest 约束。
 
-System Update 版本检查将 `0.1.2` 解析为同一语义版本线，只接受同一主版本线、且
+System Update 版本检查将 `0.1.3` 解析为同一语义版本线，只接受同一主版本线、且
 最低版本要求不高于当前 Recovery 的更新包。Recovery 自更新拒绝降级或
 跨主版本线的镜像。
 
@@ -303,7 +313,7 @@ ESP-Mosaico workspace 时，`mosaico.py recover` 会根据宿主 workspace 的
 ## Vibe Mode 界面与构建
 
 用户可见名称为 **Vibe Mode**；工程 `factory`、协议角色 `recovery`、
-`recover` 命令和 Recovery ABI 1 保持不变；当前固件版本为 `0.1.2`。
+`recover` 命令和 Recovery ABI 1 保持不变；当前源码固件版本为 `0.1.3`。
 九个页面由 `ui/main.json` 和可移植的 `main/vibe_ui.c` 实现，PC 与设备共享
 同一控制器及 `ui/profile.yaml` RGB565 编译配置。
 `main/factory_ui.c` 适配网络、Bridge、NAND 和更新状态；

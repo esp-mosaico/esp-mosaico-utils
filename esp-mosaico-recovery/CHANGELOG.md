@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Raise Recovery to `0.1.3` with eight components per USB/TCP or
+  NAND System Update and a 3 KiB manifest limit shared with the Iris host tools.
+  Regenerate the complete prebuilt bundle after ROM flashing, image-hash and
+  Recovery identity/version acceptance on ESP32-S31 `30:ed:a0:f4:60:56` on
+  2026-09-24. Keep the partition table, initial OTA data and Recovery ABI unchanged.
+  Rebuild on remote main `4088ed0` with the UI wait, Wi-Fi startup retry and
+  OTA reboot fixes, retaining version `0.1.3`; repeat ROM/device acceptance
+  before publishing the refreshed bundle.
+
 - Raise Recovery to `0.1.2` and regenerate the complete prebuilt bundle with
   omitted-data layout support. Keep the Recovery ABI, partition table and initial
   OTA data unchanged. Build and host validation pass; device acceptance was

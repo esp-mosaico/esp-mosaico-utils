@@ -567,9 +567,13 @@ manifest[manifest_size], signature[signature_size]
 ```
 
 The manifest and optional signature are bounded by Kconfig. Manifest v1 does
-not contain a product-specific source-layout allowlist: the product backend
-must validate source-to-target compatibility before accepting any destructive
-component write. The complete target partition-table hash remains mandatory
+not negotiate these limits: the reference host accepts manifests up to 3072
+bytes and up to eight components, while device builds may have lower limits
+(defaults: 2048 bytes and four components). Products using the larger capacity
+must configure their Recovery accordingly before installing those bundles.
+Manifest v1 does not contain a product-specific source-layout allowlist: the
+product backend must validate source-to-target compatibility before accepting
+any destructive component write. The complete target partition-table hash remains mandatory
 as an explicit layout precondition and for post-reboot inventory validation. A zero
 `signature_size` represents an unsigned update. ESP-Iris always verifies the
 manifest SHA-256; the product backend decides whether a signature is required

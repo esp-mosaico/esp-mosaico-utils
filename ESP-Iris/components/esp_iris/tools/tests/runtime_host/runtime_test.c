@@ -464,6 +464,46 @@ static void test_executor_ota(void) {
 }
 #endif
 #if CONFIG_ESP_IRIS_SYSTEM_UPDATE
+static unsigned system_prepares;
+static esp_err_t system_prepare_capacity(
+    const esp_iris_system_update_manifest_t *manifest, void *ctx) {
+    ++system_prepares;
+    assert(manifest->component_count == CONFIG_ESP_IRIS_SYSTEM_UPDATE_MAX_COMPONENTS);
+    assert(manifest->manifest_size == CONFIG_ESP_IRIS_SYSTEM_UPDATE_MANIFEST_BYTES);
+    return ESP_OK;
+}
+static void test_system_update_capacity(void) {
+    iris_service_state_t state = {.magic = IRIS_SERVICE_STATE_MAGIC};
+    s_services = &state;
+    s_system_update = (iris_system_update_state_t){.backend_registered = true};
+    s_system_update.backend.prepare = system_prepare_capacity;
+    uint8_t payload[IRIS_SYSTEM_BEGIN_FIXED_SIZE +
+                    CONFIG_ESP_IRIS_SYSTEM_UPDATE_MANIFEST_BYTES] = {1};
+    iris_put_le16(payload + 16, CONFIG_ESP_IRIS_SYSTEM_UPDATE_MANIFEST_BYTES);
+    uint8_t reply[64];
+    iris_decoded_frame_t request = {.header = {
+        .channel = ESP_IRIS_CHANNEL_SYSTEM_UPDATE,
+        .type = ESP_IRIS_SYSTEM_UPDATE_BEGIN, .request_id = 1,
+        .payload_size = sizeof(payload)}, .payload = payload};
+    const uint8_t counts[] = {0, CONFIG_ESP_IRIS_SYSTEM_UPDATE_MAX_COMPONENTS + 1,
+                             CONFIG_ESP_IRIS_SYSTEM_UPDATE_MAX_COMPONENTS};
+    for (size_t index = 0; index < sizeof(counts); ++index) {
+        payload[20] = counts[index];
+        iris_service_call_t call = {.payload = reply, .capacity = sizeof(reply)};
+        assert(handle_begin(&call, &request) && call.ready);
+        if (index < 2) {
+            assert(call.response.flags & ESP_IRIS_FLAG_ERROR);
+            assert(system_prepares == 0);
+        } else {
+            assert(call.response.type == ESP_IRIS_SYSTEM_UPDATE_BEGIN_RESPONSE);
+            assert(reply[22] == CONFIG_ESP_IRIS_SYSTEM_UPDATE_MAX_COMPONENTS);
+            assert(system_prepares == 1);
+        }
+    }
+    assert(esp_iris_job_finish(s_system_update.job, ESP_OK) == ESP_OK);
+    s_system_update = (iris_system_update_state_t){0};
+    test_release_contexts(s_services); s_services = NULL;
+}
 static unsigned system_writes, system_commits, system_aborts;
 static esp_err_t system_write(const esp_iris_system_update_component_t *c,
     uint32_t offset, const uint8_t *data, size_t size, void *ctx) {
@@ -947,6 +987,7 @@ int main(void) {
     test_executor_ota();
 #endif
 #if CONFIG_ESP_IRIS_SYSTEM_UPDATE
+    test_system_update_capacity();
     test_executor_system_update();
 #endif
 #if CONFIG_ESP_IRIS_SYSTEM_INVENTORY
