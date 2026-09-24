@@ -34,7 +34,7 @@ Optional GSP components are `mosaico-tools/components/esp_mosaico_gsp_bundle`
 (ui_bundle_open) and `esp_mosaico_gsp_iris` (iris_screen_mirror_init/attach).
 The latter owns the display-presenter link wrapper. Application display and touch
 policy stays in the template's board_display.c. Both components retain ESP-GSP
-1.4.0 and the MOSGSP resource format.
+1.5.1 and the MOSGSP resource format.
 
 Use `cmake/gsp_compiler.cmake` before IDF to resolve the pinned GSPC. Include
 `cmake/gsp_bundle.cmake` in the application component, then call

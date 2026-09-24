@@ -319,7 +319,7 @@ ESP-Mosaico workspace 时，`mosaico.py recover` 会根据宿主 workspace 的
 `main/factory_ui.c` 适配网络、Bridge、NAND 和更新状态；
 异步状态在 GSP 渲染上下文汇总，外部打开下载页的请求通过队列提交。
 
-使用 Component Registry 的 **ESP-GSP 1.4.0**，BSP 开启硬件显示但关闭
+使用 Component Registry 的 **ESP-GSP 1.5.1**，BSP 开启硬件显示但关闭
 `CONFIG_BSP_DISPLAY_LVGL_ENABLE`。该 BSP 选项默认开启，保留现有 LVGL
 应用行为。构建必须使用包含该选项的 workspace BSP；旧版 BSP 不支持此模式。
 GSP 1.4 在调用方同步创建、校验 UI，Recovery 将
@@ -342,8 +342,8 @@ GSP 继续执行原始 bundle 校验。界面仅使用预烘焙字形，不启�
 python3 tools/gsp-sim/run.py submodule/esp-mosaico-utils/esp-mosaico-recovery/firmware/recovery/ui/main.json --headless
 ```
 
-运行 Recovery 主机测试前，设置 `GSPC_EXECUTABLE`（0.5.0）和
-`GSP_SIM_EXECUTABLE`（1.4.0），安装 `tests/requirements-ui.txt` 中的主机依赖。
+运行 Recovery 主机测试前，设置 `GSPC_EXECUTABLE`（0.6.1）和
+`GSP_SIM_EXECUTABLE`（1.5.1），安装 `tests/requirements-ui.txt` 中的主机依赖。
 原生模拟器测试使用真实键盘、列表和回调，
 并检查 Wi-Fi 列表的截图像素，覆盖字形完整性、卡片间距和反复导航。
 二维码由独立解码器直接从渲染截图验证；OTA 使用确定性的时间与字节数序列，

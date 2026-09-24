@@ -16,8 +16,8 @@ from pathlib import Path
 
 TOOLS_DIR = Path(__file__).resolve().parent
 MANAGED_GSP = "espressif__esp-gsp"
-PINNED_GSP_VERSION = "1.4.0"
-PINNED_GSPC_VERSION = "0.5.0"
+PINNED_GSP_VERSION = "1.5.1"
+PINNED_GSPC_VERSION = "0.6.1"
 LICENSE_NAME = "THIRD_PARTY_LICENSES.txt"
 
 

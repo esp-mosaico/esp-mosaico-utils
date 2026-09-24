@@ -16,15 +16,15 @@ import urllib.request
 from unittest.mock import patch
 import zipfile
 
-GSP_VERSION = "1.4.0"
-GSPC_VERSION = "0.5.0"
+GSP_VERSION = "1.5.1"
+GSPC_VERSION = "0.6.1"
 COMPONENT_URL = (
     "https://components.espressif.com/api/downloads/"
-    "?object_type=component&object_id=f8225f2f-6053-4b62-b6bc-137fb8a0d3d2"
+    "?object_type=component&object_id=dcad3123-0dbb-4c0d-bca1-a0faa4fd2de2"
 )
 # The registry rebuilds ZIP timestamps on download. Pin names and file contents
-# instead of container bytes; this matches the device-validated 1.4.0 package.
-COMPONENT_CONTENT_SHA256 = "6f1b5cc4f456d652c3f5817b3ea38b463efbb84796d35b3ef9a75d854ff7e236"
+# instead of container bytes; this matches the official Registry 1.5.1 package.
+COMPONENT_CONTENT_SHA256 = "87d1a3842e3b1a3d12646f8c322e77bd234caa01f910e06518f4c8324be408b7"
 
 
 def extract_verified_zip(data, archive_format, destination):
@@ -63,7 +63,7 @@ def prepare(directory, compiler_only=False):
     environment = {"GSPC_EXECUTABLE": install_tool("gspc", GSPC_VERSION)}
     if not compiler_only:
         directory.mkdir(parents=True, exist_ok=True)
-        archive = directory / "esp-gsp-1.4.0.zip"
+        archive = directory / f"esp-gsp-{GSP_VERSION}.zip"
         if not archive.is_file():
             with urllib.request.urlopen(COMPONENT_URL, timeout=120) as response:
                 data = response.read()

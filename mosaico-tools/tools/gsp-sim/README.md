@@ -3,7 +3,7 @@
 From a workspace use `python mosaico.py project sim --project projects/my_app`.
 The project can also be selected from cwd, a configured default, or the sole app.
 There is no hard-coded Hello World fallback. Install the application's pinned
-ESP-GSP 1.4.0 component through an IDF build/reconfigure before native preview.
+ESP-GSP 1.5.1 component through an IDF build/reconfigure before native preview.
 
 The runner selects sim_bridge when pc/CMakeLists.txt exists. It compiles shared
 C UI logic into the native backend; the matching official simulator renders it.
