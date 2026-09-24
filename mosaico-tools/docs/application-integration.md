@@ -11,9 +11,17 @@ public `mosaico.py project init` / `project sim` commands. Creation needs Python
 Template schema v1 provides `workspace`, `template`, `utils`, `tools`, `bsp`,
 `esp_iris`, and `engine` path anchors. Paths are rendered relative to each
 output file. `workspace.init_template` remains configurable. `game create/new`
-uses BSP `examples/<game>/mosaico-template.json`, with the same exclusive writer,
+defaults to the tools-owned `templates/blank_game/mosaico-template.json`.
+`--template shooter`, `sky-hop` or `tower-defense` selects a complete game from
+BSP `examples/<game>/mosaico-template.json`. All use the same exclusive writer,
 name validation, dry-run and rollback behavior. Configure `dependencies.raylib`
 for the engine location; it is only required for games.
+
+The blank game provides shared C state/update/rendering with separate device and
+Host adapters, generated project identity and the retained Recovery layout. It
+uses the engine's `mosaico_game_app` runtime for display, input, Iris startup and
+first-frame health acceptance. It contains no example assets or external resource
+partition; its GSP canvas placeholder is generated and embedded during the build.
 
 Normal apps include `esp-mosaico-recovery/cmake/mosaico_idf_project.cmake`
 before project(), supplying MOSAICO_BSP_ROOT for the board-owned splash handoff.
@@ -26,11 +34,15 @@ Optional GSP components are `mosaico-tools/components/esp_mosaico_gsp_bundle`
 (ui_bundle_open) and `esp_mosaico_gsp_iris` (iris_screen_mirror_init/attach).
 The latter owns the display-presenter link wrapper. Application display and touch
 policy stays in the template's board_display.c. Both components retain ESP-GSP
-1.4.0 and the MOSGSP resource format.
+1.5.1 and the MOSGSP resource format.
 
 Use `cmake/gsp_compiler.cmake` before IDF to resolve the pinned GSPC. Include
 `cmake/gsp_bundle.cmake` in the application component, then call
 `mosaico_gsp_add_ui_bundle(${COMPONENT_LIB} "../ui/main.json")`.
+Applications use GSPC 0.6.1 with ESP-GSP 1.5.1. Recovery independently retains
+GSPC 0.5.0 with ESP-GSP 1.4.0, selecting `MOSAICO_GSPC_VERSION` before including
+the shared compiler bootstrap. Explicit `GSPC_EXECUTABLE` overrides must match
+the project's component version.
 Include `cmake/system_update.cmake` after project() to declare System Update
 artifacts and reject unsafe direct IDF flash/app-flash targets. Other resources
 use MOSAICO_SYSTEM_UPDATE_DATA_LABELS and per-label IMAGE/TARGET global properties.

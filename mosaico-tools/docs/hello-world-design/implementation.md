@@ -1,7 +1,7 @@
 # Hello World 实现与验证（2026-09-19 历史记录）
 
 本页保留迁移前的版本和验证记录；当前模板见 [Hello World](../../templates/hello_world/README.md)。
-当前产品固定 ESP-GSP 1.4.0，以下 1.2.0 数据只描述当时验证环境。
+当前产品固定 ESP-GSP 1.5.1，以下 1.2.0 数据只描述当时验证环境。
 
 已按确认的概念图将唯一的 Hello World 应用统一到
 `projects/hello_world`（旧工作区路径）。旧 LVGL Hello World

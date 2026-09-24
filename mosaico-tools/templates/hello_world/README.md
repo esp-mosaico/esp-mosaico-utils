@@ -1,7 +1,7 @@
 # ESP-Mosaico Hello World
 
 Created with `python mosaico.py project init my_app`.
-The same GSP 1.4.0 scene and portable C UI run on PC and ESP-Mosaico.
+The same GSP 1.5.1 scene and portable C UI run on PC and ESP-Mosaico.
 
 From the workspace root:
 

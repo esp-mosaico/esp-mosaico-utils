@@ -2418,7 +2418,7 @@ class RecoveryCommandTests(unittest.TestCase):
         )
 
     def test_idf_wrapper_reports_bounded_cmake_diagnostic(self) -> None:
-        context = mock.Mock(repository=REPOSITORY, log_path=Path("/runs/raw.log"))
+        context = mock.Mock(workspace=WORKSPACE, repository=REPOSITORY, log_path=Path("/runs/raw.log"))
         context.run.return_value = subprocess.CompletedProcess(
             [],
             1,
@@ -2464,7 +2464,7 @@ class RecoveryCommandTests(unittest.TestCase):
         self.assertIn(f"Log: {Path('/runs/raw.log')}", rendered)
 
     def test_busy_recovery_port_is_reported_without_retry(self) -> None:
-        context = mock.Mock(repository=REPOSITORY, log_path=Path("run.log"))
+        context = mock.Mock(workspace=WORKSPACE, repository=REPOSITORY, log_path=Path("run.log"))
         context.run.return_value = subprocess.CompletedProcess(
             [], 1, "Could not exclusively lock port: port is busy", ""
         )
