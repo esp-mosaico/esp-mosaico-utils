@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import re
 import sys
+from tempfile import TemporaryDirectory
 
 import pytest
 
@@ -13,22 +14,26 @@ from mosaico_cli.cli import main
 
 
 @pytest.fixture
-def workspace(tmp_path):
-    root = tmp_path / "workspace with spaces"
-    root.mkdir()
-    # Creation needs an initialized engine, but neither BSP nor an SDK install.
-    engine = root / "engine/cmake/mosaico_game_sdk.cmake"
-    engine.parent.mkdir(parents=True)
-    engine.touch()
-    (root / ".mosaico.json").write_text(json.dumps({
-        "schema_version": 1,
-        "workspace": {"projects_dir": "projects"},
-        "dependencies": {"bsp": "board", "raylib": "engine", "esp_iris": "iris"},
-        "build": {"runner": "builtin"},
-        "devices": [{"id": "esp-mosaico", "name": "ESP-Mosaico",
-                     "target": "esp32s31", "status": "supported", "default": True}],
-    }), encoding="utf-8")
-    return root
+def workspace():
+    # Generated references are relative to the real utils checkout. Windows CI
+    # puts that checkout on D: and pytest's default temporary directory on C:.
+    # Keep this workspace on the checkout's drive, as in a consuming workspace.
+    with TemporaryDirectory(prefix=".blank-game-test-", dir=TOOLS.parent) as temporary:
+        root = Path(temporary) / "workspace with spaces"
+        root.mkdir()
+        # Creation needs an initialized engine, but neither BSP nor an SDK install.
+        engine = root / "engine/cmake/mosaico_game_sdk.cmake"
+        engine.parent.mkdir(parents=True)
+        engine.touch()
+        (root / ".mosaico.json").write_text(json.dumps({
+            "schema_version": 1,
+            "workspace": {"projects_dir": "projects"},
+            "dependencies": {"bsp": "board", "raylib": "engine", "esp_iris": "iris"},
+            "build": {"runner": "builtin"},
+            "devices": [{"id": "esp-mosaico", "name": "ESP-Mosaico",
+                         "target": "esp32s31", "status": "supported", "default": True}],
+        }), encoding="utf-8")
+        yield root
 
 
 @pytest.mark.parametrize("action,options", [
