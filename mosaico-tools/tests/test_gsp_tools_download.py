@@ -37,3 +37,14 @@ def test_upgrade_bootstrap_ignores_old_managed_component():
             assert fetch.main() == 0
         assert release.call_args.kwargs['version'] == version
         assert release.call_args.kwargs['product'] == ('sim' if simulator else 'gspc')
+
+
+def test_recovery_tool_pin_is_independent_of_application_and_managed_component():
+    for simulator, version in ((False, '0.5.0'), (True, '1.4.0')):
+        argv = ['fetch_gspc.py', '--tool-version', version] + (['--sim'] if simulator else [])
+        with patch.object(fetch.sys, 'argv', argv), \
+                patch.object(fetch, 'resolve_release', return_value=Path('/tmp/tool')) as release, \
+                patch.object(fetch, 'resolve_gsp_root', side_effect=AssertionError('component consulted')):
+            assert fetch.main() == 0
+        assert release.call_args.kwargs['version'] == version
+        assert release.call_args.kwargs['product'] == ('sim' if simulator else 'gspc')

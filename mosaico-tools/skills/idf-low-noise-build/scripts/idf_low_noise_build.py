@@ -24,6 +24,7 @@ sys.path.insert(0, str(REPOSITORY_ROOT / "tools"))
 
 from mosaico_cli.host import (  # noqa: E402
     HostEnvironmentError,
+    idf_source_version,
     prepare_idf_environment,
     valid_idf_path,
 )
@@ -52,6 +53,10 @@ SCAN_EXCLUDES = {
 }
 
 ERROR_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "configdep",
+        re.compile(r"^.*\bin touch_file: cannot (?:create|close)\b.*$", re.M),
+    ),
     (
         "compiler",
         re.compile(
@@ -272,7 +277,11 @@ def find_diagnostic(text: str) -> dict[str, Any] | None:
             line_number = bisect.bisect_right(offsets, match.start()) if offsets else 1
             candidates.append((line_number, priority, category, match))
     if not candidates:
-        return None
+        failed = re.search(r"^FAILED:.*$", text, re.M)
+        if failed is None:
+            return None
+        line_number = bisect.bisect_right(offsets, failed.start()) if offsets else 1
+        candidates.append((line_number, len(ERROR_PATTERNS), "ninja", failed))
 
     line_number, _, category, match = min(candidates, key=lambda item: (item[0], item[1]))
     start = max(0, line_number - 1 - DEFAULT_CONTEXT_BEFORE)
@@ -553,8 +562,12 @@ def doctor(project: Path, idf_path: Path | None) -> int:
         command, project, environment=environment
     )
     version_lines = [line.strip() for line in version_output.splitlines() if line.strip()]
-    idf_version = next((line for line in reversed(version_lines) if "ESP-IDF" in line), None)
+    reported_version = next((line for line in reversed(version_lines) if "ESP-IDF" in line), None)
+    source_version = idf_source_version(idf_path)
+    idf_version = source_version or reported_version
     print(f"idf_version: {idf_version or 'unresolved'}")
+    print(f"idf_version_source: {'tools/cmake/version.cmake' if source_version else 'idf.py --version'}")
+    print(f"idf_reported_version: {reported_version or 'unresolved'}")
     constraint_ok = check_constraint(idf_version or "", constraint)
     constraint_status = {True: "yes", False: "no", None: "unverified"}[constraint_ok]
     print(f"idf_constraint_satisfied: {constraint_status}")

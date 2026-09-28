@@ -16,8 +16,8 @@ from pathlib import Path
 
 TOOLS_DIR = Path(__file__).resolve().parent
 MANAGED_GSP = "espressif__esp-gsp"
-PINNED_GSP_VERSION = "1.4.0"
-PINNED_GSPC_VERSION = "0.5.0"
+PINNED_GSP_VERSION = "1.5.1"
+PINNED_GSPC_VERSION = "0.6.1"
 LICENSE_NAME = "THIRD_PARTY_LICENSES.txt"
 
 
@@ -225,15 +225,19 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path)
     parser.add_argument("--sim", action="store_true", help="print the simulator path")
     parser.add_argument(
+        "--tool-version", help="resolve this release instead of the default tool pin",
+    )
+    parser.add_argument(
         "--pinned", action="store_true",
         help="use workspace tool pins, ignoring an older installed component during upgrades",
     )
     args = parser.parse_args()
     try:
-        if args.pinned:
+        if args.pinned or args.tool_version:
             path = resolve_release(
                 product="sim" if args.sim else "gspc",
-                version=PINNED_GSP_VERSION if args.sim else PINNED_GSPC_VERSION,
+                version=args.tool_version or (
+                    PINNED_GSP_VERSION if args.sim else PINNED_GSPC_VERSION),
                 env_var="GSP_SIM_EXECUTABLE" if args.sim else "GSPC_EXECUTABLE",
                 cache_dir=args.output_dir,
             )

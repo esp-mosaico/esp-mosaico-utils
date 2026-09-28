@@ -1,0 +1,123 @@
+{
+  "schema_version": 1,
+  "paths": {
+    "utils_root": {
+      "base": "utils",
+      "path": "."
+    },
+    "bsp_root": {
+      "base": "bsp",
+      "path": "."
+    },
+    "engine_root": {
+      "base": "engine",
+      "path": "."
+    },
+    "bsp_component": {
+      "base": "bsp",
+      "path": "components/esp-mosaico-bsp"
+    },
+    "iris_component": {
+      "base": "esp_iris",
+      "path": "components/esp_iris"
+    }
+  },
+  "files": [
+    {
+      "source": "CMakeLists.txt",
+      "replacements": [
+        {
+          "pattern": "^set\\(MOSAICO_UTILS_ROOT .*\\)$",
+          "replacement": "set(MOSAICO_UTILS_ROOT \"${CMAKE_CURRENT_LIST_DIR}/{{utils_root|cmake}}\")"
+        },
+        {
+          "pattern": "^set\\(MOSAICO_BSP_ROOT .*\\)$",
+          "replacement": "set(MOSAICO_BSP_ROOT \"${CMAKE_CURRENT_LIST_DIR}/{{bsp_root|cmake}}\")"
+        },
+        {
+          "pattern": "^set\\(RAYLIB_LITE_ENGINE_ROOT .*\\)$",
+          "replacement": "set(RAYLIB_LITE_ENGINE_ROOT \"${CMAKE_CURRENT_LIST_DIR}/{{engine_root|cmake}}\")"
+        },
+        {
+          "pattern": "^project\\(blank_game(?=[\\s)])",
+          "replacement": "project({{project_name}}"
+        }
+      ]
+    },
+    {
+      "source": "README.md",
+      "replacements": [
+        {
+          "pattern": "^# blank_game$",
+          "replacement": "# {{project_name}}"
+        },
+        {
+          "pattern": "projects/my_game",
+          "replacement": "{{project_path|shell}}",
+          "count": 4
+        }
+      ]
+    },
+    {
+      "source": "game.sim.json"
+    },
+    {
+      "source": "main/CMakeLists.txt"
+    },
+    {
+      "source": "main/game.c"
+    },
+    {
+      "source": "main/game.h"
+    },
+    {
+      "source": "main/game_config.h",
+      "replacements": [
+        {
+          "pattern": "^#define GAME_NAME \".*\"$",
+          "replacement": "#define GAME_NAME {{project_name|json}}"
+        }
+      ]
+    },
+    {
+      "source": "main/game_module.c"
+    },
+    {
+      "source": "main/idf_component.yml",
+      "replacements": [
+        {
+          "pattern": "^    override_path: .*components/esp-mosaico-bsp$",
+          "replacement": "    override_path: {{bsp_component|json}}"
+        },
+        {
+          "pattern": "^    override_path: .*components/esp_iris$",
+          "replacement": "    override_path: {{iris_component|json}}"
+        }
+      ]
+    },
+    {
+      "source": "main/main.c"
+    },
+    {
+      "source": "main/make_canvas_png.py"
+    },
+    {
+      "source": "main/scene.json.in"
+    },
+    {
+      "source": "partitions.csv"
+    },
+    {
+      "source": "sdkconfig.application.defaults",
+      "replacements": [
+        {
+          "pattern": "^CONFIG_ESP_IRIS_USB_PRODUCT=\"[^\"\\n]*\"",
+          "replacement": "CONFIG_ESP_IRIS_USB_PRODUCT=\"ESP-Iris Mosaico {{project_name}}\""
+        }
+      ]
+    },
+    {
+      "source": "sdkconfig.defaults"
+    }
+  ]
+}

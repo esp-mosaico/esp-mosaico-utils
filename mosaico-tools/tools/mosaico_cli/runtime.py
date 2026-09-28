@@ -17,7 +17,12 @@ from typing import Any, Callable, Sequence
 
 from .build_progress import decode_progress
 from .errors import BuildError, DeviceError, EnvironmentError
-from .host import HostEnvironmentError, prepare_idf_environment, valid_idf_path
+from .host import (
+    HostEnvironmentError,
+    configdep_environment,
+    prepare_idf_environment,
+    valid_idf_path,
+)
 from .workspace import WorkspaceConfig
 
 
@@ -226,6 +231,7 @@ def build_application(context: RunContext, project: Path) -> None:
         ],
         timeout=3600,
         cwd=context.workspace.root,
+        env=configdep_environment(context.workspace.configdep),
         output_status=_build_progress_parser(),
     )
     if result.returncode:
@@ -326,6 +332,10 @@ def _idf_progress_parser() -> Callable[[str], str | None]:
 
 _IDF_ERROR_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
+        "configdep",
+        re.compile(r"^.*\bin touch_file: cannot (?:create|close)\b.*$", re.MULTILINE),
+    ),
+    (
         "compiler",
         re.compile(
             r"^(?:[^:\n]+:)+\d+(?::\d+)?:\s+(?:fatal\s+)?error:\s+.+$",
@@ -378,7 +388,10 @@ def _idf_failure_diagnostic(output: str) -> str | None:
         if match:
             candidates.append((match.start(), priority, category))
     if not candidates:
-        return None
+        failed = re.search(r"^FAILED:.*$", clean, re.MULTILINE)
+        if failed is None:
+            return None
+        candidates.append((failed.start(), len(_IDF_ERROR_PATTERNS), "ninja"))
 
     offset, _, category = min(candidates, key=lambda item: (item[0], item[1]))
     lines = clean.splitlines()
@@ -418,7 +431,9 @@ def idf_target_command(
     for key, value in (definitions or {}).items():
         command.extend(["-D", f"{key}={value}"])
     command.append(target)
-    process_environment = prepared.values.copy()
+    process_environment = configdep_environment(
+        context.workspace.configdep, environment=prepared.values
+    )
     if port:
         # Custom ESP-IDF flash targets consume ESPPORT in run_serial_tool.cmake;
         # idf.py's -p option is only propagated to its built-in flash actions.

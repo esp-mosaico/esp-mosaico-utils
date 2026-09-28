@@ -1,2 +1,2 @@
 dependencies:
-  espressif/esp-gsp: "==1.4.0"
+  espressif/esp-gsp: "==1.5.1"

@@ -18,6 +18,41 @@ class HostEnvironmentError(RuntimeError):
 
 
 MINIMUM_IDF_PYTHON = (3, 10)
+CONFIGDEP_POLICIES = ("auto", "on", "off")
+
+
+def idf_source_version(idf_path: Path) -> str | None:
+    """Read the build's version independently of local Git tags."""
+    try:
+        source = (idf_path / "tools/cmake/version.cmake").read_text(encoding="utf-8")
+    except OSError:
+        return None
+    parts = []
+    for name in ("MAJOR", "MINOR", "PATCH"):
+        match = re.search(
+            rf'^\s*set\s*\(\s*IDF_VERSION_{name}\s+"?(\d+)"?\s*\)',
+            source, re.MULTILINE | re.IGNORECASE,
+        )
+        if match is None:
+            return None
+        parts.append(str(int(match.group(1))))
+    return ".".join(parts)
+
+
+def configdep_environment(
+    policy: str = "auto", *, environment: Mapping[str, str] | None = None
+) -> dict[str, str]:
+    """Apply the Windows-safe default and any explicit configdep preference."""
+    if policy not in CONFIGDEP_POLICIES:
+        raise HostEnvironmentError("build.configdep must be auto, on or off")
+    values = dict(os.environ if environment is None else environment)
+    if policy != "auto":
+        values["IDF_CONFIGDEP_ENABLE"] = "1" if policy == "on" else "0"
+    elif host_platform() == "windows":
+        # configdep 0.2.3 maps CONFIG_* tokens to path segments, including AUX.
+        # Scanning sdkconfig alone misses references in disabled source branches.
+        values.setdefault("IDF_CONFIGDEP_ENABLE", "0")
+    return values
 
 
 def host_platform(
@@ -227,7 +262,7 @@ def prepare_idf_environment(
     if not valid_idf_path(root):
         raise HostEnvironmentError(f"Invalid ESP-IDF path: {root}")
 
-    values = dict(os.environ if base_environment is None else base_environment)
+    values = configdep_environment(environment=base_environment)
     values["IDF_PATH"] = str(root)
     python = resolve_idf_bootstrap_python(
         root, values, explicit=bootstrap_python

@@ -13,6 +13,7 @@ from .gateway import locate_iris_tools
 from .host import (
     HostEnvironmentError,
     host_platform,
+    idf_source_version,
     prepare_idf_environment,
     state_root,
 )
@@ -125,15 +126,18 @@ def diagnose_host(workspace: WorkspaceConfig) -> dict[str, Any]:
             [str(prepared.python), str(prepared.idf_py), "--version"],
             environment=prepared.values,
         )
+        source_version = idf_source_version(idf_path)
+        idf["reported_version"] = version_output.splitlines()[-1] if version_output else "unresolved"
+        idf["version"] = source_version or idf["reported_version"]
+        idf["version_source"] = "tools/cmake/version.cmake" if source_version else "idf.py --version"
         version_ready = version_code == 0 and _version_satisfies(
-            version_output, str(idf["constraint"])
+            str(idf["version"]), str(idf["constraint"])
         )
-        idf["version"] = version_output.splitlines()[-1] if version_output else "unresolved"
         _check(
             checks,
             "idf-version",
             "pass" if version_ready else "fail",
-            f"{idf['version']} (required {idf['constraint']})",
+            f"{idf['version']} from {idf['version_source']} (required {idf['constraint']})",
         )
         target_code, target_output = _command(
             [

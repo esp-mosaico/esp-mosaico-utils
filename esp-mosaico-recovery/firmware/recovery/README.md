@@ -4,30 +4,40 @@
 其源码和评审 bundle 与 `mosaico.py recover` 一同维护。普通应用从宿主
 workspace 的 `projects/hello_world` 创建，不应将本工程作为应用安装到 `ota_0`。
 
-当前源码构建的 Recovery 固件版本为 `0.1.3`，由
+当前源码构建的 Recovery 固件版本为 `0.1.4`，由
 `sdkconfig.recovery.defaults` 中的 `CONFIG_APP_PROJECT_VER` 定义。
+`0.1.4` 保持 ESP-GSP `1.4.0` 和 GSPC `0.5.0`，源码构建自动准备
+独立 GSP 编译器。应用模板的 GSP 升级不改变 Recovery 的依赖版本；
+已评审的预编译包版本见下文及包 manifest。
 `0.1.3` 将 USB/TCP System Update 与 NAND 本地安装的组件上限从 4 提高到 8，
 manifest 上限同步提高到 3 KiB；标准应用包可包含分区表、应用和六个资源镜像。
 使用新容量的包需要先升级 Recovery；Bridge 的独立组件上限保持不变。
-`prebuilt/recovery` 基础包使用 `0.1.3`，其 manifest 记录各镜像的大小与 SHA-256。
-本包基于远端 `main` 的 `4088ed0` 重建，包含 Recovery UI 等待超时、Wi-Fi 启动
-重试和 OTA 完成后重启修复；版本继续保持 `0.1.3`。
+`prebuilt/recovery` 基础包使用 `0.1.4`，其 manifest 记录各镜像的大小与 SHA-256。
+本包来自源码提交 `0b0d9bc1af83f42471fd2c7e879290cb9837361f`（源码工作树干净），
+基于已合入的 `0.1.3`，保持 ESP-GSP `1.4.0` 和 GSPC `0.5.0`。
 2026-09-24 在 ESP32-S31（Base MAC `30:ed:a0:f4:60:56`）上通过应用工作区的
 `mosaico.py recover --source current` 完成整包 ROM 烧录及哈希校验，重连确认
-Recovery `0.1.3`、相同硬件身份、OTA/System Update 能力及匹配的 ELF SHA-256。
-操作 ID 为 `6aa7aa44-a27b-4328-bdee-0d7695261e43`，Boot ID 为
-`3606744914958349586`；正式预编译包与这次实测包逐字节一致。
+Recovery `0.1.4`、相同硬件身份、OTA/System Update 能力及匹配的 ELF SHA-256。
+操作 ID 为 `75d799e2-99c0-4412-833b-759b76d1d07b`，首次 Boot ID 为
+`17470610007971261482`；正式预编译包与这次实测包逐字节一致。
+通过 System Update 安装 `tests/firmware/iris_acceptance` 后，验证应用健康状态、
+ELF 哈希和 RPC 计数，并完成 normal → Recovery → normal 往返；每次重启
+保持相同 Device ID，产生新的 Boot ID，bootloader 与分区表哈希始终一致。
+最终停留在 Recovery `0.1.4`，Boot ID 为 `12340589603743011809`。
+Recovery ELF SHA-256 为
+`8cb8d4e40d30667884da1c892a2eff5503acabf979710a2d2dc6151f1481b5db`。
 8 个组件和 3 KiB manifest 的接收边界通过宿主 C 运行时与制包回归测试；
-本次真机验收覆盖 ROM 烧录、Recovery 启动和通信，未执行 8 组件应用更新。
+本次真机验收使用两个组件的应用包，未执行 8 组件应用更新。
 源码来源与 dirty 状态以 `prebuilt/recovery/manifest.json` 为准。
-本次使用 CI 固定的 ESP-IDF `v6.2-dev-2221-g7b9cc1ac79f` 和仓库默认配置完整构建，
+本次使用固定的 ESP-IDF `7b9cc1ac79f865983f59bb8ff3ff43eb74ff1dbe` 和仓库默认配置完整构建；
+构建环境保留已有 DVP camera 修改，manifest 中 IDF 描述如实记录 `-dirt`。
 BSP 固定于组件 manifest 中的 `05e067de0613a0aa3fe2af42e75616804decbf4b`：
-`factory.bin` 为 1,817,024 字节，固定槽位剩余 17,984 字节；INFO 日志
+`factory.bin` 为 1,817,440 字节，固定槽位剩余 17,568 字节；INFO 日志
 `bootloader.bin` 为 24,432 字节，距离分区表剩余 144 字节。
 默认 `recover` 使用该包，`recover --source current` 使用当前源码重新构建。
 Recovery ABI 与分区布局由工程配置和包 manifest 约束。
 
-System Update 版本检查将 `0.1.3` 解析为同一语义版本线，只接受同一主版本线、且
+System Update 版本检查将 `0.1.4` 解析为同一语义版本线，只接受同一主版本线、且
 最低版本要求不高于当前 Recovery 的更新包。Recovery 自更新拒绝降级或
 跨主版本线的镜像。
 
@@ -313,7 +323,7 @@ ESP-Mosaico workspace 时，`mosaico.py recover` 会根据宿主 workspace 的
 ## Vibe Mode 界面与构建
 
 用户可见名称为 **Vibe Mode**；工程 `factory`、协议角色 `recovery`、
-`recover` 命令和 Recovery ABI 1 保持不变；当前源码固件版本为 `0.1.3`。
+`recover` 命令和 Recovery ABI 1 保持不变；当前源码固件版本为 `0.1.4`。
 九个页面由 `ui/main.json` 和可移植的 `main/vibe_ui.c` 实现，PC 与设备共享
 同一控制器及 `ui/profile.yaml` RGB565 编译配置。
 `main/factory_ui.c` 适配网络、Bridge、NAND 和更新状态；
@@ -322,14 +332,14 @@ ESP-Mosaico workspace 时，`mosaico.py recover` 会根据宿主 workspace 的
 使用 Component Registry 的 **ESP-GSP 1.4.0**，BSP 开启硬件显示但关闭
 `CONFIG_BSP_DISPLAY_LVGL_ENABLE`。该 BSP 选项默认开启，保留现有 LVGL
 应用行为。构建必须使用包含该选项的 workspace BSP；旧版 BSP 不支持此模式。
-GSP 1.4 在调用方同步创建、校验 UI，Recovery 将
+GSP 在调用方同步创建、校验 UI，Recovery 将
 `CONFIG_ESP_MAIN_TASK_STACK_SIZE` 设为 20480；仅增加渲染任务栈不能覆盖该阶段。
 启动日志记录 UI 初始化后的主任务栈余量，便于检查后续资源改动。
 
 场景、字形与键盘图标全部嵌入 Recovery，不依赖应用资源分区。
 GSPB 在构建时无损 Deflate 压缩，启动时使用 ROM 解压器还原到 PSRAM；
 GSP 继续执行原始 bundle 校验。界面仅使用预烘焙字形，不启用运行时字体；
-通过 GSP 1.4 的 `CONFIG_ESP_GSP_ENABLE_JPEG=n` 排除 JPEG 解码器，
+通过 `CONFIG_ESP_GSP_ENABLE_JPEG=n` 排除 JPEG 解码器，
 现有图标仍为编译后的 RGB565_A8。32 px 更新标题与百分比只打包对应状态文案
 和数字所需的字形，网络名称与密码仍保留完整的既有字符集。
 若增加运行时字体或 JPEG 图片，必须同步启用相应能力并重新验证大小和功能。

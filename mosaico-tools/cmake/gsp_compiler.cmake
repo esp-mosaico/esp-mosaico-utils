@@ -4,7 +4,11 @@ if(NOT GSPC_EXECUTABLE AND DEFINED ENV{GSPC_EXECUTABLE} AND NOT "$ENV{GSPC_EXECU
 endif()
 if(NOT GSPC_EXECUTABLE)
     find_program(MOSAICO_GSPC_PYTHON NAMES python3 python REQUIRED)
-    execute_process(COMMAND "${MOSAICO_GSPC_PYTHON}" "${CMAKE_CURRENT_LIST_DIR}/../tools/gsp-sim/fetch_gspc.py"
+    set(mosaico_gspc_args --pinned)
+    if(MOSAICO_GSPC_VERSION)
+        list(APPEND mosaico_gspc_args --tool-version "${MOSAICO_GSPC_VERSION}")
+    endif()
+    execute_process(COMMAND "${MOSAICO_GSPC_PYTHON}" "${CMAKE_CURRENT_LIST_DIR}/../tools/gsp-sim/fetch_gspc.py" ${mosaico_gspc_args}
         OUTPUT_VARIABLE GSPC_EXECUTABLE OUTPUT_STRIP_TRAILING_WHITESPACE RESULT_VARIABLE result)
     if(NOT result EQUAL 0 OR GSPC_EXECUTABLE STREQUAL "")
         message(FATAL_ERROR "Could not resolve the pinned GSP compiler; set GSPC_EXECUTABLE")
