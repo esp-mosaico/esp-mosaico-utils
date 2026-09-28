@@ -104,7 +104,7 @@ def initialize_project(
         recovery = workspace.recovery_project.resolve()
         if template == recovery or _inside(template, recovery):
             raise SelectionError(
-                "The retained Recovery firmware cannot be used as an application template."
+                "The retained Vibe Mode firmware cannot be used as an application template."
             )
         if not template.is_file():
             raise EnvironmentError(f"workspace.init_template must name a template description JSON file: {template}")

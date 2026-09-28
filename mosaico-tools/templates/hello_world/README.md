@@ -16,6 +16,6 @@ Use `system-update` for new apps or changed resources/layouts. Use `app-update`
 only for code changes with an identical full partition table and resources.
 
 Edit `main/hello_ui.c` and `ui/main.json`. `main/board_display.c` declares the
-application display policy. Recovery, GSP bundle loading and screen capture are
+application display policy. Vibe Mode, GSP bundle loading and screen capture are
 shared optional components from esp-mosaico-utils. `pc/` contains the portable
 backend; firmware dependencies are resolved with ESP-IDF before its first run.

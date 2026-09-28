@@ -302,15 +302,15 @@ def _idf_progress_parser() -> Callable[[str], str | None]:
         if line.startswith("Executing action:"):
             return f"idf: {line}"
         if "validating the reviewed recovery bundle" in lower:
-            return "bundle: validating reviewed Recovery images and manifest"
+            return "bundle: validating reviewed Vibe Mode images and manifest"
         if "building an unreviewed recovery candidate bundle" in lower:
-            return "bundle: building current-source Recovery candidate"
+            return "bundle: building current-source Vibe Mode candidate"
         if line.startswith("recovery bundle ready:"):
-            return "bundle: Recovery images and manifest verified"
+            return "bundle: Vibe Mode images and manifest verified"
         if line.startswith("Serial port "):
             return f"flash: {line}"
         if line.startswith("Connecting"):
-            return "flash: connecting to ROM download service"
+            return "flash: connecting to ROM Download Mode"
         if line.startswith("Chip is "):
             return f"flash: {line}"
         if "will be erased" in lower or line.startswith("Erasing flash"):
@@ -322,7 +322,7 @@ def _idf_progress_parser() -> Callable[[str], str | None]:
         if line.startswith("Leaving"):
             return "flash: transfer complete"
         if "hard resetting" in lower:
-            return "flash: resetting device into Recovery"
+            return "flash: resetting device into Vibe Mode"
         if "project build complete" in lower:
             return "idf: build complete"
         return None

@@ -1,6 +1,10 @@
 # Application integration
 
-For Recovery installation and optional Iris logging in an existing application,
+Vibe Mode is the retained firmware that runs ESP-Iris; ROM Download Mode is the
+chip flashing path without Iris. Recovery component paths, ABI and protocol
+names remain unchanged. See the [firmware guide](../../esp-mosaico-recovery/firmware/recovery/README.md).
+
+For Vibe Mode installation and optional Iris logging in an existing application,
 start with the [migration guide (中文)](../../docs/recovery-iris-migration.zh-CN.md).
 The integration below adds the complete Mosaico application update workflow.
 
@@ -18,7 +22,7 @@ name validation, dry-run and rollback behavior. Configure `dependencies.raylib`
 for the engine location; it is only required for games.
 
 The blank game provides shared C state/update/rendering with separate device and
-Host adapters, generated project identity and the retained Recovery layout. It
+Host adapters, generated project identity and the retained Vibe Mode layout. It
 uses the engine's `mosaico_game_app` runtime for display, input, Iris startup and
 first-frame health acceptance. It contains no example assets or external resource
 partition; its GSP canvas placeholder is generated and embedded during the build.
@@ -28,7 +32,7 @@ before project(), supplying MOSAICO_BSP_ROOT for the board-owned splash handoff.
 Add `esp-mosaico-recovery/components/esp_mosaico_app_recovery` to
 EXTRA_COMPONENT_DIRS and call iris_ota_support_start(). This component has no
 GSP, BSP or display dependency. Its configure gate validates the effective
-configuration, including existing sdkconfig files; the OTA writer stays in Recovery.
+configuration, including existing sdkconfig files; the OTA writer stays in Vibe Mode.
 
 Optional GSP components are `mosaico-tools/components/esp_mosaico_gsp_bundle`
 (ui_bundle_open) and `esp_mosaico_gsp_iris` (iris_screen_mirror_init/attach).
@@ -39,7 +43,7 @@ policy stays in the template's board_display.c. Both components retain ESP-GSP
 Use `cmake/gsp_compiler.cmake` before IDF to resolve the pinned GSPC. Include
 `cmake/gsp_bundle.cmake` in the application component, then call
 `mosaico_gsp_add_ui_bundle(${COMPONENT_LIB} "../ui/main.json")`.
-Applications use GSPC 0.6.1 with ESP-GSP 1.5.1. Recovery independently retains
+Applications use GSPC 0.6.1 with ESP-GSP 1.5.1. Vibe Mode independently retains
 GSPC 0.5.0 with ESP-GSP 1.4.0, selecting `MOSAICO_GSPC_VERSION` before including
 the shared compiler bootstrap. Explicit `GSPC_EXECUTABLE` overrides must match
 the project's component version.
@@ -48,7 +52,7 @@ artifacts and reject unsafe direct IDF flash/app-flash targets. Other resources
 use MOSAICO_SYSTEM_UPDATE_DATA_LABELS and per-label IMAGE/TARGET global properties.
 No normal application bundle replaces the retained bootloader.
 
-Recovery's `product_contract.json` owns host identity and fixed partition values.
+Vibe Mode's `product_contract.json` owns host identity and fixed partition values.
 The C ABI remains in `esp-mosaico-recovery/include/mosaico_recovery_contract.h`;
 contract tests compare the product manifest, configuration and partition tables.
 

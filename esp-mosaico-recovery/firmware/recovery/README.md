@@ -1,20 +1,32 @@
 # ESP-Mosaico Vibe Mode
 
-`factory` 是 `esp-mosaico-recovery` 内置的 ESP-Mosaico 保留 Recovery 固件，
+**Vibe Mode** 是 ESP-Mosaico 内置的应用安装与设备维护模式，运行 ESP-Iris，
+提供应用更新、Wi-Fi 配置和 Download Ideas。**ROM Download Mode（ROM 下载模式）**
+是芯片底层烧录模式，不运行 Vibe Mode 或 ESP-Iris。
+
+从可达的正常应用进入 Vibe Mode 使用 `iris test enter-recovery`，不写入固件；
+`recover` 则通过 ROM 路径重建基础固件，再验证 Vibe Mode 就绪。
+有效的配套 bootloader 通过 AI 键（GPIO7）选择 Vibe Mode；
+Boot 键（GPIO61）用于 ROM 下载入口，仅在恢复流程要求时手动进入。
+
+`Recovery` 是保留固件的技术名称；目录、命令、`firmware_mode=recovery` 和 ABI 保持不变。
+`factory` 是 `esp-mosaico-recovery` 内置的 Vibe Mode 保留固件，
 其源码和评审 bundle 与 `mosaico.py recover` 一同维护。普通应用从宿主
 workspace 的 `projects/hello_world` 创建，不应将本工程作为应用安装到 `ota_0`。
 
-当前源码构建的 Recovery 固件版本为 `0.1.4`，由
+当前源码构建的 Vibe Mode 固件版本为 `0.1.4`，由
 `sdkconfig.recovery.defaults` 中的 `CONFIG_APP_PROJECT_VER` 定义。
 `0.1.4` 保持 ESP-GSP `1.4.0` 和 GSPC `0.5.0`，源码构建自动准备
-独立 GSP 编译器。应用模板的 GSP 升级不改变 Recovery 的依赖版本；
+独立 GSP 编译器。应用模板的 GSP 升级不改变 Vibe Mode 的依赖版本；
 已评审的预编译包版本见下文及包 manifest。
 `0.1.3` 将 USB/TCP System Update 与 NAND 本地安装的组件上限从 4 提高到 8，
 manifest 上限同步提高到 3 KiB；标准应用包可包含分区表、应用和六个资源镜像。
-使用新容量的包需要先升级 Recovery；Bridge 的独立组件上限保持不变。
+使用新容量的包需要先升级 Vibe Mode；Bridge 的独立组件上限保持不变。
 `prebuilt/recovery` 基础包使用 `0.1.4`，其 manifest 记录各镜像的大小与 SHA-256。
 本包来自源码提交 `0b0d9bc1af83f42471fd2c7e879290cb9837361f`（源码工作树干净），
 基于已合入的 `0.1.3`，保持 ESP-GSP `1.4.0` 和 GSPC `0.5.0`。
+以下为已评审包的历史验证记录，其中 Recovery 指 Vibe Mode：
+
 2026-09-24 在 ESP32-S31（Base MAC `30:ed:a0:f4:60:56`）上通过应用工作区的
 `mosaico.py recover --source current` 完成整包 ROM 烧录及哈希校验，重连确认
 Recovery `0.1.4`、相同硬件身份、OTA/System Update 能力及匹配的 ELF SHA-256。
@@ -38,15 +50,15 @@ BSP 固定于组件 manifest 中的 `05e067de0613a0aa3fe2af42e75616804decbf4b`�
 Recovery ABI 与分区布局由工程配置和包 manifest 约束。
 
 System Update 版本检查将 `0.1.4` 解析为同一语义版本线，只接受同一主版本线、且
-最低版本要求不高于当前 Recovery 的更新包。Recovery 自更新拒绝降级或
+最低版本要求不高于当前 Vibe Mode 的更新包。Vibe Mode 自更新拒绝降级或
 跨主版本线的镜像。
 
 ## 静态开机 Logo
 
-保留 Recovery 的二级 bootloader 在选择应用分区前，通过 SPI2 QSPI 初始化
+保留 Vibe Mode 的二级 bootloader 在选择应用分区前，通过 SPI2 QSPI 初始化
 CO5300，绘制黑底橙色点阵 `mosaico`。Logo 使用紧凑的字形数据逐像素生成，
 不依赖 LVGL、GSP、PSRAM 或外部 UI 资源。支持 eFuse 标识的 v1.0、v1.1 和
-v1.2 板；未知板型或 SPI 传输失败时跳过 Logo，继续正常启动与 Recovery。
+v1.2 板；未知板型或 SPI 传输失败时跳过 Logo，继续正常启动与 Vibe Mode。
 
 确认硬件版本后，bootloader 会先打开 VCC_3V3 并触发约 60 ms 的 GPIO8 短震，
 再继续屏幕初始化和 Logo 绘制。短震复用了原有屏幕复位等待时间，没有额外延长
@@ -69,7 +81,7 @@ ESP-IDF `7b9cc1ac79f8` 实测 INFO bootloader 为 24,432 字节，比优化前�
 日志的 26,720 字节缩小 2,288 字节，在 `0x2000` 到 `0x8000` 的 24 KiB
 固定空间内剩余 144 字节。后续修改仍须通过 bootloader 容量检查。
 
-分区布局、OTA 选择、Recovery Boot 按键和恢复协议不变。维护者必须
+分区布局、OTA 选择、Vibe Mode 的 AI 按键（GPIO7）和恢复协议不变。维护者必须
 在更新源码后重新生成并校验 `prebuilt/recovery` 的完整包，不能只替换其中一个
 镜像；普通应用更新仍使用宿主 workspace 的 `mosaico.py iris app-update`。
 
@@ -95,13 +107,13 @@ python mosaico.py iris logs
 
 - `iris list` 实时发现设备，并区分在线连接与离线缓存。
 - `recover` 初始化或恢复设备，默认使用仓库内经过评审的基础包；实时显示基础包
-  校验、设备检测、ESP-IDF 构建/烧录、镜像哈希校验、重连和 Recovery 就绪验证。
+  校验、设备检测、ESP-IDF 构建/烧录、镜像哈希校验、重连和 Vibe Mode 就绪验证。
 - `iris app-update` 构建并通过 ESP-Iris 安装普通应用；不会自动执行 `recover`。
-- `iris app-update` 默认实时显示构建、Recovery 切换、传输进度、重连和固件校验阶段；
+- `iris app-update` 默认实时显示构建、Vibe Mode 切换、传输进度、重连和固件校验阶段；
   `--json` 模式保持稳定机器输出，详细过程仍保存在运行日志中。
 - `iris logs` 先显示保留日志，再持续跟随；按 `Ctrl+C` 正常结束。
 
-Recovery 屏幕在 OTA 更新期间同时显示当前阶段、已传输/总容量、百分比与速率。
+Vibe Mode 屏幕在 OTA 更新期间同时显示当前阶段、已传输/总容量、百分比与速率。
 Bridge 使用 `Download`，USB/TCP 使用 `Receive`，NAND 使用 `Read`；速率单位
 为 KiB/s 或 MiB/s，按约一秒内写入后端接受的有效负载计算，不包含传输协议开销。
 首次采样、组件切换、重试及非传输阶段显示 `--`，停滞一个完整窗口后显示零速率。
@@ -110,7 +122,7 @@ System Update 的主进度按整包字节数加权，并另列当前组件进度
 总大小未知时百分比显示 `--`。传输达到 100% 后仍需完成校验与提交；普通 OTA
 成功后提示重启，失败页显示错误和最后传输进度，不能把传输完成当成应用健康。
 
-Recovery 在应用 OTA 完成全部校验并成功选择启动分区后，自行安排约一秒后的
+Vibe Mode 在应用 OTA 完成全部校验并成功选择启动分区后，自行安排约一秒后的
 重启，给完成响应留出发送时间。该定时器在开放 USB 服务之前预先创建，不依赖
 Gateway 补发重启、会话持续连接或 Iris 服务线程继续轮询；失败或取消的 OTA
 不会触发它。Gateway 仍负责重连并验证新应用的身份和健康状态。
@@ -123,7 +135,7 @@ UI 初始化等待上限为五秒；USB 打开 Download Ideas 的请求（含串
 
 ### Download Ideas 的后台配对码
 
-本次 Recovery 启动首次连接 Wi-Fi 并取得 IP 后，会后台注册一个 Bridge 会话。
+本次 Vibe Mode 启动首次连接 Wi-Fi 并取得 IP 后，会后台注册一个 Bridge 会话。
 首页保持可操作，后台只获取/缓存配对码，不轮询、上报 inventory 或执行下载更新。
 打开 Download Ideas 后复用有效码并启用下载轮询；返回首页暂停轮询并保留会话，
 再次进入继续使用同一码。明确点击 Cancel 或忘记 Wi-Fi 时会取消会话。
@@ -133,9 +145,11 @@ UI 初始化等待上限为五秒；USB 打开 Download Ideas 的请求（含串
 退避和服务端 Retry-After；失败后可退出页面再进入重试。自动预取每次启动只触发一次，
 忘记 Wi-Fi 后重新配置可再次触发。
 
-### Recovery 自更新（接受 ROM 兜底）
+<a id="recovery-自更新接受-rom-兜底"></a>
 
-维护者可从当前 Recovery 构建生成只含一个 `recovery` 组件的专用包：
+### Vibe Mode 自更新（接受 ROM 兜底）
+
+维护者可从当前 Vibe Mode 构建生成只含一个 `recovery` 组件的专用包：
 
 ```sh
 idf.py -C firmware/recovery build recovery-self-update-bundle
@@ -153,15 +167,17 @@ operation receipt，并延迟重启；Gateway 必须观察到相同 Device ID、
 `recovery` mode、目标 project/ELF SHA-256 和 HEALTHY 才报告成功。
 
 该路径不改 bootloader 或 Flash 布局，也不与 normal application/data 更新混包。
-它仍是单副本原地更新：从开始擦除到完成校验之间掉电，可能导致 Recovery 无法启动，
+它仍是单副本原地更新：从开始擦除到完成校验之间掉电，可能导致 Vibe Mode 无法启动，
 此时需按仓库规定进入 ROM download mode；开发期间运行
 `python mosaico.py recover --source current` 恢复本分支构建，发布后则使用已评审的
-Recovery 包。不具备自更新能力的设备必须走 ROM/`recover` 路径。
+Vibe Mode 包。不具备自更新能力的设备必须走 ROM/`recover` 路径。
 
-### Recovery HTTPS Bridge
+<a id="recovery-https-bridge"></a>
 
-Recovery 主动通过 HTTPS 连接 Bridge 服务，支持 `partitions`、`layout`、
-`factory`，并可在构建时启用 `system_update`。本仓库的 Recovery 源码构建默认连接
+### Vibe Mode HTTPS Bridge
+
+Vibe Mode 主动通过 HTTPS 连接 Bridge 服务，支持 `partitions`、`layout`、
+`factory`，并可在构建时启用 `system_update`。本仓库的 Vibe Mode 源码构建默认连接
 `https://iris-bridge.esp-claw.com`，并使用 `esp-mosaico` board ID。部署到其他
 环境时，通过 `CONFIG_IRIS_FACTORY_BRIDGE_SERVER_URL`（无末尾斜杠的 HTTPS
 Origin）和 `CONFIG_IRIS_FACTORY_BRIDGE_BOARD_ID` 覆盖这两个值；任一值为空都不注册。
@@ -204,12 +220,12 @@ Bridge 注册响应的 `control_protocol: 2` 启用独立授权：设备向 `/au
 或由应用自行初始化的分区；可变应用分区仍必须提供并校验镜像。省略的数据分区
 不会新增擦除或写入操作，但布局改变或其他镜像复用原地址时，旧数据不保证有效或
 保留。网页上传端应列出缺失的非 NVS 数据镜像，并由作者确认后继续。
-该行为需要 Recovery `0.1.2` 与配套 Bridge；旧设备固件仍可能拒绝更新。
-Recovery 的 TLS 动态分配使用 PSRAM，证书校验保持启用。批量下载期间临时关闭
+该行为需要 Vibe Mode `0.1.2` 与配套 Bridge；旧设备固件仍可能拒绝更新。
+Vibe Mode 的 TLS 动态分配使用 PSRAM，证书校验保持启用。批量下载期间临时关闭
 Wi-Fi 省电，退出或完成时恢复原模式；TCP 接收窗口为 65,535 字节，接收邮箱为
 48 项，避免小窗口限制公网 HTTPS 吞吐。实际速率仍包含同步 Flash 写入耗时。
 
-Recovery 的普通 `malloc` 优先使用 PSRAM，并保留 64 KiB 片内分配池。Wi-Fi/lwIP
+Vibe Mode 的普通 `malloc` 优先使用 PSRAM，并保留 64 KiB 片内分配池。Wi-Fi/lwIP
 可迁移的动态缓冲及 BSS、TLS、JSON、4 KiB 下载缓冲、旧布局模式的分区表缓冲、
 更新组件计划、UI/NAND 快照与 ESP-Iris 日志环均使用 PSRAM；mDNS 和只读取消查询
 任务也使用 PSRAM 栈。DMA 缓冲、RTOS 控制块及 Flash/NVS 写入任务栈仍留在片内，
@@ -220,8 +236,8 @@ Recovery 的普通 `malloc` 优先使用 PSRAM，并保留 64 KiB 片内分配�
 读取耗时及写入任务栈水位；总耗时还包括打开连接、擦除和校验，不能当作纯网络
 速率。任务内存观察接口保持启用，可结合日志区分网络等待、Flash 写入和内存压力。
 
-Recovery 支持 Gateway Web 工作台截图，以及 USB 会话下的交互输入。
-触摸输入使用 Gateway 的 `0x1001/1` pointer RPC，交由 GSP 输入处理按下、移动和抬起；TCP 会话不能通过此接口操作 Recovery 界面。
+Vibe Mode 支持 Gateway Web 工作台截图，以及 USB 会话下的交互输入。
+触摸输入使用 Gateway 的 `0x1001/1` pointer RPC，交由 GSP 输入处理按下、移动和抬起；TCP 会话不能通过此接口操作 Vibe Mode 界面。
 
 ```sh
 python mosaico.py iris test recovery-wifi --ssid SSID
@@ -236,13 +252,15 @@ USB 命令打开同一个页面并等待配对码；重复打开不换码。控�
 旧本地 HTTP server、URL 下载 RPC、`http-update-code` 和 `--manifest-url`
 已移除，USB bundle 和 NAND 更新继续使用共享写入后端。
 
-### Recovery 从 NAND LittleFS 读取系统更新
+<a id="recovery-从-nand-littlefs-读取系统更新"></a>
+
+### Vibe Mode 从 NAND LittleFS 读取系统更新
 
 ESP-Mosaico 的板载 NAND 与 `esp-mosaico-claw` 一致，使用 SPI NAND、wear-leveling
-block device 和 LittleFS，挂载点为 `/nand`。Recovery 读写挂载已有文件系统，并将
+block device 和 LittleFS，挂载点为 `/nand`。Vibe Mode 读写挂载已有文件系统，并将
 整个挂载点注册为 ESP-Iris 文件卷 `nand`；可通过 Gateway 列目录、读取、写入、删除、
 建目录和重命名。写入先落到同目录临时文件，校验 SHA-256 后再原子替换目标文件。
-挂载失败时不会格式化 NAND，也不会阻止 Recovery USB 维护服务启动。将解包后的
+挂载失败时不会格式化 NAND，也不会阻止 Vibe Mode USB 维护服务启动。将解包后的
 bundle 放到同一目录，例如：
 
 ```text
@@ -252,7 +270,7 @@ bundle 放到同一目录，例如：
 /nand/system-update/partition-table.bin
 ```
 
-Recovery 首页底部提供 **NAND update**：进入后固件会异步扫描以下两种
+Vibe Mode 首页底部提供 **NAND update**：进入后固件会异步扫描以下两种
 catalog 布局，最多列出 8 个完整 bundle；点击条目可先核对 release、组件数、总
 容量和 manifest 路径，再确认更新。
 
@@ -271,8 +289,8 @@ python mosaico.py iris system-update --device-id DEVICE_ID \
   --manifest-path /nand/system-update/manifest.json
 ```
 
-Recovery 逐块读取组件并复用与 USB、Bridge 相同的 manifest、SHA-256、镜像及
-分区布局校验。v1 manifest 必须将 partition table 放在首个组件；Recovery 验证
+Vibe Mode 逐块读取组件并复用与 USB、Bridge 相同的 manifest、SHA-256、镜像及
+分区布局校验。v1 manifest 必须将 partition table 放在首个组件；Vibe Mode 验证
 当前表和目标表中的五个不可变分区后，按照目标表流式写入 application 和 data。
 bootloader 暂存到 PSRAM，全部验证完成后统一提交。三种来源共用一个 Flash writer owner，不能
 并行执行。可通过 `CONFIG_IRIS_FACTORY_NAND_SYSTEM_UPDATE_AUTO_START=y` 配置固定
@@ -289,7 +307,7 @@ bootloader 暂存到 PSRAM，全部验证完成后统一提交。三种来源共
 | `otadata` | `0x9000` | 8 KiB | ESP-IDF OTA 选择与回滚状态 |
 | `phy_init` | `0xb000` | 4 KiB | PHY 初始化数据 |
 | `sysmeta` | `0xc000` | 80 KiB | 系统专用 NVS |
-| `factory` | `0x20000` | 1.75 MiB | 保留 Recovery |
+| `factory` | `0x20000` | 1.75 MiB | 保留 Vibe Mode |
 | `coredump` | `0x1e0000` | 128 KiB | 崩溃证据预留空间 |
 | `nvs` | `0x200000` | 64 KiB | 应用 NVS |
 | `ota_0` | `0x210000` | 13.94 MiB | 普通应用；后续布局可从尾部缩减 |
@@ -298,7 +316,7 @@ bootloader 暂存到 PSRAM，全部验证完成后统一提交。三种来源共
 `nvs` 和普通应用从 `0x200000` 之后开始。
 
 `sysmeta` 中的 `esp_iris`、`wifi`、`iris_ota_demo` 和 `update` namespace
-分别保存 TCP pairing token、Factory Wi-Fi、Recovery OTA 状态和
+分别保存 TCP pairing token、Factory Wi-Fi、Vibe Mode OTA 状态和
 最后一次系统更新结果。System Update v1 只要求 `otadata`、`phy_init`、
 `sysmeta`、`factory` 和 `coredump` 的名称、类型、子类型、offset、size 与 flags
 严格符合上表；`nvs`、`ota_0` 以及其他应用数据分区可由目标表调整。
@@ -308,16 +326,16 @@ bootloader 暂存到 PSRAM，全部验证完成后统一提交。三种来源共
 
 ## 工程维护者
 
-普通用户不应直接调用底层构建或写入命令。Recovery 基础包和内部写入 target
+普通用户不应直接调用底层构建或写入命令。Vibe Mode 基础包和内部写入 target
 由 `mosaico.py recover` 管理；普通应用始终由 `mosaico.py iris app-update` 通过
 ESP-Iris 安装。评审包包含完整哈希与布局约束，只有通过构建校验和真机验收后
 才应发布。
 
-Recovery 工程直接使用 workspace 中的 `ESP-Iris`。BSP 依赖由组件
+Vibe Mode 工程直接使用 workspace 中的 `ESP-Iris`。BSP 依赖由组件
 manifest 指向 `https://github.com/esp-mosaico/esp-mosaico-bsp`；集成到
 ESP-Mosaico workspace 时，`mosaico.py recover` 会根据宿主 workspace 的
 `.mosaico.json` 注入本地 `esp-mosaico-bsp`，并复用 workspace 中的 ESP-Iris，
-保证 Recovery、设备工具与普通应用使用同一 Iris 版本。
+保证 Vibe Mode、设备工具与普通应用使用同一 Iris 版本。
 
 
 ## Vibe Mode 界面与构建
@@ -332,11 +350,11 @@ ESP-Mosaico workspace 时，`mosaico.py recover` 会根据宿主 workspace 的
 使用 Component Registry 的 **ESP-GSP 1.4.0**，BSP 开启硬件显示但关闭
 `CONFIG_BSP_DISPLAY_LVGL_ENABLE`。该 BSP 选项默认开启，保留现有 LVGL
 应用行为。构建必须使用包含该选项的 workspace BSP；旧版 BSP 不支持此模式。
-GSP 在调用方同步创建、校验 UI，Recovery 将
+GSP 在调用方同步创建、校验 UI，Vibe Mode 将
 `CONFIG_ESP_MAIN_TASK_STACK_SIZE` 设为 20480；仅增加渲染任务栈不能覆盖该阶段。
 启动日志记录 UI 初始化后的主任务栈余量，便于检查后续资源改动。
 
-场景、字形与键盘图标全部嵌入 Recovery，不依赖应用资源分区。
+场景、字形与键盘图标全部嵌入 Vibe Mode，不依赖应用资源分区。
 GSPB 在构建时无损 Deflate 压缩，启动时使用 ROM 解压器还原到 PSRAM；
 GSP 继续执行原始 bundle 校验。界面仅使用预烘焙字形，不启用运行时字体；
 通过 `CONFIG_ESP_GSP_ENABLE_JPEG=n` 排除 JPEG 解码器，
@@ -352,7 +370,7 @@ GSP 继续执行原始 bundle 校验。界面仅使用预烘焙字形，不启�
 python3 tools/gsp-sim/run.py submodule/esp-mosaico-utils/esp-mosaico-recovery/firmware/recovery/ui/main.json --headless
 ```
 
-运行 Recovery 主机测试前，设置 `GSPC_EXECUTABLE`（0.5.0）和
+运行 Vibe Mode 主机测试前，设置 `GSPC_EXECUTABLE`（0.5.0）和
 `GSP_SIM_EXECUTABLE`（1.4.0），安装 `tests/requirements-ui.txt` 中的主机依赖。
 原生模拟器测试使用真实键盘、列表和回调，
 并检查 Wi-Fi 列表的截图像素，覆盖字形完整性、卡片间距和反复导航。
@@ -366,6 +384,6 @@ python3 tools/gsp-sim/run.py submodule/esp-mosaico-utils/esp-mosaico-recovery/fi
 M 级纠错、四模块白边和 5 倍整数缩放，生成 185×185 PNG；普通构建直接使用
 该文件，经现有 GSPB 与 Zopfli 压缩链路嵌入固件。
 
-固定 Recovery 槽仍为 `0x20000` / `0x1c0000`。须核对实际构建目录中的
+固定 Vibe Mode 槽仍为 `0x20000` / `0x1c0000`。须核对实际构建目录中的
 `factory.bin` 大小；不能仅凭 IDF 构建成功判断镜像适合较小的 factory 槽。
 预编译包只在真机验收后通过 `update-recovery-prebuilt` 整体更新。

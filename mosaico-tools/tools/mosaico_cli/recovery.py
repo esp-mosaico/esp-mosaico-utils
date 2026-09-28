@@ -1,4 +1,4 @@
-"""Validate Recovery bundles and implement internal provisioning helpers."""
+"""Validate retained Vibe Mode firmware and select ROM provisioning endpoints."""
 
 from __future__ import annotations
 
@@ -205,7 +205,7 @@ def _sha256(path: Path) -> str:
 
 
 def recovery_defaults_fingerprint(project: Path) -> str:
-    """Fingerprint the authoritative Recovery sdkconfig default inputs."""
+    """Fingerprint the authoritative Vibe Mode sdkconfig default inputs."""
     digest = hashlib.sha256()
     for name in RECOVERY_DEFAULT_FILES:
         path = project / name
@@ -213,7 +213,7 @@ def recovery_defaults_fingerprint(project: Path) -> str:
             content = path.read_bytes()
         except OSError as error:
             raise EnvironmentError(
-                f"Recovery configuration defaults are unavailable: {path}"
+                f"Vibe Mode configuration defaults are unavailable: {path}"
             ) from error
         digest.update(name.encode("utf-8"))
         digest.update(b"\0")
@@ -250,24 +250,24 @@ def load_bundle(directory: Path, expected_target: str) -> dict[str, Any]:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     except FileNotFoundError as error:
         raise EnvironmentError(
-            f"The reviewed Recovery bundle does not exist: {manifest_path}"
+            f"The reviewed Vibe Mode bundle does not exist: {manifest_path}"
         ) from error
     except (OSError, json.JSONDecodeError) as error:
-        raise EnvironmentError(f"Invalid Recovery manifest: {manifest_path}") from error
+        raise EnvironmentError(f"Invalid Vibe Mode manifest: {manifest_path}") from error
     if manifest.get("schema_version") != 2:
         raise EnvironmentError(
-            "The Recovery bundle schema is obsolete; publish a complete reviewed bundle again."
+            "The Vibe Mode bundle schema is obsolete; publish a complete reviewed bundle again."
         )
     if manifest.get("target") != expected_target or manifest.get("profile") != "recovery":
-        raise EnvironmentError("The Recovery bundle is incompatible with the target model.")
+        raise EnvironmentError("The Vibe Mode bundle is incompatible with the target model.")
     images = manifest.get("images")
     if not isinstance(images, dict):
-        raise EnvironmentError("The Recovery manifest is missing 'images'.")
+        raise EnvironmentError("The Vibe Mode manifest is missing 'images'.")
     seen_offsets: set[int] = set()
     for name in REQUIRED_IMAGES:
         item = images.get(name)
         if not isinstance(item, dict):
-            raise EnvironmentError(f"The Recovery manifest is missing '{name}'.")
+            raise EnvironmentError(f"The Vibe Mode manifest is missing '{name}'.")
         try:
             path = directory / item["file"]
             offset = int(str(item["offset"]), 0)
@@ -275,17 +275,17 @@ def load_bundle(directory: Path, expected_target: str) -> dict[str, Any]:
             expected_hash = str(item["sha256"])
         except (KeyError, TypeError, ValueError) as error:
             raise EnvironmentError(
-                f"The '{name}' entry in the Recovery manifest is invalid."
+                f"The '{name}' entry in the Vibe Mode manifest is invalid."
             ) from error
         if path.parent.resolve() != directory.resolve() or not path.is_file():
-            raise EnvironmentError(f"A Recovery bundle file does not exist: {path}")
+            raise EnvironmentError(f"A Vibe Mode bundle file does not exist: {path}")
         if offset in seen_offsets:
             raise EnvironmentError(
-                f"The Recovery bundle contains a duplicate offset: 0x{offset:x}"
+                f"The Vibe Mode bundle contains a duplicate offset: 0x{offset:x}"
             )
         seen_offsets.add(offset)
         if path.stat().st_size != size or _sha256(path) != expected_hash:
-            raise EnvironmentError(f"Recovery bundle verification failed: {path.name}")
+            raise EnvironmentError(f"Vibe Mode bundle verification failed: {path.name}")
     return manifest
 
 
@@ -368,6 +368,7 @@ def provisioning_candidate(
     idf_path: Path | None = None,
     mac_reader: Callable[[str], str] | None = None,
 ) -> str:
+    """Select a ROM/programming endpoint, not a Vibe Mode Iris connection."""
     python, script = locate_iris_tools(context.workspace)
     try:
         result = context.run([python, script, "doctor", "--json"], timeout=15)
@@ -422,11 +423,11 @@ def provisioning_candidate(
                 for port, value in sorted(discovered.items())
             )
             raise SelectionError(
-                "Multiple registered recovery interfaces were detected; "
+                "Multiple registered ROM Download Mode interfaces were detected; "
                 f"select one with --hardware-mac. Detected: {available}."
             )
         raise SelectionError(
-            "Multiple registered recovery interfaces were detected; specify "
+            "Multiple registered ROM Download Mode interfaces were detected; specify "
             "the target with --hardware-mac."
         )
 
@@ -438,9 +439,10 @@ def provisioning_candidate(
     ]
     if not candidates:
         raise DeviceError(
-            "No ESP-Mosaico device in recovery configuration mode was detected. "
+            "No ESP-Mosaico ROM Download Mode interface was detected. "
             "Power off the device, hold the Boot button to the left of the USB-C port, "
-            "power it on, release Boot after it enters recovery mode, and try again."
+            "power it on, release Boot after it enters ROM Download Mode, and retry recover. "
+            "Vibe Mode and ESP-Iris do not run in ROM Download Mode."
         )
     if len(candidates) != 1:
         if hardware_mac and idf_path is not None:
@@ -543,10 +545,10 @@ def wait_recovery_ready(
         except DeviceError:
             pass
         if time.monotonic() - last_wait_notice >= 5:
-            context.status("validation: still waiting for Recovery to reconnect")
+            context.status("validation: still waiting for Vibe Mode to reconnect")
             last_wait_notice = time.monotonic()
         time.sleep(0.5)
     raise OperationError(
-        "Recovery was written, but the Recovery service could not be verified as ready.",
+        "Vibe Mode was written, but the Vibe Mode service could not be verified as ready.",
         details={"last_status": last_status, "log": str(context.log_path)},
     )

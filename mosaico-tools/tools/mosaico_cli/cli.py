@@ -191,7 +191,7 @@ def build_parser() -> argparse.ArgumentParser:
             account_child.add_argument("--open-browser", action="store_true", help="Open the verification page in the system browser")
     iris_parser = commands.add_parser("iris", help="Project Gateway and ESP-Iris device operations")
     iris_commands = iris_parser.add_subparsers(dest="iris_action", required=True)
-    test_parser = iris_commands.add_parser("test", help="Test Recovery transitions, Wi-Fi and Bridge pairing")
+    test_parser = iris_commands.add_parser("test", help="Test Vibe Mode transitions, Wi-Fi and Bridge pairing")
     test_commands = test_parser.add_subparsers(dest="test_action", required=True)
     leaves = []
 
@@ -259,7 +259,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     system_update_parser = command(
         "system-update",
-        help="Install application layout/resources together (preferred for new projects) or a Recovery bundle",
+        help="Install application layout/resources together (preferred for new projects) or a Vibe Mode bundle",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     system_update_source = system_update_parser.add_mutually_exclusive_group()
@@ -297,7 +297,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     recover_parser = command(
         "recover",
-        help="Restore the device base firmware",
+        help="Restore base firmware through ROM Download Mode and verify Vibe Mode",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     recover_parser.add_argument(
@@ -315,14 +315,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     recover_identity.add_argument(
         "--hardware-mac", type=hardware_mac,
-        help="Factory eFuse Base MAC used to select a managed or ROM-mode device",
+        help="Factory eFuse Base MAC used to select a managed device or a device in ROM Download Mode",
     )
     recover_parser.add_argument(
         "--recovery-port", help="Explicit independent USB Serial/JTAG 303A:1001 port; requires a live managed device"
     )
     recover_parser.add_argument(
         "--timeout", type=positive_timeout, default=180.0,
-        help="Recovery and validation timeout in seconds",
+        help="Base firmware recovery and validation timeout in seconds",
     )
     recover_parser.add_argument(
         "--dry-run", action="store_true", help="Check only; do not build or write firmware"
@@ -330,7 +330,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     enter_recovery_parser = command(
         "enter-recovery",
-        help="Enter retained Recovery without installing firmware",
+        help="Enter the existing Vibe Mode without installing firmware",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     enter_recovery_parser.add_argument(
@@ -341,12 +341,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     enter_recovery_parser.add_argument(
         "--timeout", type=positive_timeout, default=30.0,
-        help="Recovery transition timeout in seconds",
+        help="Vibe Mode transition timeout in seconds",
     )
 
     recovery_wifi_parser = command(
         "recovery-wifi",
-        help="Configure Recovery Wi-Fi through the active USB session",
+        help="Configure Vibe Mode Wi-Fi through the active USB session",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     recovery_wifi_parser.add_argument(
@@ -365,7 +365,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     update_code_parser = command(
         "bridge-code",
-        help="Open Recovery's Bridge download page and wait for its pairing code over USB",
+        help="Open Vibe Mode's Bridge download page and wait for its pairing code over USB",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     update_code_parser.add_argument(

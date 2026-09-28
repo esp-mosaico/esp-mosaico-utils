@@ -358,11 +358,11 @@ def enter_recovery_and_wait(
     previous_boot_id: str | int | None,
     timeout: float,
 ) -> dict[str, Any]:
-    """Enter retained Recovery and wait for the same device to reconnect."""
+    """Enter Vibe Mode and wait for the same device to reconnect."""
 
     health = gateway_json(context, session, "health")
     if "recovery-transition/v1" not in health.get("capabilities", []):
-        raise EnvironmentError("Gateway does not support the Recovery transition contract; update its host tools first")
+        raise EnvironmentError("Gateway does not support the Vibe Mode transition contract; update its host tools first")
     wait_timeout = min(max(timeout, 1), 30)
     value = gateway_json(context, session, "factory", device_id, "--wait",
                          "--wait-timeout", str(wait_timeout), timeout=wait_timeout + 10)
@@ -370,7 +370,7 @@ def enter_recovery_and_wait(
     boot_id = status.get("boot_id")
     if (status.get("device_id") != device_id or status.get("firmware_mode") != "recovery"
             or boot_id in (None, "") or str(boot_id) == str(previous_boot_id)):
-        raise OperationError("Gateway did not confirm the selected device's Recovery transition")
+        raise OperationError("Gateway did not confirm the selected device's Vibe Mode transition")
     return status
 
 
@@ -599,7 +599,7 @@ def run_ota(
     health = gateway_json(context, session, "health")
     if preconditions:
         if "recovery-preconditions/v1" not in health.get("capabilities", []):
-            raise EnvironmentError("Gateway cannot enforce Recovery preconditions; update its host tools before installing")
+            raise EnvironmentError("Gateway cannot enforce Vibe Mode preconditions; update its host tools before installing")
     require_update_acceptance(health)
     started = time.monotonic()
     try:

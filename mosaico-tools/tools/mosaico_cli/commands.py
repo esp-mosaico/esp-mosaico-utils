@@ -86,11 +86,11 @@ def _device_status(value: Any) -> dict[str, Any]:
 def _raw_rpc_payload(value: Any) -> bytes:
     encoded = value.get("payload_base64") if isinstance(value, dict) else None
     if not isinstance(encoded, str):
-        raise DeviceError("ESP-Iris returned an invalid Recovery control response.")
+        raise DeviceError("ESP-Iris returned an invalid Vibe Mode control response.")
     try:
         return base64.b64decode(encoded, validate=True)
     except ValueError as error:
-        raise DeviceError("ESP-Iris returned malformed Recovery control data.") from error
+        raise DeviceError("ESP-Iris returned malformed Vibe Mode control data.") from error
 
 
 def _recovery_control_device(arguments: Any, context: RunContext) -> tuple[Any, str]:
@@ -102,8 +102,9 @@ def _recovery_control_device(arguments: Any, context: RunContext) -> tuple[Any, 
     status = _device_status(gateway_json(context, session, "status", device_id))
     if (status.get("firmware_mode") or device.get("firmware_mode")) != "recovery":
         raise RecoveryRequiredError(
-            "Recovery control requires a live Recovery service. "
-            "Run 'python mosaico.py recover' first."
+            "Vibe Mode control requires a live Vibe Mode service. "
+            "From a reachable normal application, run 'python mosaico.py iris test enter-recovery'. "
+            "If the mode is unknown, check device ownership and connection first."
         )
     return session, device_id
 
@@ -158,7 +159,7 @@ def configure_recovery_network(arguments: Any, context: RunContext) -> dict[str,
         try:
             latest_value = json.loads(_raw_rpc_payload(value).decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise DeviceError("Recovery returned invalid network status JSON.") from error
+            raise DeviceError("Vibe Mode returned invalid network status JSON.") from error
         latest = latest_value if isinstance(latest_value, dict) else {}
         if latest.get("connected") is True:
             context.status("recovery: Wi-Fi connected")
@@ -172,7 +173,7 @@ def configure_recovery_network(arguments: Any, context: RunContext) -> dict[str,
             }
         time.sleep(0.5)
     raise OperationError(
-        "Recovery did not connect to Wi-Fi before the timeout.",
+        "Vibe Mode did not connect to Wi-Fi before the timeout.",
         details={"device_id": device_id, "network": latest},
     )
 
@@ -205,18 +206,18 @@ def read_bridge_code(arguments: Any, context: RunContext) -> dict[str, Any]:
         try:
             snapshot = json.loads(_raw_rpc_payload(value).decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise DeviceError("Recovery returned invalid Bridge status JSON.") from error
+            raise DeviceError("Vibe Mode returned invalid Bridge status JSON.") from error
         if not isinstance(snapshot, dict):
-            raise DeviceError("Recovery returned invalid Bridge status.")
+            raise DeviceError("Vibe Mode returned invalid Bridge status.")
         state = snapshot.get("state")
         if state == "NOT_CONFIGURED":
-            raise DeviceError("Recovery Bridge URL or board ID is not configured; rebuild with both settings.")
+            raise DeviceError("Vibe Mode Bridge URL or board ID is not configured; rebuild with both settings.")
         code = snapshot.get("code")
         if state == "PAIRING" and code:
             if not isinstance(code, str):
-                raise DeviceError("Recovery returned an invalid Bridge pairing code.")
+                raise DeviceError("Vibe Mode returned an invalid Bridge pairing code.")
             if not isinstance(snapshot.get("server_url"), str) or not snapshot["server_url"].startswith("https://"):
-                raise DeviceError("Recovery returned an invalid Bridge server URL.")
+                raise DeviceError("Vibe Mode returned an invalid Bridge server URL.")
             return {
                 "command": "bridge-code", "status": "succeeded",
                 "device_id": device_id, "bridge": snapshot,
@@ -453,7 +454,7 @@ def inspect_crash(arguments: Any, context: RunContext) -> dict[str, Any]:
 
 
 def enter_recovery(arguments: Any, context: RunContext) -> dict[str, Any]:
-    """Enter retained Recovery without starting an installation."""
+    """Enter the existing Vibe Mode without installing firmware."""
 
     session = ensure_gateway(context, arguments.gateway_profile)
     device = select_device(connected_devices(context, session), arguments.device_id)
@@ -472,9 +473,9 @@ def enter_recovery(arguments: Any, context: RunContext) -> dict[str, Any]:
     else:
         if mode != "normal":
             raise DeviceError(
-                "The device firmware mode is unknown; refusing the Recovery transition."
+                "The device firmware mode is unknown; refusing the Vibe Mode transition."
             )
-        context.status("recovery: entering retained Recovery")
+        context.status("recovery: entering Vibe Mode")
         recovery = enter_recovery_and_wait(
             context,
             session,
@@ -505,7 +506,7 @@ def enter_recovery(arguments: Any, context: RunContext) -> dict[str, Any]:
 
 
 def start_system_update(arguments: Any, context: RunContext) -> dict[str, Any]:
-    """Build or select a full-system bundle and apply it through Recovery."""
+    """Build or select a full-system bundle and apply it through Vibe Mode."""
 
     manifest_path = getattr(arguments, "manifest_path", None)
     bundle_argument = getattr(arguments, "bundle", None)
@@ -583,8 +584,9 @@ def start_system_update(arguments: Any, context: RunContext) -> dict[str, Any]:
     )
     if external_source and firmware_mode != "recovery":
         raise RecoveryRequiredError(
-            "External System Update requires a live Recovery service. "
-            "Run 'python mosaico.py recover' first."
+            "External System Update requires a live Vibe Mode service. "
+            "From a reachable normal application, run 'python mosaico.py iris test enter-recovery'. "
+            "If the mode is unknown, check device ownership and connection first."
         )
 
     if bundle is not None:
@@ -616,7 +618,7 @@ def start_system_update(arguments: Any, context: RunContext) -> dict[str, Any]:
     payload = arguments.manifest_path
     source = "nand"
     action = "NAND LittleFS read"
-    context.status(f"system update: requesting Recovery {action}")
+    context.status(f"system update: requesting Vibe Mode {action}")
     response = gateway_json(
         context,
         session,
@@ -631,7 +633,7 @@ def start_system_update(arguments: Any, context: RunContext) -> dict[str, Any]:
         timeout=10,
         sensitive_output=True,
     )
-    context.status("system update: accepted by Recovery; update is running")
+    context.status("system update: accepted by Vibe Mode; update is running")
     return {
         "command": "system-update",
         "status": "accepted",
@@ -693,7 +695,7 @@ def install(arguments: Any, context: RunContext) -> dict[str, Any]:
     )
     if not recovery_verified:
         raise RecoveryRequiredError(
-            "The device has not completed Recovery initialization or verification. "
+            "The device has not completed Vibe Mode initialization or verification. "
             "Run 'python mosaico.py recover' first. "
             f"Verification details: {json.dumps(verification, ensure_ascii=False)}"
         )
@@ -736,7 +738,7 @@ def install(arguments: Any, context: RunContext) -> dict[str, Any]:
         try:
             record_recovery_verification(device_id, recovery_version, evidence.get("boot_id"))
         except OSError as error:
-            context.note(f"warning: could not refresh Recovery verification: {error}")
+            context.note(f"warning: could not refresh Vibe Mode verification: {error}")
     context.status("validation: installed application is connected and healthy")
     return {
         "command": "install",
@@ -757,10 +759,11 @@ def install(arguments: Any, context: RunContext) -> dict[str, Any]:
 
 
 def recover(arguments: Any, context: RunContext) -> dict[str, Any]:
+    """Write base firmware through ROM, then verify Vibe Mode; not a mode switch."""
     workspace = context.workspace
     if getattr(arguments, "gateway_profile", None):
         raise DeviceError(
-            "Remote Recovery is not supported; run recovery on the Gateway host."
+            "Base firmware recovery requires the local Gateway; run recover on its host."
         )
     model = select_model(workspace, arguments.model)
     context.status(
@@ -780,10 +783,10 @@ def recover(arguments: Any, context: RunContext) -> dict[str, Any]:
         )
     elif not arguments.dry_run:
         print(
-            "Warning: building an unreviewed Recovery candidate bundle from the current source.",
+            "Warning: building an unreviewed Vibe Mode candidate bundle from the current source.",
             file=sys.stderr,
         )
-        context.status("bundle: current-source Recovery candidate selected")
+        context.status("bundle: current-source Vibe Mode candidate selected")
 
     prior_device_id: str | None = arguments.device_id
     selected_hardware_mac: str | None = getattr(arguments, "hardware_mac", None)
@@ -838,7 +841,7 @@ def recover(arguments: Any, context: RunContext) -> dict[str, Any]:
         )
     else:
         context.status(
-            "gateway: managed device unavailable; checking the recovery interface"
+            "gateway: managed device unavailable; checking the ROM Download Mode interface"
         )
 
     independent_port = getattr(arguments, "recovery_port", None)
@@ -855,7 +858,7 @@ def recover(arguments: Any, context: RunContext) -> dict[str, Any]:
 
     unowned_port: str | None = None
     if prior_device is None:
-        context.status("device: detecting an unowned ROM configuration interface")
+        context.status("device: detecting an unowned ROM Download Mode interface")
 
         def probe_unowned_rom_mac(port: str) -> str:
             if prior_session is None:
@@ -876,13 +879,13 @@ def recover(arguments: Any, context: RunContext) -> dict[str, Any]:
         )
         if selected_hardware_mac:
             context.status(
-                f"device: recovery interface ready at {unowned_port} "
+                f"device: ROM Download Mode interface ready at {unowned_port} "
                 f"hardware_mac={selected_hardware_mac}"
             )
         elif arguments.source == "current":
             selected_hardware_mac = probe_unowned_rom_mac(unowned_port)
             context.status(
-                f"device: recovery interface ready at {unowned_port} "
+                f"device: ROM Download Mode interface ready at {unowned_port} "
                 f"hardware_mac={selected_hardware_mac}"
             )
 
@@ -911,9 +914,9 @@ def recover(arguments: Any, context: RunContext) -> dict[str, Any]:
         return plan
 
     if prior_session is None:
-        raise DeviceError("The local Gateway is required to verify Recovery.")
+        raise DeviceError("The local Gateway is required to verify Vibe Mode.")
 
-    context.status("bundle: preparing all Recovery artifacts before acquiring the device")
+    context.status("bundle: preparing all Vibe Mode artifacts before acquiring the device")
     required_recovery_components = (
         workspace.bsp_path / "components" / "esp-mosaico-bsp",
         workspace.esp_iris_path / "components" / "esp_iris",
@@ -929,7 +932,7 @@ def recover(arguments: Any, context: RunContext) -> dict[str, Any]:
     ]
     if missing_components:
         raise EnvironmentError(
-            "Required Recovery components are unavailable.",
+            "Required Vibe Mode components are unavailable.",
             details={"missing": missing_components},
         )
     recovery_definitions = {
@@ -945,7 +948,7 @@ def recover(arguments: Any, context: RunContext) -> dict[str, Any]:
             build_dir, defaults_fingerprint
         ):
             context.status(
-                "bundle: Recovery defaults changed; clearing the stale generated sdkconfig"
+                "bundle: Vibe Mode defaults changed; clearing the stale generated sdkconfig"
             )
             run_idf_target(
                 context,
@@ -976,7 +979,7 @@ def recover(arguments: Any, context: RunContext) -> dict[str, Any]:
     commands = []
     if independent_identity is not None:
         if serial_jtag_candidate(independent_identity["path"]) != independent_identity:
-            raise DeviceError("USB Serial/JTAG identity changed during Recovery preparation.")
+            raise DeviceError("USB Serial/JTAG identity changed during Vibe Mode preparation.")
     if selected_hardware_mac and (unowned_port is not None or independent_identity is not None):
         probe = rom_identity_command(model, "{port}", idf_path)
         probe["expect"] = {"pattern": r"(?i)MAC:\s*([0-9a-f]{2}(?::[0-9a-f]{2}){5})",
@@ -987,7 +990,7 @@ def recover(arguments: Any, context: RunContext) -> dict[str, Any]:
         target="mosaico-recover-flash", definitions=recovery_definitions,
         port="{port}", timeout=arguments.timeout,
     ))
-    context.status("gateway: running ROM write and Recovery verification as one operation")
+    context.status("gateway: running ROM write and Vibe Mode verification as one operation")
     completed = run_host_operation(context, prior_session, {
         "action": "host.recovery", "device_id": prior_device_id if prior_device else None,
         "endpoint": unowned_port,
@@ -1001,21 +1004,21 @@ def recover(arguments: Any, context: RunContext) -> dict[str, Any]:
             or status.get("app_version") != expected_version
             or "ota" not in status.get("capability_names", [])
             or (selected_hardware_mac and status.get("hardware_mac") != selected_hardware_mac)):
-        raise OperationError("ROM operation did not verify the expected Recovery identity and new boot.")
+        raise OperationError("ROM operation did not verify the expected Vibe Mode identity and new boot.")
 
     verified_device_id = str(status.get("device_id") or prior_device_id or "")
     if prior_device_id and verified_device_id != prior_device_id:
-        raise OperationError("Recovery returned a different Device ID than the selected target.")
+        raise OperationError("Vibe Mode returned a different Device ID than the selected target.")
     if not verified_device_id:
         raise OperationError(
-            "Recovery is ready, but the Device ID could not be confirmed."
+            "Vibe Mode is ready, but the Device ID could not be confirmed."
         )
     recovery_version = expected_version or str(status.get("app_version") or "current-source")
     record_recovery_verification(
         verified_device_id, recovery_version, status.get("boot_id")
     )
     context.status(
-        f"validation: Recovery {recovery_version} ready on {verified_device_id} "
+        f"validation: Vibe Mode {recovery_version} ready on {verified_device_id} "
         f"boot_id={status.get('boot_id', 'unknown')}"
     )
     return {

@@ -25,6 +25,8 @@ ESP_LOG_ATTR_TAG(TAG, "boot");
 static int select_partition_number(bootloader_state_t *bs);
 static int selected_boot_partition(const bootloader_state_t *bs);
 
+/* The AI button selects Vibe Mode after ROM boots this loader from Flash.
+ * The separate Boot button selects ROM Download Mode before this code runs. */
 static bool factory_recovery_requested(void)
 {
     const uint32_t pin = CONFIG_FACTORY_RECOVERY_BOOT_GPIO;
