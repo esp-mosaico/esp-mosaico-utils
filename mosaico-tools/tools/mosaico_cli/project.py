@@ -57,7 +57,7 @@ def resolve_project(
             raise SelectionError(f"Not a valid ESP-IDF project: {path}")
         if path in recovery_projects:
             raise SelectionError(
-                "The recovery-owned Recovery project cannot "
+                "The retained Vibe Mode firmware project cannot "
                 "be installed as an application."
             )
         return user_path(path)
@@ -65,13 +65,13 @@ def resolve_project(
     current = cwd.resolve()
     if current in recovery_projects:
         raise SelectionError(
-            "The recovery-owned Recovery project cannot be used as an application; "
+            "The retained Vibe Mode firmware project cannot be used as an application; "
             "select an application project with --project PATH."
         )
     while current == repository or repository in current.parents:
         if current != repository and current in recovery_projects:
             raise SelectionError(
-                "The recovery-owned Recovery project cannot be used as an application; "
+                "The retained Vibe Mode firmware project cannot be used as an application; "
                 "select an application project with --project PATH."
             )
         if current != repository and _is_idf_project(current):
@@ -85,7 +85,7 @@ def resolve_project(
     ):
         if workspace.default_project in recovery_projects:
             raise SelectionError(
-                "The configured default project is a Recovery-only project."
+                "The configured default project is a Vibe Mode firmware project."
             )
         return user_path(workspace.default_project)
 
@@ -99,7 +99,7 @@ def resolve_project(
     if not candidates:
         raise SelectionError(
             "No application project was found. Run `python mosaico.py project init my_app` first, or specify --project PATH; "
-            "the recovery-owned Recovery project is never selected automatically."
+            "the retained Vibe Mode firmware project is never selected automatically."
         )
     raise SelectionError(
         "Multiple application projects were found; specify one with --project PATH.",

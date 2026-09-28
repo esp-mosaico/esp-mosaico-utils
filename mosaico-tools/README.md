@@ -5,6 +5,11 @@ operations. A firmware workspace pins the containing `esp-mosaico-utils`
 repository; the CLI package does not need to be installed into the user's
 Python environment.
 
+The user-facing retained firmware is **Vibe Mode** (`firmware_mode=recovery`).
+**ROM Download Mode** runs the chip download program without ESP-Iris.
+`iris test enter-recovery` enters Vibe Mode; `recover` writes base firmware.
+See the [firmware guide](../esp-mosaico-recovery/firmware/recovery/README.md).
+
 Local Gateways are shared project services. Device commands start or reuse one
 and retain a renewable client lease for their duration. Every
 `python mosaico.py iris run --project <application>` retains an independent
@@ -83,14 +88,14 @@ table. Remote profiles keep their externally managed lifetimes.
 `iris app-update` installs code-only changes with an identical device partition table.
 Prefer `iris system-update` for a new application, layout change, or changed resources. It
 applies the images selected by a validated update bundle, which can also target
-Recovery alone. `recover` restores the base firmware, including when ESP-Iris
-is unreachable. `iris test` groups individual Recovery test operations:
+Vibe Mode alone. `recover` restores the base firmware, including when ESP-Iris
+is unreachable. `iris test` groups individual Vibe Mode test operations:
 
 | Command | Preconditions and result |
 | --- | --- |
-| `enter-recovery` | A reachable application restarts into retained Recovery; verify the same Device ID and a new Boot ID. If already in Recovery, return its current status. |
-| `recovery-wifi` | Requires Recovery over USB; submit the SSID and password and wait for Wi-Fi connectivity. |
-| `bridge-code` | Requires Recovery over USB, configured Bridge service and network connectivity; open the device's download page and return the pairing code, validity and website URL. |
+| `enter-recovery` | A reachable application restarts into Vibe Mode; verify the same Device ID and a new Boot ID. If already in Vibe Mode, return its current status. |
+| `recovery-wifi` | Requires Vibe Mode over USB; submit the SSID and password and wait for Wi-Fi connectivity. |
+| `bridge-code` | Requires Vibe Mode over USB, configured Bridge service and network connectivity; open the device's download page and return the pairing code, validity and website URL. |
 
 Legacy command spellings remain accepted for existing scripts, but help and
 examples use the structure above. For example, `install` maps to
@@ -101,9 +106,9 @@ stable. `iris logs` follows by default (`--snapshot` prints retained logs only);
 `iris memory --follow` enables continuous memory sampling.
 
 The consuming repository owns a `.mosaico.json` file. All configured relative
-paths are resolved from the directory containing that file. Recovery firmware
+paths are resolved from the directory containing that file. Vibe Mode firmware
 source and its reviewed bundle live under `../esp-mosaico-recovery/firmware/recovery` and are resolved
-from this checkout so the CLI and Recovery implementation are versioned
+from this checkout so the CLI and Vibe Mode implementation are versioned
 together. ESP-Iris is included alongside this project in the workspace, making
 the workspace the single source of its device-side Iris implementation.
 
@@ -127,8 +132,8 @@ python3 /path/to/esp-mosaico-utils/mosaico-tools/mosaico.py \
 and submits the workspace's atomic application, partition table, and declared resource
 bundle by default; use `--skip-build` or `--bundle PATH` to reuse artifacts.
 `iris test enter-recovery` asks a reachable normal application to boot the retained
-Recovery image without building or installing firmware. It waits for the same
-Device ID to reconnect in Recovery with a new Boot ID; use `--device-id` when
+Vibe Mode firmware without building or installing firmware. It waits for the same
+Device ID to reconnect in Vibe Mode with a new Boot ID; use `--device-id` when
 more than one device is connected and `--timeout` to change the 30-second
 transition limit. Both numeric Boot IDs and exact `boot_id_text` fields are
 included in JSON output so 64-bit identities remain lossless for JavaScript
@@ -153,7 +158,7 @@ output. Initialization needs neither ESP-IDF nor a Gateway or connected device.
 When multiple ESP32-S31 devices are already in ROM download mode, select the
 target by its factory eFuse Base MAC. The CLI reads every registered ROM
 endpoint without writing, repeats the MAC check immediately before flashing,
-and verifies the same MAC in Recovery after re-enumeration:
+and verifies the same MAC in Vibe Mode after re-enumeration:
 
 ```sh
 python mosaico.py recover --hardware-mac 30:ed:a0:12:34:56 --source current
@@ -162,7 +167,7 @@ python mosaico.py recover --hardware-mac 30:ed:a0:12:34:56 --source current
 After upgrading from an older ESP-Iris release, the live Device ID changes once
 from the NVS-stored random value to the deterministic hardware-derived value.
 The Gateway retains the old ID and its operations as offline history; refresh
-saved `--device-id` values with `python mosaico.py iris list`. Upgrade Recovery and
+saved `--device-id` values with `python mosaico.py iris list`. Upgrade Vibe Mode and
 normal firmware together, since mixed versions use different identity schemes.
 The pairing token and other retained NVS state are not erased.
 
@@ -188,10 +193,10 @@ the final role and product contract after the healthy boot and image identity ch
 Device ID selection can verify multiple candidates; an explicit endpoint is strict,
 and failed new probes release their endpoint/device reservations.
 
-### ROM Recovery operations
+### ROM recovery operations
 
 `mosaico.py recover` prepares its bundle before submitting a single local Gateway
-operation for ROM flashing and Recovery verification. ROM identity probes use
+operation for ROM flashing and Vibe Mode verification. ROM identity probes use
 the same process-owned endpoint locks. The operation ID, raw executor output and
 verification evidence are retained; there are no maintenance leases or renewals.
 A wait timeout leaves the running writer protected. Inspect its operation ID
@@ -230,7 +235,7 @@ commands require `--takeover-id`; `status` never starts a Gateway.
 review, withdraws pending review, publishes a version, connects a device or
 starts the local Gateway. The current platform accepts **unsigned `.irisfw`**
 for ESP32-S31 (chip ID 32), containing exactly one application plus optional
-data/partition-table components. Recovery/bootloader components and nonzero
+data/partition-table components. Vibe Mode/bootloader components and nonzero
 flags are rejected. The server validates the bundle against its administrator's
 current active Iris Header; applications do not select a Header.
 

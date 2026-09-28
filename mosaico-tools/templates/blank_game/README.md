@@ -16,7 +16,7 @@ python mosaico.py iris system-update --project projects/my_game
 
 Run `python mosaico.py recover` before first installation on a blank or unverified
 device. New applications, changed layouts or external resources use
-`iris system-update`. The immutable Recovery partitions and OTA routing are
+`iris system-update`. The immutable Vibe Mode partitions and OTA routing are
 already configured; the engine starts Iris and accepts the image after its first
 frame. USB High-Speed remains owned by Iris. Physical input/display behavior
 still requires device validation after Host checks.

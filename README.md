@@ -1,8 +1,12 @@
 # ESP-Mosaico Utils
 
 ESP-Mosaico Utils is the shared source repository for the ESP-Mosaico device
-link and retained recovery toolchain. It intentionally starts with a clean Git
+link and Vibe Mode toolchain. It intentionally starts with a clean Git
 history while recording the source revisions used for the migration.
+
+Vibe Mode runs ESP-Iris for application installation and device maintenance.
+ROM Download Mode is the chip-level flashing path. The retained firmware keeps
+its technical name, Recovery, in directories, commands and protocol identifiers.
 
 ## Repository layout
 
@@ -10,13 +14,13 @@ history while recording the source revisions used for the migration.
 | --- | --- | --- |
 | `ESP-Iris/` | ESP-Iris component, Developer Gateway, and Web Workbench | `0.1.x` |
 | `mosaico-tools/` | ESP-Mosaico host CLI and build runner | `0.1.x` |
-| `esp-mosaico-recovery/` | Retained Recovery firmware and product ABI | `0.1` |
+| `esp-mosaico-recovery/` | Vibe Mode firmware and Recovery ABI | `0.1` |
 
 The release version of `mosaico-tools` describes the host toolchain.
-The embedded Recovery firmware keeps its independent version. New source
+The embedded Vibe Mode firmware keeps its independent version. New source
 builds and the prebuilt bundle use `0.1`. The bundle
 retains its reviewed bootloader, partition table, and initial OTA data; its
-Recovery application is rebuilt from this repository and validated on device.
+Vibe Mode firmware is rebuilt from this repository and validated on device.
 Changing the checkout does not update firmware already on devices.
 
 The ESP-Iris checkout also includes the prebuilt Web Workbench. The Gateway
@@ -41,8 +45,8 @@ operation evidence. This utilities repository is not itself an application
 workspace.
 
 For existing ESP-Mosaico applications, see the
-[Recovery and Iris migration guide (中文)](docs/recovery-iris-migration.zh-CN.md)
-to add Recovery to the existing partition table and optionally enable Iris logs.
+[Vibe Mode and Iris migration guide (中文)](docs/recovery-iris-migration.zh-CN.md)
+to add Vibe Mode firmware to the existing partition table and optionally enable Iris logs.
 
 ## Development checks
 

@@ -1562,7 +1562,7 @@ class ProjectTests(unittest.TestCase):
             with ExitStack() as _contexts:
                 caught = _contexts.enter_context(self.assertRaises(SelectionError))
                 resolve_project(workspace, str(workspace.recovery_project), root)
-            self.assertIn("recovery-owned Recovery project", str(caught.exception))
+            self.assertIn("retained Vibe Mode firmware project", str(caught.exception))
 
     def test_tools_recovery_cannot_be_selected_from_its_working_directory(self) -> None:
         with ExitStack() as _contexts:
@@ -1572,7 +1572,7 @@ class ProjectTests(unittest.TestCase):
             with ExitStack() as _contexts:
                 caught = _contexts.enter_context(self.assertRaises(SelectionError))
                 resolve_project(workspace, None, workspace.recovery_project)
-            self.assertIn("recovery-owned Recovery project", str(caught.exception))
+            self.assertIn("retained Vibe Mode firmware project", str(caught.exception))
 
     def test_multiple_projects_require_selection(self) -> None:
         with ExitStack() as _contexts:
@@ -2288,7 +2288,7 @@ class RecoveryCommandTests(unittest.TestCase):
         )
         self.assertTrue(
             any(
-                message.startswith("device: recovery interface") for message in messages
+                message.startswith("device: ROM Download Mode interface") for message in messages
             )
         )
         self.assertTrue(any(message.startswith("validation:") for message in messages))
