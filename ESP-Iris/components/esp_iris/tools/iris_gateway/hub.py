@@ -664,6 +664,9 @@ class IrisHub:
                         )
                         if ready_task in done:
                             await ready_task
+                            # A successful handshake ends the failure streak.
+                            # Expected OTA reboots must not accumulate backoff.
+                            delay = self.reconnect_min_seconds
                         await run_task
                     finally:
                         for task in (ready_task, run_task):

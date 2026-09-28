@@ -462,6 +462,47 @@ static void test_executor_ota(void) {
     during_ota_commit = NULL; during_flash = NULL;
     test_release_contexts(s_services); s_services = NULL; responsive_runtime = NULL;
 }
+
+static void test_ota_begin_erase_cleanup(void) {
+    iris_runtime_t rt = {.session_id = 701, .hello_acked = true};
+    iris_service_state_t state = {.magic = IRIS_SERVICE_STATE_MAGIC};
+    s_services = &state; responsive_runtime = &rt;
+    uint8_t begin[40] = {0};
+    /* A non-sector-aligned image must not request an entire partition erase. */
+    iris_put_le32(begin, 1537);
+    iris_decoded_frame_t request = {.header = {.channel = ESP_IRIS_CHANNEL_OTA,
+        .type = ESP_IRIS_OTA_BEGIN, .request_id = 1,
+        .payload_size = sizeof(begin)}, .payload = begin};
+    flash_writes = boot_selections = flash_aborts = ota_commits = 0;
+    for (unsigned attempt = 0; attempt < 3; ++attempt) {
+        ota_begin_error = attempt == 0 ? ESP_FAIL : ESP_OK;
+        during_ota_begin = attempt == 1 ? flash_hook : prove_ping_responsive;
+        rt.tx_wire_length = 0;
+        assert(executor_dispatch(&rt, &request, now_us));
+        executor_run_one();
+        assert(executor_queue_next(&rt));
+        assert(ota_begin_size == 1537);
+        iris_decoded_frame_t response;
+        assert(iris_frame_decode_in_place(rt.tx_wire, rt.tx_wire_length - 1,
+                                          &response) == ESP_OK);
+        if (attempt == 0) {
+            assert(response.header.flags & ESP_IRIS_FLAG_ERROR);
+            assert(state.ota == NULL && !ota_handle_open && flash_aborts == 1);
+        } else if (attempt == 1) {
+            /* Cancellation received during erase takes effect before DATA. */
+            assert(state.ota == NULL && !ota_handle_open && flash_aborts == 2);
+        } else {
+            /* An erase failure/cancellation must not prevent a later retry. */
+            assert(response.header.type == ESP_IRIS_OTA_BEGIN_RESPONSE);
+            assert(state.ota != NULL && state.ota->active && ota_handle_open);
+            ota_abort(&state, ESP_ERR_INVALID_STATE);
+            assert(!ota_handle_open && flash_aborts == 3);
+        }
+        assert(flash_writes == 0 && boot_selections == 0 && ota_commits == 0);
+    }
+    during_ota_begin = NULL; ota_begin_error = ESP_OK;
+    test_release_contexts(s_services); s_services = NULL; responsive_runtime = NULL;
+}
 #endif
 #if CONFIG_ESP_IRIS_SYSTEM_UPDATE
 static unsigned system_prepares;
@@ -499,6 +540,68 @@ static void test_system_update_capacity(void) {
             assert(reply[22] == CONFIG_ESP_IRIS_SYSTEM_UPDATE_MAX_COMPONENTS);
             assert(system_prepares == 1);
         }
+    }
+    assert(esp_iris_job_finish(s_system_update.job, ESP_OK) == ESP_OK);
+    s_system_update = (iris_system_update_state_t){0};
+    test_release_contexts(s_services); s_services = NULL;
+}
+
+static unsigned chunk_writes;
+static esp_err_t write_bounded_chunk(const esp_iris_system_update_component_t *c,
+    uint32_t offset, const uint8_t *data, size_t size, void *ctx) {
+    const size_t limit = CONFIG_ESP_IRIS_SYSTEM_UPDATE_CHUNK_BYTES;
+    assert(c->size == limit + 1);
+    assert(offset == (chunk_writes == 0 ? 0 : limit));
+    assert(size == (chunk_writes == 0 ? limit : 1));
+    for (size_t i = 0; i < size; ++i) assert(data[i] == 0xa5);
+    ++chunk_writes;
+    return ESP_OK;
+}
+
+static void test_system_update_chunk_boundaries(void) {
+    iris_runtime_t rt = {.session_id = 901, .hello_acked = true};
+    iris_service_state_t state = {.magic = IRIS_SERVICE_STATE_MAGIC};
+    s_services = &state;
+    s_system_update = (iris_system_update_state_t){.backend_registered = true};
+    s_system_update.backend.write_component = write_bounded_chunk;
+    s_system_update.status.operation_id[0] = 1;
+    s_system_update.status.phase = ESP_IRIS_SYSTEM_UPDATE_PHASE_RECEIVING;
+    s_system_update.status.component_count = 1;
+    s_system_update.status.component_size = CONFIG_ESP_IRIS_SYSTEM_UPDATE_CHUNK_BYTES + 1;
+    s_system_update.component.id = 1;
+    s_system_update.component.size = s_system_update.status.component_size;
+    assert(esp_iris_job_create(0x101, job_cancel, NULL, &s_system_update.job) == ESP_OK);
+    publish_status();
+    uint8_t payload[24 + CONFIG_ESP_IRIS_SYSTEM_UPDATE_CHUNK_BYTES + 1] = {1};
+    payload[16] = 1; memset(payload + 24, 0xa5, sizeof(payload) - 24);
+    iris_decoded_frame_t request = {.header = {.channel = ESP_IRIS_CHANNEL_SYSTEM_UPDATE,
+        .type = ESP_IRIS_SYSTEM_UPDATE_DATA, .request_id = 1,
+        .payload_size = sizeof(payload)}, .payload = payload};
+    chunk_writes = 0;
+    /* An oversized chunk must not reach the backend or advance the offset. */
+    uint8_t reply[64];
+    iris_service_call_t call = {.payload = reply, .capacity = sizeof(reply)};
+    assert(handle_data(&call, &request) && call.ready);
+    assert(call.response.flags & ESP_IRIS_FLAG_ERROR);
+    assert(chunk_writes == 0 && s_system_update.status.component_received == 0);
+    for (unsigned part = 0; part < 2; ++part) {
+        request.header.payload_size = 24 + (part == 0 ? CONFIG_ESP_IRIS_SYSTEM_UPDATE_CHUNK_BYTES : 1);
+        iris_put_le32(payload + 20, part == 0 ? 0 : CONFIG_ESP_IRIS_SYSTEM_UPDATE_CHUNK_BYTES);
+        memset(payload + 24, 0xa5, sizeof(payload) - 24);
+        /* Exercise the real codec and executor-owned copy at maximum size. */
+        uint8_t wire[ESP_IRIS_MAX_WIRE_FRAME_SIZE]; size_t wire_size;
+        assert(iris_frame_encode(wire, sizeof(wire), &request.header, payload,
+                                 request.header.payload_size, &wire_size) == ESP_OK);
+        iris_decoded_frame_t decoded;
+        assert(iris_frame_decode_in_place(wire, wire_size - 1, &decoded) == ESP_OK);
+        rt.tx_wire_length = 0;
+        assert(executor_dispatch(&rt, &decoded, now_us));
+        memset(wire, 0, sizeof(wire));
+        executor_run_one(); assert(executor_queue_next(&rt));
+        assert(iris_frame_decode_in_place(rt.tx_wire, rt.tx_wire_length - 1, &decoded) == ESP_OK);
+        assert(decoded.header.type == ESP_IRIS_SYSTEM_UPDATE_DATA_RESPONSE);
+        assert(iris_get_le32(decoded.payload + 20) == CONFIG_ESP_IRIS_SYSTEM_UPDATE_CHUNK_BYTES + part);
+        assert(chunk_writes == part + 1);
     }
     assert(esp_iris_job_finish(s_system_update.job, ESP_OK) == ESP_OK);
     s_system_update = (iris_system_update_state_t){0};
@@ -985,9 +1088,11 @@ int main(void) {
     test_claim_timeout(); test_executor_rpc(); test_fragmented_malformed_corpus();
 #if CONFIG_ESP_IRIS_OTA
     test_executor_ota();
+    test_ota_begin_erase_cleanup();
 #endif
 #if CONFIG_ESP_IRIS_SYSTEM_UPDATE
     test_system_update_capacity();
+    test_system_update_chunk_boundaries();
     test_executor_system_update();
 #endif
 #if CONFIG_ESP_IRIS_SYSTEM_INVENTORY

@@ -23,7 +23,25 @@ workspace 的 `projects/hello_world` 创建，不应将本工程作为应用安�
 manifest 上限同步提高到 3 KiB；标准应用包可包含分区表、应用和六个资源镜像。
 使用新容量的包需要先升级 Vibe Mode；Bridge 的独立组件上限保持不变。
 `prebuilt/recovery` 基础包使用 `0.1.4`，其 manifest 记录各镜像的大小与 SHA-256。
-本包来自源码提交 `0b0d9bc1af83f42471fd2c7e879290cb9837361f`（源码工作树干净），
+2026-09-28 的 ESP-174 优化在 ESP32-S31 实机通过 USB OTA、System Update、
+Vibe Mode 自更新及应用健康验收：OTA 按镜像大小预擦除，System Update 数据块
+提高到 3968 字节；Gateway 在成功握手后重置重连退避。相同 515,312 字节应用的
+OTA 传输约从 68 KiB/s 提升到 236–255 KiB/s，完整操作从 15.85 秒缩短到
+11.87–12.09 秒。协议、版本线、Recovery ABI 和分区布局不变。
+
+当前包以 `43cd13e28ea47f6bb2ae39f584a2d2ac980f45d2` 加本次修改构建，manifest
+如实记录源码 dirty 状态。`factory.bin` 为 1,817,040 字节，固定槽位剩余
+17,968 字节，ELF SHA-256 为
+`4b9c3296d2e218977d0a88d205f69f328ebb0a5867cd3fbde0e15a5fc6afc55b`。
+整包通过 `prepare_recovery.py` 重新生成、校验并原子替换；保留以下历史包的
+bootloader、基础分区表和初始 OTA 数据字节，纳入实机验证过的 Vibe Mode 镜像。
+测量口径、操作 ID、哈希及验证边界见
+[USB 更新吞吐验证](../../docs/usb-update-throughput-validation.zh-CN.md)。
+
+<details>
+<summary>2026-09-24 基础包的历史验收记录</summary>
+
+此前包来自源码提交 `0b0d9bc1af83f42471fd2c7e879290cb9837361f`（源码工作树干净），
 基于已合入的 `0.1.3`，保持 ESP-GSP `1.4.0` 和 GSPC `0.5.0`。
 以下为已评审包的历史验证记录，其中 Recovery 指 Vibe Mode：
 
@@ -48,6 +66,8 @@ BSP 固定于组件 manifest 中的 `05e067de0613a0aa3fe2af42e75616804decbf4b`�
 `bootloader.bin` 为 24,432 字节，距离分区表剩余 144 字节。
 默认 `recover` 使用该包，`recover --source current` 使用当前源码重新构建。
 Recovery ABI 与分区布局由工程配置和包 manifest 约束。
+
+</details>
 
 System Update 版本检查将 `0.1.4` 解析为同一语义版本线，只接受同一主版本线、且
 最低版本要求不高于当前 Vibe Mode 的更新包。Vibe Mode 自更新拒绝降级或
