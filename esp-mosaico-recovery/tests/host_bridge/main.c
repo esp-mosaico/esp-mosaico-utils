@@ -857,7 +857,8 @@ int main(void)
     assert(requests == 3 && !out.running && !strcmp(out.state, "FAILED"));
     reset();
     reply("device-sessions", 201, registration, true);
-    reply("/progress", 200, "{}", false);
+    /* A malformed terminal acknowledgement is retried before local teardown. */
+    for (int i = 0; i < 3; ++i) reply("/progress", 200, "{}", false);
     assert(iris_bridge_start(&config) == 0);
     run_worker();
     assert(!token[0]);
