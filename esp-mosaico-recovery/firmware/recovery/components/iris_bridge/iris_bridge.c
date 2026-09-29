@@ -293,7 +293,8 @@ static void path_session(char out[256], const char *suffix)
 {
     snprintf(out, 256, "/api/v1/device-sessions/%s%s", session, suffix);
 }
-static bool event(const char *state, unsigned progress, esp_err_t error)
+static bool event_with_timeout(const char *state, unsigned progress,
+                               esp_err_t error, int timeout_ms)
 {
     set_state(state, progress, error);
     char path[256];
@@ -303,7 +304,8 @@ static bool event(const char *state, unsigned progress, esp_err_t error)
     cJSON_AddNumberToObject(j, "progress", progress);
     if (error != ESP_OK)
         cJSON_AddStringToObject(j, "error", esp_err_to_name(error));
-    cJSON *r = request(path, j);
+    cJSON *r = request_with_response(path, j, &main_response, &main_client,
+                                     timeout_ms, false);
     bool ok = r != NULL && !strcmp(str(r, "phase"), state);
     if (!ok)
         ESP_LOGW("iris_bridge", "phase %s failed: http=%d response=%s", state,
@@ -314,6 +316,29 @@ static bool event(const char *state, unsigned progress, esp_err_t error)
     cJSON_Delete(r);
     cJSON_Delete(j);
     return ok;
+}
+static bool event(const char *state, unsigned progress, esp_err_t error)
+{
+    return event_with_timeout(state, progress, error, 15000);
+}
+/* FAILED/CANCELLED are idempotent terminal intents. Retry them briefly because
+ * the fault that ended a write is often the same transient network fault that
+ * loses its first terminal report. A 401/404/410 after a lost response means
+ * the server has already revoked or expired this single-use session. */
+static bool terminal_event(const char *state, unsigned progress, esp_err_t error)
+{
+    for (unsigned attempt = 0; attempt < 3; ++attempt) {
+        if (event_with_timeout(state, progress, error, 2000))
+            return true;
+        if (main_response.status == 401 || main_response.status == 404 ||
+            main_response.status == 410)
+            return true;
+        if (attempt < 2)
+            vTaskDelay(pdMS_TO_TICKS(250U << attempt));
+    }
+    ESP_LOGW("iris_bridge", "terminal phase %s delivery unconfirmed after retries",
+             state);
+    return false;
 }
 /* Never do network I/O in the file read/write loop. Cancellation is latched:
  * a later successful poll must not undo an earlier local/remote cancellation. */
@@ -1175,10 +1200,10 @@ static void run(void *unused)
                         !strcmp(str(accepted, "phase"), "PRECHECK"))
                         err = execute(session, accepted);
                     if (err != ESP_OK)
-                        event(cancelled || atomic_load(&stop_requested) ||
-                              !atomic_load(&bridge_active) ? "CANCELLED"
-                                                                        : "FAILED",
-                              0, err);
+                        terminal_event(cancelled || atomic_load(&stop_requested) ||
+                                       !atomic_load(&bridge_active) ? "CANCELLED"
+                                                                 : "FAILED",
+                                       0, err);
                     cJSON_Delete(accepted);
                     cJSON_Delete(r);
                     break;
@@ -1206,7 +1231,7 @@ static void run(void *unused)
     }
     if (atomic_load(&stop_requested)) {
         if (session[0])
-            event("CANCELLED", 0, ESP_ERR_INVALID_STATE);
+            terminal_event("CANCELLED", 0, ESP_ERR_INVALID_STATE);
         else
             set_state("CANCELLED", 0, ESP_OK);
     }
