@@ -290,6 +290,7 @@ class SessionScope:
         automatic = command in {
             "monitor", "memory", "crash", "rpc", "install", "system-update",
             "enter-recovery", "recovery-wifi", "bridge-code", "recover",
+            "device-status", "screenshot",
         } and not getattr(args, "hardware_mac", None)
         if command not in {"device", "list"} and (selected or endpoint or automatic):
             acquire_device(url, args, context, allow_none=command == "recover")

@@ -27,6 +27,7 @@ from test_project_sessions import workspace
 @pytest.mark.parametrize("command", [
     "monitor", "memory", "crash", "rpc", "install", "system-update",
     "enter-recovery", "recovery-wifi", "bridge-code", "recover",
+    "device-status", "screenshot",
 ])
 def test_device_commands_auto_acquire_and_pin_the_returned_identity(tmp_path, monkeypatch, command):
     work = workspace(tmp_path)
@@ -60,7 +61,9 @@ def test_device_commands_auto_acquire_and_pin_the_returned_identity(tmp_path, mo
     spawn.assert_not_called()
 
 
-@pytest.mark.parametrize("argv", [["iris", "status"], ["iris", "list"], ["recover", "--hardware-mac", "30:ed:a0:12:34:56"]])
+@pytest.mark.parametrize("argv", [["iris", "status"], ["iris", "list"],
+                                  ["iris", "operation-status", "operation-id"],
+                                  ["recover", "--hardware-mac", "30:ed:a0:12:34:56"]])
 def test_queries_and_explicit_rom_mac_do_not_auto_acquire(tmp_path, monkeypatch, argv):
     work = workspace(tmp_path)
     project = tmp_path / "projects/a"

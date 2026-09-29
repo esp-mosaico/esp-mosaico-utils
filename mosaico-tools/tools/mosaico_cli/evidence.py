@@ -1,0 +1,67 @@
+"""Collect device evidence through the project's existing Iris CLI session."""
+from __future__ import annotations
+
+from typing import Any
+
+from .errors import DeviceError, OperationError
+from .gateway import connected_devices, ensure_gateway, gateway_json, select_device
+from .runtime import RunContext
+
+
+def _live_status(context: RunContext, session: Any, device_id: str) -> dict[str, Any]:
+    response = gateway_json(context, session, "status", device_id)
+    device = response.get("device", response) if isinstance(response, dict) else None
+    if (not isinstance(device, dict) or device.get("device_id") != device_id
+            or device.get("stale") is not False or device.get("boot_id") is None):
+        raise DeviceError(
+            "ESP-Iris did not return live identity and Boot ID for the selected device.",
+            details={"device_id": device_id, "response": response},
+        )
+    return device
+
+
+def collect_evidence(arguments: Any, context: RunContext) -> dict[str, Any]:
+    command = arguments.command
+    session = ensure_gateway(
+        context, arguments.gateway_profile, select=command != "operation-status"
+    )
+    result = {
+        "command": command,
+        "gateway_started": session.started_local,
+        "gateway_profile": session.profile,
+        "log": str(context.log_path),
+    }
+    if command == "operation-status":
+        response = gateway_json(context, session, "operation-status", arguments.operation_id)
+        operation = response.get("operation", response) if isinstance(response, dict) else None
+        if not isinstance(operation, dict) or operation.get("operation_id") != arguments.operation_id:
+            raise OperationError("ESP-Iris returned an invalid operation record.")
+        # A successful query does not make a failed/unknown device operation succeed.
+        return {**result, "operation": operation}
+
+    selected = select_device(connected_devices(context, session), arguments.device_id)
+    device_id = str(selected["device_id"])
+    before = _live_status(context, session, device_id)
+    result.update(device_id=device_id, boot_id=before["boot_id"], device=before)
+    if command == "device-status":
+        return result
+
+    output = arguments.output.expanduser().resolve()
+    capture = gateway_json(context, session, "screenshot", device_id, str(output), timeout=60)
+    if (not isinstance(capture, dict) or capture.get("device_id") != device_id
+            or capture.get("path") != str(output) or not capture.get("operation_id")
+            or capture.get("content_type") not in {"image/png", "image/jpeg"}):
+        raise OperationError("ESP-Iris returned invalid screenshot evidence.", details={"response": capture})
+    try:
+        size = output.stat().st_size
+    except OSError as error:
+        raise OperationError("The device screenshot file is unavailable.", details={"path": str(output)}) from error
+    if size <= 0 or size != capture.get("bytes"):
+        raise OperationError("The device screenshot file is incomplete.", details={"path": str(output)})
+    after = _live_status(context, session, device_id)
+    if after["boot_id"] != before["boot_id"]:
+        raise DeviceError(
+            "The device rebooted during capture; this image cannot verify the current boot.",
+            details={"before": before, "after": after, "capture": capture},
+        )
+    return {**result, "device": after, "capture": capture}
