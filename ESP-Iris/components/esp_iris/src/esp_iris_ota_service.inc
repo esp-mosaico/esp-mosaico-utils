@@ -160,16 +160,18 @@ static bool handle_ota(iris_service_call_t *runtime,
             ota->hash_active = err == ESP_OK;
         }
         if (err == ESP_OK) {
-            /*
-             * A full erase here can block the protocol worker for longer than
-             * the host's request deadline on large application partitions.
-             * OTA DATA is strictly sequential, so let esp_ota_write() erase
-             * sectors incrementally and keep BEGIN responsive.
-             */
-            err = esp_ota_begin(partition, OTA_WITH_SEQUENTIAL_WRITES,
-                                &ota->handle);
+            /* BEGIN runs on iris-service, leaving the protocol task available
+             * for status and cancellation. Erase only the declared image range
+             * up front so the Flash driver can use block erases. Sequential
+             * erase-on-write adds a sector erase to almost every DATA request. */
+            err = esp_ota_begin(partition, total_size, &ota->handle);
         }
         if (err != ESP_OK) {
+            /* IDF can publish a handle before an erase fails. Release it so a
+             * later BEGIN is not rejected as a conflicting OTA operation. */
+            if (ota->handle != 0) {
+                (void)esp_ota_abort(ota->handle);
+            }
             if (ota->job != NULL) {
                 (void)esp_iris_job_finish(ota->job, err);
             }

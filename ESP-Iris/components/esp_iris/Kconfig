@@ -478,8 +478,13 @@ config ESP_IRIS_SYSTEM_UPDATE
 config ESP_IRIS_SYSTEM_UPDATE_CHUNK_BYTES
     int "Maximum system-update data bytes per request"
     depends on ESP_IRIS_SYSTEM_UPDATE
-    range 256 2048
+    range 256 3968
     default 1024
+    help
+        Negotiated with the host at BEGIN and COMPONENT_BEGIN. The maximum
+        keeps an aligned data block and its 24-byte header inside the
+        4000-byte protocol payload. Larger blocks reduce request round trips
+        and Flash-write calls; only one service request may be outstanding.
 
 config ESP_IRIS_SYSTEM_UPDATE_MANIFEST_BYTES
     int "Maximum authenticated system-update manifest size"

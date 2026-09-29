@@ -512,6 +512,13 @@ OTA. The option defaults off. The default weak recovery hook returns
 `ESP_ERR_NOT_SUPPORTED`, which deliberately rejects boot-slot selection.
 CANCEL, job cancellation, disconnect or any error calls `esp_ota_abort`.
 
+The reference writer prepares only the declared image range in BEGIN, allowing
+the Flash driver to batch erases before DATA arrives. This runs on the service
+worker; status and cancellation remain available on the protocol task. Hosts
+allow up to 120 seconds for BEGIN (also covering legacy full-partition erases),
+while DATA retains its normal request timeout. Cancellation is cooperative and
+releases the OTA handle after the current Flash operation returns.
+
 STATUS has an empty request and returns
 `job_id:u32, total_size:u32, received:u32, progress_permille:u16, active:u8,
 label_len:u8, result:i32, label[]`. A host may use it after a response timeout
@@ -605,6 +612,13 @@ reserved:u16, offset:u32, bytes[]`. Offsets are strictly sequential. Each
 accepted chunk is hashed before it reaches the backend. DATA_RESPONSE (`0x06`)
 is `operation_id[16], component_id:u8, reserved:u8, progress_permille:u16,
 committed_offset:u32`.
+
+The reference device supports configured DATA blocks up to 3968 bytes, keeping
+the 24-byte DATA header within the 4000-byte payload limit. Hosts must use the
+smaller limit returned by BEGIN and COMPONENT_BEGIN, including older writers
+that advertise 1024 or 2048 bytes. DATA remains stop-and-wait: acknowledge the
+committed offset before sending another chunk; a larger block does not enable
+concurrent service requests.
 
 COMPONENT_END (`0x07`) is `operation_id[16], component_id:u8, reserved[3]`.
 It succeeds only after the exact byte count, streamed SHA-256, and backend

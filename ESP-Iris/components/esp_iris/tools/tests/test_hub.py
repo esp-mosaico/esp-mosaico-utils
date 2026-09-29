@@ -120,6 +120,55 @@ def test_supervisor_retries_and_classifies_same_boot_as_reconnect() -> None:
     asyncio.run(scenario())
 
 
+def test_supervisor_resets_backoff_after_successful_handshake(monkeypatch) -> None:
+    delays: list[float] = []
+
+    class SupervisorAsyncio:
+        def __getattr__(self, name):
+            return getattr(asyncio, name)
+
+        async def sleep(self, delay):
+            delays.append(delay)
+            await asyncio.sleep(0)
+
+    # Record retry delays without changing session timers or test timeouts.
+    monkeypatch.setattr("iris_gateway.hub.asyncio", SupervisorAsyncio())
+
+    async def scenario() -> None:
+        hub = IrisHub("test", reconnect_min_seconds=0.01, reconnect_max_seconds=0.04)
+        links: list[SupervisorLink] = []
+        attempts = 0
+
+        async def opener() -> SupervisorLink:
+            nonlocal attempts
+            attempts += 1
+            if attempts in (1, 2, 3, 4, 6):
+                raise OSError("device is rebooting")
+            link = SupervisorLink(attempts, boot_id=attempts)
+            links.append(link)
+            return link
+
+        async def wait_for_boot(boot_id: int) -> None:
+            while not any(info["boot_id"] == boot_id for info in hub.list_devices()):
+                await asyncio.sleep(0)
+
+        hub._add_supervisor("fake:supervisor", opener)
+        try:
+            await asyncio.wait_for(wait_for_boot(5), 2)
+            assert delays == [0.01, 0.02, 0.04, 0.04]
+            await links[-1].incoming.put(b"")
+            await asyncio.wait_for(wait_for_boot(7), 2)
+            assert delays == [0.01, 0.02, 0.04, 0.04, 0.01, 0.02]
+            await links[-1].incoming.put(b"")
+            await asyncio.wait_for(wait_for_boot(8), 2)
+            assert delays == [0.01, 0.02, 0.04, 0.04, 0.01, 0.02, 0.01]
+        finally:
+            await asyncio.wait_for(hub.close(), 2)
+        assert all(link.closed for link in links)
+
+    asyncio.run(scenario())
+
+
 def test_quiesce_retains_endpoint_lock_and_resume_restarts_only_that_supervisor() -> None:
     async def scenario() -> None:
         hub = IrisHub("test", reconnect_min_seconds=0.001, reconnect_max_seconds=0.005)
