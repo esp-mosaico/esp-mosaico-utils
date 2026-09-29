@@ -423,6 +423,22 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show endpoint, ESP-IDF version, session, and capabilities",
     )
 
+    for name, help_text in (
+        ("device-status", "Read verified live device identity, Boot ID and firmware state"),
+        ("screenshot", "Save the device image directly, with identity and operation evidence"),
+        ("operation-status", "Query an existing Gateway operation without acquiring a device or replaying it"),
+    ):
+        child = iris_commands.add_parser(name, help=help_text)
+        child.set_defaults(command=name, public_command="iris " + name)
+        child.add_argument("--gateway-profile", help="External Iris profile; otherwise use this project's Gateway")
+        if name == "operation-status":
+            child.add_argument("operation_id", help="Existing Gateway operation ID")
+        else:
+            child.add_argument("--device-id", help="Device ID; omit for automatic project device selection")
+        if name == "screenshot":
+            child.add_argument("output", type=Path, help="Local destination for the device image")
+        leaves.append(child)
+
     memory_parser = command(
         "memory",
         help="Read internal RAM, SPIRAM and each task's stack high-water mark",
@@ -799,6 +815,9 @@ def _main(
             result = invoke_rpc(arguments, context)
         elif arguments.command == "crash":
             result = inspect_crash(arguments, context)
+        elif arguments.command in {"device-status", "screenshot", "operation-status"}:
+            from .evidence import collect_evidence
+            result = collect_evidence(arguments, context)
         elif arguments.command == "memory":
             return monitor_memory(arguments, context, arguments.json)
         elif arguments.command == "bridge-code":
@@ -813,6 +832,8 @@ def _main(
         return 0 if arguments.command in {"monitor", "memory"} else 5
     if arguments.json:
         print(json.dumps({"ok": True, **result}, ensure_ascii=False, sort_keys=True))
+    elif arguments.command in {"device-status", "screenshot", "operation-status"}:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
         status = result.get("status", "succeeded")
         print(f"{arguments.public_command}: {status}")

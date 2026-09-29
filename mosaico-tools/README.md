@@ -21,7 +21,7 @@ CLI clients renew every 5 seconds and expire after 20 seconds without renewal;
 client expiry is separate from the subsequent idle countdown. There is no stop
 command and the workbench cannot wake an exited Gateway.
 
-Discovery/status queries do not open unclaimed devices. Device operations can
+`iris list` and `iris status` do not open unclaimed devices. Device operations can
 omit their target: prefer the sole connected device, then the sole existing
 ownership (wait for that identity if offline), then the sole available USB
 device from live enumeration. Multiple candidates report a selection error.
@@ -58,6 +58,7 @@ mosaico.py
 │   ├── list / claim / release / reconcile
 │   ├── takeover start / status / resume / abort / reconcile
 │   ├── logs / memory / crash / rpc
+│   ├── device-status / screenshot / operation-status
 │   ├── app-update
 │   ├── system-update
 │   └── test enter-recovery / recovery-wifi / bridge-code
@@ -71,6 +72,18 @@ project has no Gateway. Neither query starts a Gateway, prepares a host runtime,
 or retains a client. An absent Gateway returns
 `{"running": false, "session": null}` with `--json`; orphaned ownership is
 reported separately. `--all` and `--project` are mutually exclusive.
+
+For live device evidence, use `iris device-status --json`; it verifies Device ID,
+Boot ID and `stale=false` through the selected project's Gateway. Unlike host
+`iris status`, this command can acquire the project's device and query it live.
+Use `iris screenshot device.png --json` to save the device image directly, with
+image metadata, operation ID and the verified device/boot identity. A reboot during
+capture fails verification. Inspect the saved image itself rather than a screenshot
+of the Web workbench. `iris operation-status <operation-id> --json` reads an existing
+record without acquiring a device or replaying the operation; it may start/reuse the
+project Gateway. A successful query preserves failed or unknown operation outcomes
+in `operation.status`. Share the workbench URL for developer observation; browser
+automation and CLI/Web comparisons are for workbench testing or explicit user requests.
 
 Ownership mutations (`iris claim/release/reconcile` and takeover actions) can
 start/join shared Gateways. Takeover status remains passive. A device claim is
