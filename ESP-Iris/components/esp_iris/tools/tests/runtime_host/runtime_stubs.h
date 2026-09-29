@@ -109,7 +109,10 @@ static const esp_partition_t running_partition = {0x10000, 4096, "running", 0};
 static const esp_partition_t target_partition = {0x20000, 4096, "ota_0", 0};
 static unsigned flash_writes, boot_selections, flash_aborts;
 static unsigned ota_commits;
-static esp_err_t ota_end_error, boot_select_error;
+static esp_err_t ota_begin_error, ota_end_error, boot_select_error;
+static size_t ota_begin_size;
+static bool ota_handle_open;
+static void (*during_ota_begin)(void);
 static void (*during_ota_commit)(void);
 static void (*during_flash)(void);
 esp_partition_iterator_t esp_partition_find(unsigned t, unsigned s, const char *l) { return (void *)&target_partition; }
@@ -118,10 +121,15 @@ esp_partition_iterator_t esp_partition_next(esp_partition_iterator_t i) { return
 void esp_partition_iterator_release(esp_partition_iterator_t i) { }
 const esp_partition_t *esp_ota_get_running_partition(void) { return &running_partition; }
 const esp_partition_t *esp_ota_get_next_update_partition(const esp_partition_t *p) { return &target_partition; }
-esp_err_t esp_ota_begin(const esp_partition_t *p, size_t n, esp_ota_handle_t *h) { *h = 1; return ESP_OK; }
+esp_err_t esp_ota_begin(const esp_partition_t *p, size_t n, esp_ota_handle_t *h) {
+    assert(!ota_handle_open);
+    ota_begin_size = n; ota_handle_open = true; *h = 1;
+    if (during_ota_begin) during_ota_begin();
+    return ota_begin_error;
+}
 esp_err_t esp_ota_write(esp_ota_handle_t h, const void *b, size_t n) { ++flash_writes; if (during_flash) during_flash(); return ESP_OK; }
-esp_err_t esp_ota_end(esp_ota_handle_t h) { if (during_flash) during_flash(); return ota_end_error; }
-esp_err_t esp_ota_abort(esp_ota_handle_t h) { ++flash_aborts; return ESP_OK; }
+esp_err_t esp_ota_end(esp_ota_handle_t h) { ota_handle_open = false; if (during_flash) during_flash(); return ota_end_error; }
+esp_err_t esp_ota_abort(esp_ota_handle_t h) { ota_handle_open = false; ++flash_aborts; return ESP_OK; }
 esp_err_t esp_ota_get_partition_description(const esp_partition_t *p, esp_app_desc_t *d) { memset(d, 0, sizeof(*d)); return ESP_OK; }
 esp_err_t esp_ota_set_boot_partition(const esp_partition_t *p) { ++boot_selections; return boot_select_error; }
 void esp_iris_platform_ota_committed(void) {

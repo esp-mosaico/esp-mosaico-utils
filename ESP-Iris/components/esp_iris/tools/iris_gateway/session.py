@@ -928,10 +928,9 @@ class DeviceSession:
                     "partition": "",
                 }
             )
-        # Older Recovery firmware erases the complete destination partition
-        # synchronously in BEGIN. Keep this request compatible with those
-        # images even though current firmware erases incrementally while
-        # processing sequential DATA frames.
+        # BEGIN prepares the image range on the device service worker. Allow
+        # time for that erase, including legacy writers that erase the complete
+        # destination partition. DATA requests retain their shorter deadlines.
         begin_timeout = max(timeout, self.OTA_BEGIN_TIMEOUT_SECONDS)
         frame = await self._request(
             Channel.OTA, OtaType.BEGIN, begin, begin_timeout

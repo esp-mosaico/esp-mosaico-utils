@@ -41,7 +41,7 @@ def test_firmware_runtime(tmp_path: Path, multi_transport: bool, service_profile
         flags += ["-DCONFIG_ESP_IRIS_SYSTEM_UPDATE_MAX_COMPONENTS=8",
                   "-DCONFIG_ESP_IRIS_SYSTEM_UPDATE_MANIFEST_BYTES=3072",
                   "-DCONFIG_ESP_IRIS_SYSTEM_UPDATE_SIGNATURE_BYTES=512",
-                  "-DCONFIG_ESP_IRIS_SYSTEM_UPDATE_CHUNK_BYTES=2048"]
+                  "-DCONFIG_ESP_IRIS_SYSTEM_UPDATE_CHUNK_BYTES=3968"]
     if multi_transport:
         flags += ["-DCONFIG_ESP_IRIS_TRANSPORT_USB=1"]
     if persistent:

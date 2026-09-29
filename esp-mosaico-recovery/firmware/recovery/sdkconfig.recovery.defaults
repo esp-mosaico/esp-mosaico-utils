@@ -13,6 +13,9 @@ CONFIG_ESP_IRIS_OTA=y
 CONFIG_ESP_IRIS_OTA_CHUNK_BYTES=3968
 CONFIG_ESP_IRIS_SYSTEM_INVENTORY=y
 CONFIG_ESP_IRIS_SYSTEM_UPDATE=y
+# Match OTA's aligned block size; the 24-byte system header still fits within
+# the 4000-byte payload. Hosts negotiate this value with older writers too.
+CONFIG_ESP_IRIS_SYSTEM_UPDATE_CHUNK_BYTES=3968
 # Allow a partition table, application and six resource images in one bundle.
 CONFIG_ESP_IRIS_SYSTEM_UPDATE_MAX_COMPONENTS=8
 CONFIG_ESP_IRIS_SYSTEM_UPDATE_MANIFEST_BYTES=3072
