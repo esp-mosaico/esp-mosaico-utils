@@ -15,7 +15,11 @@ python mosaico.py account login --server "$IDEAS_SERVER" --open-browser
 不代替用户批准设备码。CI 没有浏览器时通过既有安全凭据通道提供 token，不将 token
 写入命令行、源码、manifest、README、提交或答复，不打印整个环境。
 
-环境变量仍为 `MAKER_SPARK_SERVER` 和 `MAKER_SPARK_TOKEN`，不能擅自改成新拼写。
+服务器依次取首个非空值：`--server`、`MOSAICO_IDEAS_SERVER`、兼容旧配置的
+`MAKER_SPARK_SERVER`，最后使用默认值 `https://mosaico-ideas.espressif.com`。
+新配置优先使用 `MOSAICO_IDEAS_SERVER`；使用默认站点且未设置环境覆盖时，
+可省略示例中的 `--server "$IDEAS_SERVER"`。服务器只填写 Origin，不带 `/api/v1`。
+token 环境变量仍为 `MAKER_SPARK_TOKEN`。
 环境 token 优先于保存的 token；若旧环境 token 导致登录后仍未认证，应检查其是否
 仍覆盖新保存的凭据，不能自动撤销或删除用户的其他凭据。
 私有状态位于 `state_root("esp-mosaico")/mosaico-ideas/<server-hash>/`，CLI 会迁移
