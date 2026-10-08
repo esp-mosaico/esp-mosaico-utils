@@ -334,9 +334,42 @@ class PlatformTests(unittest.TestCase):
             self.assertEqual(credential(server), "current")
             self.assertTrue((legacy / "credential.json").exists())
 
-    def test_server_environment_name_is_unchanged(self):
-        with mock.patch.dict(os.environ, {"MAKER_SPARK_SERVER": "https://ideas.test"}):
-            self.assertEqual(server_url(None), "https://ideas.test")
+    def test_server_selection_for_upload_and_account_commands(self):
+        commands = (
+            ["project", "upload"],
+            ["account", "login"],
+            ["account", "status"],
+            ["account", "logout"],
+        )
+        cases = (
+            (None, None, None, "https://mosaico-ideas.espressif.com"),
+            (None, None, "https://legacy.test/", "https://legacy.test"),
+            (None, "https://new.test/", None, "https://new.test"),
+            (None, "https://new.test", "https://legacy.test", "https://new.test"),
+            ("https://explicit.test/", "https://new.test", "https://legacy.test", "https://explicit.test"),
+            (None, "", "https://legacy.test", "https://legacy.test"),
+            (None, "", "", "https://mosaico-ideas.espressif.com"),
+        )
+        for command in commands:
+            for explicit, current, legacy, expected in cases:
+                environment = {}
+                if current is not None:
+                    environment["MOSAICO_IDEAS_SERVER"] = current
+                if legacy is not None:
+                    environment["MAKER_SPARK_SERVER"] = legacy
+                argv = command + (["--server", explicit] if explicit else [])
+                with self.subTest(argv=argv, environment=environment), mock.patch.dict(
+                    os.environ, environment, clear=True
+                ):
+                    args = build_parser().parse_args(argv)
+                    self.assertEqual(server_url(args.server), expected)
+
+    def test_invalid_environment_server_does_not_fall_back(self):
+        for name in ("MOSAICO_IDEAS_SERVER", "MAKER_SPARK_SERVER"):
+            with self.subTest(name=name), mock.patch.dict(os.environ, {name: "http://remote.test"}):
+                with self.assertRaises(SelectionError):
+                    server_url(None)
+                self.assertEqual(server_url("https://explicit.test"), "https://explicit.test")
 
     def test_public_upload_help_uses_new_manifest_name(self):
         output = io.StringIO()

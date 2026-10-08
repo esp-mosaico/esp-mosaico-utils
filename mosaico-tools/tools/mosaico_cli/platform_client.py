@@ -17,6 +17,9 @@ from .errors import OperationError, SelectionError
 from .host import state_root
 
 
+DEFAULT_SERVER = "https://mosaico-ideas.espressif.com"
+
+
 class PlatformError(OperationError):
     category = "platform_error"
 
@@ -33,7 +36,12 @@ class PlatformError(OperationError):
 
 
 def server_url(value: str | None) -> str:
-    value = value or os.environ.get("MAKER_SPARK_SERVER", "")
+    value = (
+        value
+        or os.environ.get("MOSAICO_IDEAS_SERVER")
+        or os.environ.get("MAKER_SPARK_SERVER")
+        or DEFAULT_SERVER
+    )
     parsed = urllib.parse.urlsplit(value)
     local = parsed.hostname in {"localhost", "127.0.0.1", "::1"}
     if (parsed.scheme != "https" and not (parsed.scheme == "http" and local)) or (
