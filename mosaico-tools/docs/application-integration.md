@@ -59,3 +59,42 @@ contract tests compare the product manifest, configuration and partition tables.
 Validation: `python -m pytest mosaico-tools/tests esp-mosaico-recovery/tests`.
 No consumer workspace source is needed. Old workspace paths have no forwarding
 layer; consumers migrate to these public entry points and rebuild.
+
+## User-owned Raylib Lite games
+
+Develop a game in its own repository, then build an Iris installation bundle:
+
+```sh
+python mosaico.py game build /path/to/my_game --target iris
+# A relative path or --project /path/to/my_game works too.
+python mosaico.py game build sky_hop --target iris
+```
+
+Configure `dependencies.raylib` with a current Engine source checkout. Named
+examples and explicit project paths use the same wrapper. Explicit projects
+need a top-level ESP-IDF `CMakeLists.txt` containing `project(...)` and a
+`main/CMakeLists.txt` component. They do not need registration in Engine examples.
+Use the Engine native game lifecycle and shared launcher, as demonstrated by its
+games. This wrapper supplies `app_main` through that launcher. Applications with
+their own `app_main` use the ordinary native build and application integration
+path described above.
+
+The wrapper references the original `main/` and optional `components/` directory,
+so component-relative resources and `idf_component.yml` dependencies stay with
+user source. Source files, manifests and existing build/sdkconfig files are not
+copied or edited. Generated projects and build output live under the configured
+workspace run directory, with separate directories for equal game names at
+different paths. Native and Iris builds therefore do not share sdkconfig.
+
+The wrapper supplies the Engine Board and common native launcher, then invokes
+existing Recovery-first packaging. It consumes user `sdkconfig.defaults` and
+`sdkconfig.application.defaults`; Iris-specific defaults enable the Board hooks
+and select USB management. The product partition table comes from the shared
+`blank_game` template. A project's own partition CSV and top-level CMake build
+logic are not used by this wrapper; declare game resources and custom component
+logic in component CMake files. Use ordinary native builds for other layouts.
+
+An optional `version.txt` supplies the numeric CMake project/bundle version
+(default `1.0.0`). The generated app version default matches it; a game's explicit
+`CONFIG_APP_PROJECT_VER` still takes precedence. Installation is a separate
+operation through Vibe Mode; the build command does not flash a device.

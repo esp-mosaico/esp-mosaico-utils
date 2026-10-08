@@ -2,9 +2,9 @@
 # Include from a project CMakeLists.txt before project():
 #
 #   cmake_minimum_required(VERSION 3.16)
-#   set(RAYLIB_LITE_GAME sky_hop)
+#   set(RAYLIB_LITE_GAME_DIR /path/to/my_game)
 #   include(/path/to/mosaico-tools/cmake/raylib_lite_iris_app.cmake)
-#   project(${RAYLIB_LITE_GAME} VERSION 1.0.0)
+#   project(my_game VERSION 1.0.0)
 #   raylib_lite_iris_link_game_board()
 #   include("${MOSAICO_SYSTEM_UPDATE_CMAKE}")
 #
@@ -28,13 +28,12 @@ if(NOT EXISTS "${RAYLIB_LITE_ENGINE_ROOT}/include/raylib_lite/raylib_lite_native
 endif()
 get_filename_component(RAYLIB_LITE_ENGINE_ROOT "${RAYLIB_LITE_ENGINE_ROOT}" ABSOLUTE)
 
-if(NOT RAYLIB_LITE_GAME)
-    message(FATAL_ERROR "Set RAYLIB_LITE_GAME to an engine game; list them with "
-        "'python3 ${RAYLIB_LITE_ENGINE_ROOT}/tools/game_cli.py list --json'")
+if(NOT RAYLIB_LITE_GAME_DIR)
+    message(FATAL_ERROR "Set RAYLIB_LITE_GAME_DIR to a native game project directory")
 endif()
-set(_raylib_iris_game "${RAYLIB_LITE_ENGINE_ROOT}/examples/${RAYLIB_LITE_GAME}")
+get_filename_component(_raylib_iris_game "${RAYLIB_LITE_GAME_DIR}" ABSOLUTE)
 if(NOT EXISTS "${_raylib_iris_game}/main/CMakeLists.txt")
-    message(FATAL_ERROR "${RAYLIB_LITE_GAME} is not a native engine game: ${_raylib_iris_game}")
+    message(FATAL_ERROR "Game project needs main/CMakeLists.txt: ${_raylib_iris_game}")
 endif()
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/partitions.csv")
     message(FATAL_ERROR "Copy ${_raylib_iris_product}/partitions.csv into ${CMAKE_CURRENT_SOURCE_DIR}")
@@ -45,9 +44,16 @@ if(NOT SDKCONFIG)
 endif()
 # Reuse the Engine's application-side Board and common native launcher.
 # The Board owns Iris hooks already; do not link the legacy hook component.
-set(SDKCONFIG_DEFAULTS "${_raylib_iris_product}/sdkconfig.defaults")
+set(SDKCONFIG_DEFAULTS
+    "${_raylib_iris_product}/sdkconfig.defaults")
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/sdkconfig.game.defaults")
+    list(APPEND SDKCONFIG_DEFAULTS "${CMAKE_CURRENT_SOURCE_DIR}/sdkconfig.game.defaults")
+endif()
 if(EXISTS "${_raylib_iris_game}/sdkconfig.defaults")
     list(APPEND SDKCONFIG_DEFAULTS "${_raylib_iris_game}/sdkconfig.defaults")
+endif()
+if(EXISTS "${_raylib_iris_game}/sdkconfig.application.defaults")
+    list(APPEND SDKCONFIG_DEFAULTS "${_raylib_iris_game}/sdkconfig.application.defaults")
 endif()
 list(APPEND SDKCONFIG_DEFAULTS
     "${_raylib_iris_product}/sdkconfig.application.defaults"
@@ -56,6 +62,9 @@ list(APPEND SDKCONFIG_DEFAULTS
 set(FETCHCONTENT_SOURCE_DIR_RAYLIB_LITE_MOSAICO_UTILS "${_raylib_iris_utils}")
 include("${RAYLIB_LITE_ENGINE_ROOT}/examples/common_components/examples_common/project.cmake")
 list(APPEND EXTRA_COMPONENT_DIRS "${_raylib_iris_game}/main")
+if(EXISTS "${_raylib_iris_game}/components")
+    list(APPEND EXTRA_COMPONENT_DIRS "${_raylib_iris_game}/components")
+endif()
 set(MOSAICO_ESP_IRIS_ROOT "${_raylib_iris_utils}/ESP-Iris")
 set(MOSAICO_SYSTEM_UPDATE_CMAKE "${_raylib_iris_tools}/cmake/system_update.cmake")
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)

@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
 from mosaico_cli.cli import build_parser
 from mosaico_cli.app_commands import _engine_games, _iris_project
+from mosaico_cli.errors import SelectionError
 
 
 class GameCommandTests(unittest.TestCase):
@@ -43,6 +44,9 @@ class GameCommandTests(unittest.TestCase):
             template = root / "tools/templates/blank_game"
             template.mkdir(parents=True)
             (template / "partitions.csv").write_text("# product layout\n")
+            source = root / "engine/examples/native_game"
+            (source / "main").mkdir(parents=True)
+            (source / "main/CMakeLists.txt").write_text("idf_component_register()")
             legacy = root / "runs/raylib-iris/native_game"
             legacy.mkdir(parents=True)
             (legacy / "sdkconfig").write_text("legacy config\n")
@@ -54,6 +58,42 @@ class GameCommandTests(unittest.TestCase):
             self.assertEqual((legacy / "sdkconfig").read_text(), "legacy config\n")
             self.assertEqual((project / "partitions.csv").read_text(), "# product layout\n")
             self.assertIn("system_update", (project / "CMakeLists.txt").read_text().lower())
+
+    def test_external_games_do_not_require_example_registration(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template = root / "tools/templates/blank_game"
+            template.mkdir(parents=True)
+            (template / "partitions.csv").write_text("# product layout\n")
+            workspace = SimpleNamespace(root=root, tool_root=root / "tools", run_dir=root / "runs", recovery_project=root / "recovery")
+            projects = []
+            for parent in ("user one", "user two"):
+                source = root / parent / "my_game"
+                (source / "main").mkdir(parents=True)
+                (source / "CMakeLists.txt").write_text("project(my_game)")
+                (source / "main/CMakeLists.txt").write_text("idf_component_register()")
+                (source / "sdkconfig.defaults").write_text("CONFIG_ESP_MAIN_TASK_STACK_SIZE=24576\n")
+                (source / "version.txt").write_text("0.2.3\n")
+                before = {p.relative_to(source): p.read_bytes() for p in source.rglob("*") if p.is_file()}
+                with patch("mosaico_cli.app_commands._engine", return_value=root / "engine"), patch(
+                        "mosaico_cli.app_commands._engine_games", side_effect=AssertionError("must not query examples")):
+                    project = _iris_project(workspace, str(source))
+                    self.assertEqual(_iris_project(workspace, str(source)), project)
+                cmake = (project / "CMakeLists.txt").read_text()
+                self.assertIn(source.as_posix(), cmake)
+                self.assertIn("VERSION 0.2.3", cmake)
+                self.assertEqual(before, {p.relative_to(source): p.read_bytes() for p in source.rglob("*") if p.is_file()})
+                projects.append(project)
+            self.assertNotEqual(projects[0], projects[1])
+
+    def test_missing_explicit_path_never_selects_a_same_named_example(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            workspace = SimpleNamespace(root=root, recovery_project=root / "recovery")
+            with patch("mosaico_cli.app_commands._engine", return_value=root / "engine"), patch(
+                    "mosaico_cli.app_commands._engine_games", side_effect=AssertionError("must not query examples")):
+                with self.assertRaises(SelectionError):
+                    _iris_project(workspace, str(root / "missing/sky_hop"))
 
     def test_build_no_longer_accepts_a_product_root(self) -> None:
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):

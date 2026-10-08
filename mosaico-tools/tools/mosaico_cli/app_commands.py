@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
 import json
+import re
 from pathlib import Path
 import subprocess
 import sys
 
 from .errors import EnvironmentError, SelectionError
-from .project import resolve_project
+from .project import discover_artifacts, resolve_project
 from .scaffold import initialize_project
 
 GAME_TEMPLATES = {"shooter": "raylib_shooter", "sky-hop": "sky_hop", "tower-defense": "tower_defense"}
@@ -16,8 +18,9 @@ DEFAULT_GAME_TEMPLATE = "blank"
 
 IRIS_PROJECT_CMAKE = """cmake_minimum_required(VERSION 3.16)
 set(RAYLIB_LITE_GAME {game})
+set(RAYLIB_LITE_GAME_DIR {source})
 include("{module}")
-project({game} VERSION 1.0.0)
+project({game} VERSION {version})
 raylib_lite_iris_link_game_board()
 include("${{MOSAICO_SYSTEM_UPDATE_CMAKE}}")
 """
@@ -43,18 +46,45 @@ def _engine_games(engine, target):
             and (game.get("host", False) if target == "host" else game.get("boards", []))}
 
 
+def _cmake_literal(value):
+    """Quote paths without interpreting CMake variables or escape sequences."""
+    marker = "="
+    while "]" + marker + "]" in value:
+        marker += "="
+    return "[" + marker + "[" + value + "]" + marker + "]"
+
+
 def _iris_project(workspace, selected):
-    """Generate the ESP-Iris wrapper project for one native engine game."""
+    """Wrap a user-owned native game or a named Engine example."""
     engine = _engine(workspace, "an Iris build")
-    games = _engine_games(engine, "native")
-    name = Path(selected).name
-    if name not in games:
-        raise SelectionError(f"Not a native engine game: {selected}; choose one of {', '.join(sorted(games))}.")
+    requested = Path(selected).expanduser()
+    explicit = requested.exists() or requested.is_absolute() or len(requested.parts) > 1
+    if explicit:
+        source = resolve_project(workspace, str(requested), Path.cwd())
+    else:
+        games = _engine_games(engine, "native")
+        if selected not in games:
+            raise SelectionError(f"Not a native game: {selected}; specify a project path or choose one of {', '.join(sorted(games))}.")
+        source = games[selected].resolve()
+    if not (source / "main/CMakeLists.txt").is_file():
+        raise SelectionError(f"An Iris game needs a main/CMakeLists.txt component: {source}")
+    name = source.name
+    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", name):
+        raise SelectionError("Game directory names must start with a letter or underscore and contain only letters, digits, underscores or hyphens.")
+    version_file = source / "version.txt"
+    version = version_file.read_text(encoding="utf-8").strip() if version_file.is_file() else "1.0.0"
+    if not re.fullmatch(r"[0-9]+(?:\.[0-9]+){0,3}", version):
+        raise SelectionError(f"version.txt must contain a numeric CMake project version: {version_file}")
     template = workspace.tool_root / "templates" / "blank_game"
-    project = workspace.run_dir / "raylib-iris" / name / "project"
+    # Explicit projects with equal names must never reuse each other's build cache.
+    key = name + "-" + hashlib.sha256(str(source).encode()).hexdigest()[:12] if explicit else name
+    project = workspace.run_dir / "raylib-iris" / key / "project"
     project.mkdir(parents=True, exist_ok=True)
     (project / "CMakeLists.txt").write_text(IRIS_PROJECT_CMAKE.format(
-        game=name, module=(workspace.tool_root / "cmake/raylib_lite_iris_app.cmake").as_posix()))
+        game=name, source=_cmake_literal(source.as_posix()), version=version,
+        module=(workspace.tool_root / "cmake/raylib_lite_iris_app.cmake").as_posix()), encoding="utf-8")
+    (project / "sdkconfig.game.defaults").write_text(
+        'CONFIG_APP_PROJECT_VER="' + version + '"\n', encoding="utf-8")
     (project / "partitions.csv").write_bytes((template / "partitions.csv").read_bytes())
     return project
 
@@ -88,7 +118,7 @@ def add_commands(commands, project_commands):
         if name == "build":
             child.add_argument("--idf-path")
             child.add_argument("--target", choices=("native", "iris"), default="native",
-                               help="native: build the project as is; iris: wrap an engine game as an ESP-Iris app")
+                               help="native: build the project as is; iris: build a native game project path or named engine example as an ESP-Iris app")
         else:
             child.add_argument("--headless", action="store_true")
             child.add_argument("--frames", type=int, default=300)
@@ -161,7 +191,7 @@ def run(arguments, workspace):
                            project=project, build_dir=project / "build",
                            target="system-update-bundle",
                            definitions={"ESP_IRIS_PYTHON": str(iris_python)}, timeout=900)
-            context.status(f"system update bundle: {project / 'build' / (Path(selected).name + '-system-update.irisfw')}")
+            context.status(f"system update bundle: {project / 'build' / (discover_artifacts(project).project_name + '-system-update.irisfw')}")
         return 0
     engine = workspace.raylib_path
     if engine is None or not (engine / "host/run_game.py").is_file():
