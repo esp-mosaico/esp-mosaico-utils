@@ -50,7 +50,7 @@ def _iris_project(workspace, selected):
     name = Path(selected).name
     if name not in games:
         raise SelectionError(f"Not a native engine game: {selected}; choose one of {', '.join(sorted(games))}.")
-    template = workspace.tool_root / "templates" / "raylib_lite_iris"
+    template = workspace.tool_root / "templates" / "blank_game"
     project = workspace.run_dir / "raylib-iris" / name / "project"
     project.mkdir(parents=True, exist_ok=True)
     (project / "CMakeLists.txt").write_text(IRIS_PROJECT_CMAKE.format(

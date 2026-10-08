@@ -1,11 +1,5 @@
-# Keep the OTA writer only in the retained factory Recovery image. The normal
-# application exposes the enter-Recovery RPC through iris_ota_support_start().
-# CONFIG_ESP_IRIS_OTA is not set
+# Raylib-specific overrides of the shared blank_game product defaults.
 CONFIG_ESP_IRIS_USB_PRODUCT="ESP-Iris Mosaico Raylib Game"
-CONFIG_ESP_IRIS_HEALTH_TIMEOUT_MS=45000
-
-# The selected Engine Board supplies the USB-only Iris profile.
 # CONFIG_ESP_IRIS_TRANSPORT_TCP is not set
-
-# Product builds opt in even when standalone Engine examples disable Iris.
 CONFIG_ESP_MOSAICO_EXAMPLE_IRIS=y
+CONFIG_APP_PROJECT_VER="1.0.0"

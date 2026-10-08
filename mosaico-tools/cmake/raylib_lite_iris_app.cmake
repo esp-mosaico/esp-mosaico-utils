@@ -8,7 +8,7 @@
 #   raylib_lite_iris_link_game_board()
 #   include("${MOSAICO_SYSTEM_UPDATE_CMAKE}")
 #
-# The project directory must contain templates/raylib_lite_iris/partitions.csv.
+# The project directory must contain templates/blank_game/partitions.csv.
 # `mosaico.py game build --target iris <game>` generates such a project.
 # RAYLIB_LITE_ENGINE_ROOT and MOSAICO_BSP_ROOT are CMake or environment inputs.
 include_guard(GLOBAL)
@@ -16,6 +16,7 @@ include_guard(GLOBAL)
 get_filename_component(_raylib_iris_tools "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 get_filename_component(_raylib_iris_utils "${_raylib_iris_tools}/.." ABSOLUTE)
 set(_raylib_iris_template "${_raylib_iris_tools}/templates/raylib_lite_iris")
+set(_raylib_iris_product "${_raylib_iris_tools}/templates/blank_game")
 
 if(NOT RAYLIB_LITE_ENGINE_ROOT AND DEFINED ENV{RAYLIB_LITE_ENGINE_ROOT})
     set(RAYLIB_LITE_ENGINE_ROOT "$ENV{RAYLIB_LITE_ENGINE_ROOT}")
@@ -36,7 +37,7 @@ if(NOT EXISTS "${_raylib_iris_game}/main/CMakeLists.txt")
     message(FATAL_ERROR "${RAYLIB_LITE_GAME} is not a native engine game: ${_raylib_iris_game}")
 endif()
 if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/partitions.csv")
-    message(FATAL_ERROR "Copy ${_raylib_iris_template}/partitions.csv into ${CMAKE_CURRENT_SOURCE_DIR}")
+    message(FATAL_ERROR "Copy ${_raylib_iris_product}/partitions.csv into ${CMAKE_CURRENT_SOURCE_DIR}")
 endif()
 
 if(NOT SDKCONFIG)
@@ -44,11 +45,13 @@ if(NOT SDKCONFIG)
 endif()
 # Reuse the Engine's application-side Board and common native launcher.
 # The Board owns Iris hooks already; do not link the legacy hook component.
-set(SDKCONFIG_DEFAULTS "${_raylib_iris_template}/sdkconfig.defaults")
+set(SDKCONFIG_DEFAULTS "${_raylib_iris_product}/sdkconfig.defaults")
 if(EXISTS "${_raylib_iris_game}/sdkconfig.defaults")
     list(APPEND SDKCONFIG_DEFAULTS "${_raylib_iris_game}/sdkconfig.defaults")
 endif()
-list(APPEND SDKCONFIG_DEFAULTS "${_raylib_iris_template}/sdkconfig.application.defaults")
+list(APPEND SDKCONFIG_DEFAULTS
+    "${_raylib_iris_product}/sdkconfig.application.defaults"
+    "${_raylib_iris_template}/sdkconfig.application.defaults")
 # Keep Recovery and the product tools on the consuming workspace's revision.
 set(FETCHCONTENT_SOURCE_DIR_RAYLIB_LITE_MOSAICO_UTILS "${_raylib_iris_utils}")
 include("${RAYLIB_LITE_ENGINE_ROOT}/examples/common_components/examples_common/project.cmake")

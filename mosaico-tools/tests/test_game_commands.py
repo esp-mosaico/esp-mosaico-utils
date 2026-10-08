@@ -40,7 +40,7 @@ class GameCommandTests(unittest.TestCase):
     def test_iris_generation_preserves_legacy_project_configuration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            template = root / "tools/templates/raylib_lite_iris"
+            template = root / "tools/templates/blank_game"
             template.mkdir(parents=True)
             (template / "partitions.csv").write_text("# product layout\n")
             legacy = root / "runs/raylib-iris/native_game"
