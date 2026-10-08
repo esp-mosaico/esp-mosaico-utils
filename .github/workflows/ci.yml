@@ -248,8 +248,12 @@ jobs:
       - name: Restore ESP-IDF tools
         uses: actions/cache@v6
         with:
-          path: .idf/tools
-          key: firmware-idf-tools-${{ runner.os }}-${{ env.ESP_IDF_REVISION }}
+          # Cache relocatable downloads and toolchains; recreate Python environments
+          # against the interpreter installed by setup-python on this runner.
+          path: |
+            .idf/tools/dist
+            .idf/tools/tools
+          key: firmware-idf-toolchains-v2-${{ runner.os }}-${{ env.ESP_IDF_REVISION }}
       - name: Restore compiler cache
         uses: actions/cache@v6
         with:

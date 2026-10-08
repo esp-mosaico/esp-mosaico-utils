@@ -44,8 +44,8 @@ class IdfLowNoiseBuildTests(unittest.TestCase):
 
             artifacts = MODULE.collect_artifacts(project)
 
-            self.assertEqual(Path(artifacts[0]["path"]), build / "game.bin")
-            self.assertEqual(Path(artifacts[1]["path"]), build / "game.elf")
+            self.assertEqual(Path(artifacts[0]["path"]), (build / "game.bin").resolve())
+            self.assertEqual(Path(artifacts[1]["path"]), (build / "game.elf").resolve())
             self.assertEqual(len(artifacts), 3)
 
 
