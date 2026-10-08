@@ -14,6 +14,50 @@ from .scaffold import initialize_project
 GAME_TEMPLATES = {"shooter": "raylib_shooter", "sky-hop": "sky_hop", "tower-defense": "tower_defense"}
 DEFAULT_GAME_TEMPLATE = "blank"
 
+IRIS_PROJECT_CMAKE = """cmake_minimum_required(VERSION 3.16)
+set(RAYLIB_LITE_GAME {game})
+include("{module}")
+project({game} VERSION 1.0.0)
+raylib_lite_iris_link_game_board()
+include("${{MOSAICO_SYSTEM_UPDATE_CMAKE}}")
+"""
+
+
+def _engine(workspace, purpose):
+    engine = workspace.raylib_path
+    if engine is None or not (engine / "tools/game_cli.py").is_file():
+        raise EnvironmentError(f"Initialize the configured Raylib Lite Engine dependency before {purpose}.")
+    return engine
+
+
+def _engine_games(engine, target):
+    completed = subprocess.run(
+        [sys.executable, str(engine / "tools/game_cli.py"), "list", "--json"],
+        capture_output=True, text=True,
+    )
+    if completed.returncode:
+        raise EnvironmentError(completed.stderr.strip() or "Engine game listing failed.")
+    games = json.loads(completed.stdout)["games"]
+    return {game["name"]: Path(game["path"]) for game in games
+            if not game["name"].endswith("_dev")
+            and (game.get("host", False) if target == "host" else game.get("boards", []))}
+
+
+def _iris_project(workspace, selected):
+    """Generate the ESP-Iris wrapper project for one native engine game."""
+    engine = _engine(workspace, "an Iris build")
+    games = _engine_games(engine, "native")
+    name = Path(selected).name
+    if name not in games:
+        raise SelectionError(f"Not a native engine game: {selected}; choose one of {', '.join(sorted(games))}.")
+    template = workspace.tool_root / "templates" / "raylib_lite_iris"
+    project = workspace.run_dir / "raylib-iris" / name / "project"
+    project.mkdir(parents=True, exist_ok=True)
+    (project / "CMakeLists.txt").write_text(IRIS_PROJECT_CMAKE.format(
+        game=name, module=(workspace.tool_root / "cmake/raylib_lite_iris_app.cmake").as_posix()))
+    (project / "partitions.csv").write_bytes((template / "partitions.csv").read_bytes())
+    return project
+
 
 def add_commands(commands, project_commands):
     preview = project_commands.add_parser("sim", help="Preview a GSP application with its native PC backend")
@@ -43,6 +87,8 @@ def add_commands(commands, project_commands):
         child.add_argument("--project")
         if name == "build":
             child.add_argument("--idf-path")
+            child.add_argument("--target", choices=("native", "iris"), default="native",
+                               help="native: build the project as is; iris: wrap an engine game as an ESP-Iris app")
         else:
             child.add_argument("--headless", action="store_true")
             child.add_argument("--frames", type=int, default=300)
@@ -86,14 +132,36 @@ def run(arguments, workspace):
 
     if arguments.project and arguments.project_path:
         raise SelectionError("Use either the positional project or --project.")
-    project = resolve_project(workspace, arguments.project or arguments.project_path, Path.cwd())
+    iris = arguments.game_action == "build" and arguments.target == "iris"
+    selected = arguments.project or arguments.project_path
+    if iris:
+        if not selected:
+            raise SelectionError("Specify an engine game for an Iris build.")
+        project = _iris_project(workspace, selected)
+    else:
+        candidate = workspace.raylib_path / selected if workspace.raylib_path and selected else None
+        required = "CMakeLists.txt" if arguments.game_action == "build" else "game.sim.json"
+        project = (candidate.resolve() if candidate and not Path(selected).exists() and (candidate / required).is_file()
+                   else resolve_project(workspace, selected, Path.cwd()))
     if arguments.game_action == "build":
         import os
         from .runtime import RunContext, build_application
         if arguments.idf_path:
             os.environ["IDF_PATH"] = str(Path(arguments.idf_path).expanduser().resolve())
+        os.environ["RAYLIB_LITE_ENGINE_ROOT"] = str(workspace.raylib_path)
+        os.environ["MOSAICO_UTILS_ROOT"] = str(workspace.tool_root.parent)
+        os.environ["MOSAICO_BSP_ROOT"] = str(workspace.bsp_path)
         context = RunContext(workspace, "game-build", arguments.verbose, arguments.json)
         build_application(context, project)
+        if iris:
+            from .gateway import ensure_iris_tools
+            from .runtime import resolve_idf_path, run_idf_target
+            iris_python, _ = ensure_iris_tools(context)
+            run_idf_target(context, idf_path=resolve_idf_path(workspace, project),
+                           project=project, build_dir=project / "build",
+                           target="system-update-bundle",
+                           definitions={"ESP_IRIS_PYTHON": str(iris_python)}, timeout=900)
+            context.status(f"system update bundle: {project / 'build' / (Path(selected).name + '-system-update.irisfw')}")
         return 0
     engine = workspace.raylib_path
     if engine is None or not (engine / "host/run_game.py").is_file():
