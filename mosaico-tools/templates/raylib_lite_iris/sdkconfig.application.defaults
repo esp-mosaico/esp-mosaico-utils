@@ -6,3 +6,6 @@ CONFIG_ESP_IRIS_HEALTH_TIMEOUT_MS=45000
 
 # The selected Engine Board supplies the USB-only Iris profile.
 # CONFIG_ESP_IRIS_TRANSPORT_TCP is not set
+
+# Product builds opt in even when standalone Engine examples disable Iris.
+CONFIG_ESP_MOSAICO_EXAMPLE_IRIS=y
