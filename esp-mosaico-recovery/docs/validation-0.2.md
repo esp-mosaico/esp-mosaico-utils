@@ -270,3 +270,32 @@ Mosaico/Recovery 主机全套 483 项复测通过。
 
 [设备页截图](../../ESP-Iris/docs/images/workbench-devices-0.2.png) ·
 [连接选择器截图](../../ESP-Iris/docs/images/workbench-connections-0.2.png)
+
+## Workbench 原生命令输入（2026-10-09）
+
+实现提交 `7a41046`、`5e1b884`、`cba95a3`。日志面板新增单行命令输入，
+Enter 发送、上下键访问最近 32 条历史；离线、Observe 和只有数据链路时禁用。
+后端直接向控制 Console 写入文本，与协议记录共用写锁，删除未注册的
+`console.execute` RPC 路径。发送完成不代表固件执行成功，结果从设备日志读取；
+失败保留输入，不自动重发，不返回虚构的 Job ID。保留协议命令的带引号写法也会被拒绝。
+同时修复 Ready 后仍每两秒重复发送发现命令的问题和输入行按钮换行问题。
+
+- Iris Python/C host **603 passed**，mypy **57** 个文件、Ruff、生产构建通过。
+  Workbench 单元测试 **7 passed**；Playwright **18 passed / 4 hardware opt-in skipped**。
+  源文件预算 **22** 项和前端目录预算通过，未放宽限制。
+- 同一 Gateway 的 S31 高速 USB、H2 USB Serial/JTAG、C2 UART **74880 baud**
+  都通过网页输入 `iris help`、`iris status` 并收到本次发送之后的新日志；每条响应验证
+  控制端点、操作记录及 `completion=unconfirmed`。Boot ID 与上一节相同，无重启或刷写。
+- H2 旧固件在首次连续命令测试中出现一次 `ESP_ERR_TIMEOUT`：外部 REPL 单行队列
+  与网页状态轮询竞争。后续三设备测试通过，**不代表旧固件的竞态已经消失**。
+  固件源码改为注册的 REPL 回调最多等待一秒入队，不增设记录缓冲，也不重执行命令。
+  自定义 `esp_iris_console_submit()` 仍非阻塞。C host 覆盖队列耗尽、超时、tick 回绕、
+  停止/重启期间取消等待；H2 外部 REPL 固件在固定 ESP-IDF revision 下构建通过，零警告。
+  **该固件修复尚未刷入 H2；本轮不宣称修复后的硬件并发验收已完成。**
+
+运行中的主机代码更新到 `cba95a3`；完整原始证据保存在消费工作区
+`.codex-runs/iris-02/web-console/`，包含首次失败、三设备成功复测、最终页面和 H2 构建日志。
+实机用例是 `frontend/tests/hardware-console-input.spec.ts`，设备选择沿用
+`ESP_IRIS_TEST_URL` / `ESP_IRIS_CONNECTION_TARGETS`，不会自动重刷设备。
+
+[日志命令输入截图](../../ESP-Iris/docs/images/workbench-console-0.2.png)
