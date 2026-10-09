@@ -38,7 +38,7 @@ def test_same_size_different_content_conflicts_before_device_call(tmp_path, rout
         client = TestClient(TestServer(create_app(service)))
         await client.start_server()
         method = "PUT" if route == "file" else "POST"
-        url = "/v1/devices/demo-a1b2c3d4/" + route
+        url = "/v2/devices/demo-a1b2c3d4/" + route
         headers = {"X-Operation-ID": "same-operation"}
         try:
             response = await client.request(method, url, headers=headers, **first)
@@ -74,7 +74,7 @@ def test_raw_rpc_identity_uses_decoded_bytes_not_input_encoding(tmp_path):
         await client.start_server()
         try:
             for payload in ({"payload_text": "AAA"}, {"payload_hex": "414141"}, {"payload_base64": "QUFB"}):
-                response = await client.post("/v1/devices/demo-a1b2c3d4/rpc/raw",
+                response = await client.post("/v2/devices/demo-a1b2c3d4/rpc/raw",
                     headers={"X-Operation-ID": "same"}, json={"service_id": 1, "method_id": 1, **payload})
                 assert response.status == 200
                 await response.read()

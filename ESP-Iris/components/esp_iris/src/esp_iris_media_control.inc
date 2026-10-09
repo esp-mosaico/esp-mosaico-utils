@@ -19,6 +19,7 @@ static bool handle_media(iris_runtime_t *runtime,
     }
     const bool create = header->type == ESP_IRIS_MEDIA_MIRROR_START ||
                         header->type == ESP_IRIS_MEDIA_OPEN;
+    capture_expire(service_state(false));
     iris_service_state_t *state = service_state(create);
     if (state == NULL || service_streams(state, create) == NULL) {
         if (header->type == ESP_IRIS_MEDIA_CLOSE &&
@@ -58,7 +59,7 @@ static bool handle_media(iris_runtime_t *runtime,
         uint32_t total_size = 0;
         esp_err_t err = state->screen.begin(&requested, &actual, &total_size,
                                             state->screen.user_ctx);
-        if (err != ESP_OK || total_size == 0) {
+        if (err != ESP_OK || total_size == 0 || total_size > IRIS_SNAPSHOT_MAX_BYTES) {
             if (err == ESP_OK && state->screen.end != NULL) {
                 state->screen.end(state->screen.user_ctx);
             }
@@ -69,6 +70,9 @@ static bool handle_media(iris_runtime_t *runtime,
         }
         state->streams->capture = (iris_capture_t) {
             .active = true,
+            .session_id = runtime->session_id,
+            .deadline_us = esp_timer_get_time() + IRIS_SNAPSHOT_TIMEOUT_US,
+            .idle_deadline_us = esp_timer_get_time() + IRIS_SNAPSHOT_IDLE_US,
             .description = actual,
             .total_size = total_size,
             .stream_id = header->request_id != 0 ? header->request_id : 1,
@@ -86,7 +90,9 @@ static bool handle_media(iris_runtime_t *runtime,
     }
     if (header->type == ESP_IRIS_MEDIA_READ &&
         header->channel == ESP_IRIS_CHANNEL_SCREEN) {
-        if (!state->streams->capture.active || header->payload_size != 8) {
+        if (!state->streams->capture.active || header->payload_size != 8 ||
+            header->stream_id != state->streams->capture.stream_id ||
+            runtime->session_id != state->streams->capture.session_id) {
             (void)iris_queue_error(runtime, header->request_id,
                                    ESP_ERR_INVALID_STATE,
                                    header->channel, header->type);
@@ -97,7 +103,13 @@ static bool handle_media(iris_runtime_t *runtime,
         if (maximum > CONFIG_ESP_IRIS_MEDIA_LATEST_BYTES) {
             maximum = CONFIG_ESP_IRIS_MEDIA_LATEST_BYTES;
         }
-        if (maximum == 0 || offset >= state->streams->capture.total_size) {
+        if (!runtime->data_link && maximum > IRIS_SNAPSHOT_CONTROL_CHUNK_BYTES)
+            maximum = IRIS_SNAPSHOT_CONTROL_CHUNK_BYTES;
+        if (maximum > ESP_IRIS_MAX_PAYLOAD_SIZE - 12U)
+            maximum = ESP_IRIS_MAX_PAYLOAD_SIZE - 12U;
+        if (maximum == 0 || frame->payload[6] != 0 || frame->payload[7] != 0 ||
+            offset != state->streams->capture.received ||
+            offset >= state->streams->capture.total_size) {
             (void)iris_queue_error(runtime, header->request_id,
                                    ESP_ERR_INVALID_ARG,
                                    header->channel, header->type);
@@ -116,17 +128,30 @@ static bool handle_media(iris_runtime_t *runtime,
         }
         iris_put_le32(runtime->rx_wire, offset);
         iris_put_le32(runtime->rx_wire + 4, state->streams->capture.total_size);
+        state->streams->capture.received += size;
+        state->streams->capture.crc32 = iris_crc32(runtime->rx_wire + 8, size,
+                                                  state->streams->capture.crc32);
+        state->streams->capture.idle_deadline_us = esp_timer_get_time() + IRIS_SNAPSHOT_IDLE_US;
         const bool finished = offset + size == state->streams->capture.total_size;
+        if (finished) iris_put_le32(runtime->rx_wire + 8 + size,
+                                    state->streams->capture.crc32);
         (void)iris_queue_frame(runtime, header->channel,
                                ESP_IRIS_MEDIA_DATA,
                                ESP_IRIS_FLAG_RESPONSE |
                                    (finished ? ESP_IRIS_FLAG_STREAM_END : 0),
                                header->request_id, state->streams->capture.stream_id,
-                               runtime->rx_wire, size + 8);
+                               runtime->rx_wire, size + 8 + (finished ? 4 : 0));
         return true;
     }
     if (header->type == ESP_IRIS_MEDIA_CLOSE &&
         header->channel == ESP_IRIS_CHANNEL_SCREEN) {
+        if (header->payload_size != 0 || (state->streams->capture.active &&
+            (header->stream_id != state->streams->capture.stream_id ||
+             runtime->session_id != state->streams->capture.session_id))) {
+            (void)iris_queue_error(runtime, header->request_id, ESP_ERR_INVALID_STATE,
+                                   header->channel, header->type);
+            return true;
+        }
         if (state->streams->capture.active && state->screen.end != NULL) {
             state->screen.end(state->screen.user_ctx);
         }
@@ -194,6 +219,7 @@ static bool handle_media(iris_runtime_t *runtime,
             slot->pull = true;
         }
         slot->active = true;
+        slot->session_id = runtime->session_id;
         slot->stream_id = header->stream_id != 0
             ? header->stream_id : header->request_id;
         slot->pending = false;
@@ -214,6 +240,13 @@ static bool handle_media(iris_runtime_t *runtime,
     }
     if (header->type == ESP_IRIS_MEDIA_MIRROR_STOP) {
         iris_media_slot_t *slot = &state->streams->media[index];
+        if (header->payload_size != 0 || (slot->active &&
+            (slot->session_id != runtime->session_id ||
+             slot->stream_id != header->stream_id))) {
+            (void)iris_queue_error(runtime, header->request_id, ESP_ERR_INVALID_STATE,
+                                   header->channel, header->type);
+            return true;
+        }
         if (index == 0 && slot->pull && state->screen.end != NULL) {
             state->screen.end(state->screen.user_ctx);
         }

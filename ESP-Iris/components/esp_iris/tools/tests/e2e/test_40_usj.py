@@ -19,7 +19,7 @@ pytestmark = [
 ]
 
 
-def test_usb_serial_jtag_requires_opt_in_and_reuses_physical_session(
+def test_usb_serial_jtag_requires_opt_in_and_renegotiates_without_reset(
     iris_board, iris_artifacts, firmware_profile
 ) -> None:
     assert firmware_profile == "services_usj"
@@ -51,12 +51,13 @@ def test_usb_serial_jtag_requires_opt_in_and_reuses_physical_session(
             assert raw.session is not None and raw.session.info is not None
             assert raw.session.info.device_id == device_id
             assert raw.session.info.boot_id == boot_id
-            assert raw.session.info.session_id == session_id
+            assert raw.session.info.session_id != session_id
+            session_id_after_attach = raw.session.info.session_id
             await raw.send_frame(
                 Frame(
                     channel=Channel.CONTROL,
                     type=ControlType.HELLO_ACK,
-                    session_id=session_id,
+                    session_id=session_id_after_attach,
                     sequence=0x500,
                 )
             )
@@ -70,7 +71,7 @@ def test_usb_serial_jtag_requires_opt_in_and_reuses_physical_session(
             assert raw.task is not None and not raw.task.done()
             status = await raw.session.status()
             assert status["boot_id"] == boot_id
-            assert status["session_id"] == session_id
+            assert status["session_id"] == session_id_after_attach
             await raw.session.rpc(TEST_SERVICE_ID, STOP_FOR_FLASH_METHOD)
             await asyncio.sleep(0.5)
         finally:

@@ -1,9 +1,15 @@
 # Required normal-application contract. Effective values are checked at build time.
+# The native application bootloader must initialize the same Flash bus mode
+# as retained Vibe Mode; the S31 product contract requires QIO throughout.
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 CONFIG_ESP_IRIS_FIRMWARE_ROLE=1
-CONFIG_ESP_IRIS_PRODUCT_CONTRACT="esp-mosaico/v1"
+CONFIG_ESP_IRIS_PRODUCT_CONTRACT="esp-mosaico/v2"
 CONFIG_ESP_IRIS_BOARD_ID="esp-mosaico"
-CONFIG_ESP_IRIS_LAYOUT_ID="mosaico-retained-recovery-2m-v1"
-CONFIG_ESP_IRIS_RECOVERY_ABI=1
+CONFIG_ESP_IRIS_LAYOUT_ID="mosaico-retained-test-2m-v2"
+CONFIG_ESP_IRIS_RECOVERY_ABI=2
 CONFIG_ESP_IRIS_OTA_DEFAULT_VIA_RECOVERY=y
 CONFIG_ESP_IRIS_SYSTEM_INVENTORY=y
 # CONFIG_ESP_IRIS_OTA is not set
+
+# ABI 2 selector includes NVS intent handling within the fixed 24 KiB loader.
+CONFIG_BOOTLOADER_LOG_LEVEL_ERROR=y

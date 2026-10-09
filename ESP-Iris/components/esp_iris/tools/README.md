@@ -6,23 +6,23 @@ stable `device_id`, exposes REST/WebSocket APIs, stores durable engineering
 records, and serves the React Web Workbench. The `ctl` command-line client and
 external agents use the same API concurrently with the Workbench.
 
-Each physical device has at most one active Gateway session, but one Gateway
-can own many device sessions. Every Workbench, CLI follow command, or external
+Each physical device has one Gateway owner, with independently bound control
+and data sessions. One Gateway can own many devices. Every Workbench, CLI follow command, or external
 agent WebSocket receives an independent event stream. Device-changing
 operations are serialized per device; observers do not compete for events.
 
 The Gateway is source distributed with the ESP-IDF component. It is not
 installed as a Python package.
 
-When launched through ESP-Mosaico's `mosaico.py`, the Gateway is owned by a
-project session: discovery is passive, acquisition is explicit, and only the
-current owner reconnects a device. Local `/v1/project` APIs report ownership
+When launched with project session options, discovery is passive, acquisition
+is explicit, and only the
+current owner reconnects a device. Local `/v2/project` APIs report ownership
 and perform reserved, idempotent device transfers. Shared project Gateways use independent client leases:
-CLI clients renew while their command runs, every `iris run` retains its own
+CLI clients renew while their command runs, each foreground client retains its own
 client, and each Web workbench event connection retains a client. With no
 clients and no active work, the service shuts down after 10 idle seconds.
 HTTP status queries do not retain clients; there is no stop endpoint. The
-legacy owner-pipe mode remains readable during migration. Each project
+owner-pipe lifecycle is available for a directly supervised process. Each project
 keeps separate records; API/capability compatibility governs reuse. Exact source matching is optional.
 The standalone `esp_iris.py web` commands below retain their existing automatic
 connection behavior and do not participate in project ownership coordination.
@@ -32,7 +32,7 @@ connection behavior and do not participate in project ownership coordination.
 - Python 3.8 or newer
 - Linux, macOS, or Windows; real-board validation currently focuses on Linux
 - Node.js and npm when the Workbench must be built from source
-- A dedicated serial endpoint for USB transports
+- Exclusive console access while Gateway is attached; stock monitor works independently
 
 Set one path for the rest of this guide:
 
@@ -144,7 +144,7 @@ python "$ESP_IRIS_COMPONENT_DIR/tools/esp_iris.py" web \
 
 An explicit USB port may be absent at startup. The API and Workbench still
 start, and the port is retried until it can be resolved and exclusively owned.
-`GET /v1/endpoints` reports waiting, ambiguous, or owned-elsewhere conditions.
+`GET /v2/endpoints` reports waiting, ambiguous, or owned-elsewhere conditions.
 Aliases and automatic discovery share one physical endpoint lock and session.
 
 Explicit `--usb` selection supports custom application VID/PID/product strings;
@@ -165,7 +165,7 @@ expected USB disconnect/re-enumeration; only live ROM descriptors justify a
 
 Host-side ROM probes and Recovery installation use the ordinary operation
 queue/history (`host.probe`, `host.recovery`). The local CLI publishes a private,
-one-use request file and submits its ID to `POST /v1/host-operations`. Executable
+one-use request file and submits its ID to `POST /v2/host-operations`. Executable
 commands and environment values are never accepted in the HTTP body or saved
 in public operation parameters. Browser-origin and remote submissions are
 rejected. Results are read through the existing operation status endpoint.
@@ -189,9 +189,10 @@ The former maintenance lease API, CLI commands and persisted lease table are
 removed. All participating host tools must use this implementation; mixed
 versions and resuming old lease workflows are not supported.
 
-Application CDC0 carries framed ESP-Iris data, not a text console. Flash and
-monitor through a separate UART/Serial-JTAG interface or manually enter the ROM
-downloader when required.
+Application CDC0 carries text logs and printable control records. CDC1 carries
+bulk data. Stock monitor needs no Iris extension; release Gateway's console
+ownership before attaching monitor. Flash/reset behavior follows the hardware
+interface and the application's bootloader configuration.
 
 ### Select USB Serial/JTAG
 
@@ -211,6 +212,21 @@ The device application must first create its network interface. Then select its
 TCP endpoint in the Gateway/Workbench. Start with the
 [`tcp_wifi`](../examples/tcp_wifi/README.md) or
 [`tcp_pairing`](../examples/tcp_pairing/README.md) example.
+
+### Select UART and reset explicitly
+
+```bash
+python "$ESP_IRIS_COMPONENT_DIR/tools/esp_iris.py" web \
+  --uart /dev/serial/by-id/<adapter> --uart-baudrate 115200
+```
+
+Match the product's `CONFIG_ESP_CONSOLE_UART_BAUDRATE` (for example 74880 on
+ESP32-C2 with a 26 MHz crystal). UART and Serial/JTAG support RPC, jobs, input
+and bounded screenshots; continuous media, files and firmware require data.
+Gateway opens and reconnects without resetting. Its hardware-reset command/API
+starts capture before applying DTR/RTS or Serial/JTAG run/ROM sequences. Raw
+bytes before HELLO retain capture offsets and an unknown boot identity; later
+association does not relabel old bytes as belonging to a new boot.
 
 ## Access and authentication
 
@@ -253,7 +269,7 @@ the Gateway authorizes the actual TCP peer.
 | Settings | Access mode, credentials, tokens, TLS, and system configuration |
 
 The interactive OpenAPI view is available at `/docs`; the machine-readable
-contract is `/v1/openapi.json`; metrics are exposed at `/v1/metrics`.
+contract is `/v2/openapi.json`; metrics are exposed at `/v2/metrics`.
 
 ### File API
 
@@ -261,14 +277,14 @@ The file endpoints address only product-registered logical volumes:
 
 | Method and path | Behavior |
 | --- | --- |
-| `GET /v1/devices/{id}/files/volumes` | Volume capabilities and transfer limits |
-| `GET /v1/devices/{id}/files` | Paginated directory list |
-| `GET /v1/devices/{id}/files/stat` | File or directory metadata and opaque ETag |
-| `GET /v1/devices/{id}/file` | Stream download, including HTTP Range |
-| `PUT /v1/devices/{id}/file` | Stream create or atomic replacement |
-| `POST /v1/devices/{id}/directories` | Create one directory |
-| `POST /v1/devices/{id}/file-rename` | Same-volume rename without overwrite |
-| `DELETE /v1/devices/{id}/file` | Delete a file or empty directory |
+| `GET /v2/devices/{id}/files/volumes` | Volume capabilities and transfer limits |
+| `GET /v2/devices/{id}/files` | Paginated directory list |
+| `GET /v2/devices/{id}/files/stat` | File or directory metadata and opaque ETag |
+| `GET /v2/devices/{id}/file` | Stream download, including HTTP Range |
+| `PUT /v2/devices/{id}/file` | Stream create or atomic replacement |
+| `POST /v2/devices/{id}/directories` | Create one directory |
+| `POST /v2/devices/{id}/file-rename` | Same-volume rename without overwrite |
+| `DELETE /v2/devices/{id}/file` | Delete a file or empty directory |
 
 Upload requires `Content-Length` and is limited to 32 MiB by the Gateway. Use
 `overwrite=true` with `If-Match` for replacement. The Gateway forwards request
@@ -407,10 +423,9 @@ Run `npm ci && npm run build` in `tools/frontend`, then restart the Gateway.
 
 ### Opening USB resets or disconnects the board
 
-Confirm that firmware and Gateway use the same transport. For USB Serial/JTAG,
-disable the ESP-IDF USB Serial/JTAG console and do not let flashing/monitoring
-tools own the endpoint concurrently. For application CDC0, use a separate
-programming interface.
+Keep the standard ESP-IDF console enabled. Gateway and flashing/monitoring
+tools must not own the same endpoint concurrently. Check DTR/RTS wiring and
+the selected reset circuit. Reconnect never deliberately resets the device.
 
 ### TCP never becomes reachable
 
@@ -470,11 +485,11 @@ source fingerprints, shared lifecycle and product Recovery preconditions.
 
 ### Receiver-initiated device handoff
 
-`POST /v1/project/takeovers` runs on the receiving project Gateway. Select exactly
+`POST /v2/project/takeovers` runs on the receiving project Gateway. Select exactly
 one `device_id` or `endpoint`; optionally pass a UUID `takeover_id`, `force` and
 `timeout` (default 120 seconds, maximum 3600). It resolves the current live local
 owner and asks that owner to use the existing reserved transfer and validated
-acceptance protocol. An unowned device uses `/v1/project/acquire` instead.
+acceptance protocol. An unowned device uses `/v2/project/acquire` instead.
 
 Without force, a busy device returns its operation, mirror and Job reasons.
 With force, the owner closes admission only for this device, cancels queued work,
@@ -486,15 +501,15 @@ locks, so unrelated devices can continue and receivers can accept incoming work
 while coordinating an outbound request. Peer failures preserve the takeover ID;
 query its durable state before retrying with the same ID.
 
-The public record routes are `GET /v1/project/takeovers/{takeover_id}` and
-`POST /v1/project/takeovers/{takeover_id}/{resume|abort|reconcile}`. Responses
+The public record routes are `GET /v2/project/takeovers/{takeover_id}` and
+`POST /v2/project/takeovers/{takeover_id}/{resume|abort|reconcile}`. Responses
 contain a `takeover` record with `takeover_id`. Resume runs in the original
 receiver, abort in the original owner; completed takeovers cannot be rolled back.
 Reconcile requires both original sessions to have exited and a participant
 project to prove all physical locks are free.
 
 The receiving request retains its Gateway until validation finishes. It calls
-`/v1/project/handoff/prepare` on the owner, which validates the receiver and its
+`/v2/project/handoff/prepare` on the owner, which validates the receiver and its
 pairing setup before releasing any endpoint. The receiver then validates the
 reserved identity locally. This peer endpoint is an implementation detail;
 there is no owner-initiated public transfer API, callback accept API or legacy

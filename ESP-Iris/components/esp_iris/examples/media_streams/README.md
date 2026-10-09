@@ -1,6 +1,6 @@
 # Bounded image and audio streams
 
-This USB CDC0 example publishes two synthetic streams without a display,
+This dual-CDC USB example publishes two synthetic streams without a display,
 camera, microphone, BSP, or GSP:
 
 - **IMAGE:** RGB565 by default, with RGB888, valid embedded JPEG, and valid
@@ -37,8 +37,9 @@ The available overlays are `sdkconfig.rgb888.defaults`,
 JPEG and PNG are static encoded fixtures; the raw formats animate. Opus is not
 embedded because a product should submit packets from its own encoder.
 
-Use a separate UART or USB Serial/JTAG programming interface; application CDC0
-is reserved for the ESP-Iris binary link.
+CDC0 provides a text console for stock `idf.py monitor`; CDC1 carries image
+and audio streams. Close Gateway before monitoring the same console. Flash
+through the board's ROM download interface.
 
 ## Expected result
 

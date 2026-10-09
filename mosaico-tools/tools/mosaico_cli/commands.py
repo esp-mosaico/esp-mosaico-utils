@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import getpass
+import hashlib
 import json
 import os
 import re
@@ -334,7 +335,7 @@ def list_devices(context: RunContext, gateway_profile: str | None) -> dict[str, 
     from .session_runtime import CURRENT_SCOPE, request
     project_scope = CURRENT_SCOPE.get()
     discovered = (
-        request(session.connection_args[1], "/v1/project").get("endpoints", [])
+        request(session.connection_args[1], "/v2/project").get("endpoints", [])
         if project_scope is not None and session.profile is None else []
     )
     return {
@@ -516,6 +517,7 @@ def start_system_update(arguments: Any, context: RunContext) -> dict[str, Any]:
     external_source = manifest_path is not None
 
     project: Path | None = None
+    artifacts = None
     bundle: Path | None = None
     reused_build = False
     if external_source:
@@ -590,6 +592,18 @@ def start_system_update(arguments: Any, context: RunContext) -> dict[str, Any]:
         )
 
     if bundle is not None:
+        if artifacts is not None:
+            image_sha256 = hashlib.sha256(artifacts.image.read_bytes()).hexdigest()
+            if not any(item.get("kind") == "application" and
+                       item.get("sha256") == image_sha256
+                       for item in bundle_plan["components"]):
+                raise BuildError("The System Update bundle does not contain the project's built application.")
+            context.status("evidence: archiving matching BIN, ELF and map before System Update")
+            gateway_json(
+                context, session, "firmware-add", str(artifacts.image),
+                "--elf", str(artifacts.elf), "--map", str(artifacts.map_file),
+                timeout=timeout,
+            )
         context.status("system update: submitting local atomic bundle")
         operation = run_system_update_bundle(
             context,
@@ -664,7 +678,12 @@ def install(arguments: Any, context: RunContext) -> dict[str, Any]:
         f"({artifacts.image.stat().st_size} bytes, {artifacts.target})"
     )
     model = select_model(workspace, None)
-    recovery_manifest = load_bundle(workspace.recovery_dir, model.target)
+    recovery_source = getattr(arguments, "recovery_source", "reviewed")
+    recovery_directory = workspace.recovery_dir
+    if recovery_source == "current":
+        recovery_directory = workspace.recovery_project / "build-mosaico-recovery" / "recovery-current"
+        context.status("validation: explicitly using the current-source Vibe Mode candidate")
+    recovery_manifest = load_bundle(recovery_directory, model.target)
     if artifacts.target != model.target:
         raise BuildError(
             f"The project target is {artifacts.target!r}, but the device requires "
@@ -1024,6 +1043,8 @@ def recover(arguments: Any, context: RunContext) -> dict[str, Any]:
     return {
         **plan,
         "status": "succeeded",
+        "checks": {**plan["checks"], "bundle_verified": True},
+        "recovery_version": recovery_version,
         "device_id": verified_device_id,
         "hardware_mac": status.get("hardware_mac") or selected_hardware_mac,
         "boot_id": status.get("boot_id"),

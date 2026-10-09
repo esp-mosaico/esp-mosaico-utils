@@ -9,11 +9,11 @@ if(NOT CONFIG_ESP_IRIS_OTA)
 endif()
 
 partition_table_get_partition_info(
-    recovery_partition_offset "--partition-name factory" "offset")
+    recovery_partition_offset "--partition-name vibe_mode" "offset")
 partition_table_get_partition_info(
-    recovery_partition_size "--partition-name factory" "size")
+    recovery_partition_size "--partition-name vibe_mode" "size")
 partition_table_get_partition_info(
-    normal_partition_offset "--partition-name ota_0" "offset")
+    normal_partition_offset "--partition-name main_app" "offset")
 partition_table_get_partition_info(
     ota_data_partition_offset "--partition-name otadata" "offset")
 
@@ -31,10 +31,16 @@ set(recovery_source_description "${CMAKE_BINARY_DIR}/project_description.json")
 set(recovery_source_bootloader "${CMAKE_BINARY_DIR}/bootloader/bootloader.bin")
 set(recovery_source_partition_table
     "${CMAKE_BINARY_DIR}/partition_table/partition-table.bin")
-set(recovery_source_ota_data "${CMAKE_BINARY_DIR}/ota_data_initial.bin")
+set(recovery_source_ota_data "${CMAKE_BINARY_DIR}/recovery-ota-data.bin")
+add_custom_command(OUTPUT "${recovery_source_ota_data}"
+    COMMAND "${recovery_python}" "${CMAKE_CURRENT_LIST_DIR}/../tools/boot_intent.py"
+        "${recovery_source_ota_data}"
+    DEPENDS "${CMAKE_CURRENT_LIST_DIR}/../tools/boot_intent.py"
+    VERBATIM)
+add_custom_target(recovery-boot-intent DEPENDS "${recovery_source_ota_data}")
 set(recovery_source_application "${CMAKE_BINARY_DIR}/${PROJECT_NAME}.bin")
 # ESP-IDF accepts an app if it fits any app partition; ota_0 is larger than
-# factory here. Make overflow of the retained slot a hard build failure.
+# vibe_mode here. Make overflow of the retained slot a hard build failure.
 add_custom_target(recovery-slot-check ALL
     COMMAND "${CMAKE_COMMAND}"
         "-DRECOVERY_BINARY=${recovery_source_application}"
@@ -43,6 +49,34 @@ add_custom_target(recovery-slot-check ALL
     COMMENT "Checking the immutable Recovery slot size"
     VERBATIM)
 add_dependencies(recovery-slot-check app)
+# This project builds Vibe Mode itself. IDF's ordinary application default is
+# main_app; replace its generated entries so native flash cannot put this
+# maintenance image in the user's application slot. Product applications keep
+# the standard IDF targets and never include this file.
+foreach(native_target flash app-flash)
+    set_property(TARGET ${native_target} PROPERTY IMAGES "")
+    set_property(TARGET ${native_target} PROPERTY FLASH_FILE "")
+    set_property(TARGET ${native_target} PROPERTY FLASH_ENTRY "")
+    if(TARGET encrypted-${native_target})
+        foreach(image_property FLASH_FILE FLASH_ENTRY ENCRYPTED_IMAGES NON_ENCRYPTED_IMAGES)
+            set_property(TARGET encrypted-${native_target} PROPERTY ${image_property} "")
+        endforeach()
+        add_dependencies(encrypted-${native_target} recovery-slot-check)
+    endif()
+    esptool_py_flash_target_image(${native_target} app
+        "${recovery_partition_offset}" "${recovery_source_application}")
+    add_dependencies(${native_target} recovery-slot-check)
+endforeach()
+esptool_py_flash_target_image(flash bootloader
+    "${CONFIG_BOOTLOADER_OFFSET_IN_FLASH}" "${recovery_source_bootloader}")
+esptool_py_flash_target_image(flash partition-table
+    "${CONFIG_PARTITION_TABLE_OFFSET}" "${recovery_source_partition_table}")
+esptool_py_flash_target_image(flash otadata
+    "${ota_data_partition_offset}" "${recovery_source_ota_data}")
+add_dependencies(flash recovery-boot-intent)
+if(TARGET encrypted-flash)
+    add_dependencies(encrypted-flash recovery-boot-intent)
+endif()
 set(recovery_self_update_component_dir
     "${CMAKE_BINARY_DIR}/recovery-self-update-components")
 set(recovery_self_update_manifest
@@ -124,7 +158,7 @@ add_custom_target(recovery-current-bundle
     DEPENDS "${recovery_tool}"
     COMMENT "Packaging an unreviewed Recovery candidate from the current build"
     VERBATIM)
-add_dependencies(recovery-current-bundle app bootloader partition_table_bin blank_ota_data)
+add_dependencies(recovery-current-bundle app bootloader partition_table_bin recovery-boot-intent)
 
 if(NOT CONFIG_SPIRAM_XIP_FROM_PSRAM)
     message(FATAL_ERROR
@@ -174,7 +208,7 @@ add_custom_target(update-recovery-prebuilt
     DEPENDS "${recovery_tool}"
     COMMENT "Atomically publishing the complete reviewed Recovery bundle"
     VERBATIM)
-add_dependencies(update-recovery-prebuilt app bootloader partition_table_bin blank_ota_data)
+add_dependencies(update-recovery-prebuilt app bootloader partition_table_bin recovery-boot-intent)
 
 set(MOSAICO_RECOVERY_SOURCE "reviewed" CACHE STRING
     "Internal source used by mosaico-recover-flash: reviewed or current")
@@ -212,7 +246,7 @@ esptool_py_flash_to_partition(
     mosaico-recover-flash otadata
     "${mosaico_recovery_bundle_dir}/ota_data_initial.bin")
 esptool_py_flash_to_partition(
-    mosaico-recover-flash factory
+    mosaico-recover-flash vibe_mode
     "${mosaico_recovery_bundle_dir}/factory.bin")
 
 message(STATUS

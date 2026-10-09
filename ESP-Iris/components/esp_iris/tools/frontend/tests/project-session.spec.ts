@@ -8,11 +8,11 @@ for (const force of [false, true]) {
     ];
     let owner = "session-b";
     const actions: { action: string; body: Record<string, unknown> }[] = [];
-    await page.route("**/v1/health", async (route) => {
+    await page.route("**/v2/health", async (route) => {
       const response = await route.fetch();
       await route.fulfill({ json: { ...await response.json(), project_session: sessions[0] } });
     });
-    await page.route("**/v1/project**", async (route) => {
+    await page.route("**/v2/project**", async (route) => {
       const request = route.request();
       if (request.method() === "POST") {
         const action = new URL(request.url()).pathname.split("/").pop()!;
@@ -64,14 +64,14 @@ test("transferred device history stays readable without polling its former owner
   const history = { device_id: "old-device", suggested_alias: "Transferred device", connected: false, cached: true, state: "offline" };
   const current = { device_id: "current-device", suggested_alias: "Current device", connected: true, cached: false, state: "idle" };
   let forbiddenRequests = 0;
-  await page.route("**/v1/devices**", async (route) => {
+  await page.route("**/v2/devices**", async (route) => {
     const path = new URL(route.request().url()).pathname;
-    if (path === "/v1/devices") {
+    if (path === "/v2/devices") {
       await route.fulfill({ json: { demo: false, devices: [history, current] } });
-    } else if (path === "/v1/devices/old-device") {
+    } else if (path === "/v2/devices/old-device") {
       forbiddenRequests += 1;
       await route.fulfill({ status: 409, json: { message: "device belongs to another project" } });
-    } else if (path === "/v1/devices/current-device") {
+    } else if (path === "/v2/devices/current-device") {
       await route.fulfill({ json: { ...current, stale: false, mode: "develop" } });
     } else {
       await route.continue();

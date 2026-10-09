@@ -15,7 +15,7 @@ export default function Settings({ mode, demo, localAuthRequired, projectSession
   const [message, setMessage] = useState("");
 
   async function refreshTokens() {
-    const result = await api<{ tokens: Token[] }>("/v1/auth/tokens");
+    const result = await api<{ tokens: Token[] }>("/v2/auth/tokens");
     setTokens(result.tokens);
   }
 
@@ -28,7 +28,7 @@ export default function Settings({ mode, demo, localAuthRequired, projectSession
       : tokenProfile === "write"
         ? ["files.read", "files.write"]
         : ["files.read"];
-    const result = await api<Token>("/v1/auth/tokens", { method: "POST", body: JSON.stringify({ name, scopes }), headers: { "Content-Type": "application/json" } });
+    const result = await api<Token>("/v2/auth/tokens", { method: "POST", body: JSON.stringify({ name, scopes }), headers: { "Content-Type": "application/json" } });
     setShownToken(result.token || "");
     setName("");
     await refreshTokens();
@@ -36,19 +36,19 @@ export default function Settings({ mode, demo, localAuthRequired, projectSession
 
   async function revoke(id: string) {
     if (!window.confirm("确认撤销此 Agent Token？撤销后无法恢复。")) return;
-    await api(`/v1/auth/tokens/${id}`, { method: "DELETE" });
+    await api(`/v2/auth/tokens/${id}`, { method: "DELETE" });
     await refreshTokens();
   }
 
   async function changePassword(event: FormEvent) {
     event.preventDefault();
     if (!window.confirm("更改口令会使当前浏览器会话失效，确认继续？")) return;
-    await api("/v1/auth/password", { method: "PUT", body: JSON.stringify({ password }), headers: { "Content-Type": "application/json" } });
+    await api("/v2/auth/password", { method: "PUT", body: JSON.stringify({ password }), headers: { "Content-Type": "application/json" } });
     location.reload();
   }
 
   async function exportData() {
-    const response = await fetch("/v1/export", { method: "POST" });
+    const response = await fetch("/v2/export", { method: "POST" });
     if (!response.ok) return setMessage("导出失败");
     const blob = await response.blob();
     const link = document.createElement("a");
@@ -89,7 +89,7 @@ export default function Settings({ mode, demo, localAuthRequired, projectSession
 
       <section className="settings-section">
         <div className="panel-title"><span>数据与开发者资源</span></div>
-        <div className="settings-actions"><button onClick={exportData}>导出证据包 ZIP</button><button onClick={onOpenDocs}>查看 API 文档</button><a href="/v1/openapi.json" target="_blank" rel="noreferrer">打开 OpenAPI JSON</a></div>
+        <div className="settings-actions"><button onClick={exportData}>导出证据包 ZIP</button><button onClick={onOpenDocs}>查看 API 文档</button><a href="/v2/openapi.json" target="_blank" rel="noreferrer">打开 OpenAPI JSON</a></div>
       </section>
     </div>
   </main>;

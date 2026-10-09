@@ -378,11 +378,17 @@ class BoardController:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             ports = discover_iris_usb_devices(include_usb_serial_jtag=False)
-            matches = [item.path for item in ports if item.transport == "usb"]
+            # Raw protocol/service tests use the independent binary data CDC.
+            # Select by full hardware identity and descriptor role, never by
+            # enumeration order or an adjacent tty number.
+            serial = self.config.chip_mac.replace(":", "").lower()
+            matches = [item.path for item in ports
+                       if item.transport == "usb" and item.link_role == "data"
+                       and item.serial_number.lower() == serial]
             if len(matches) == 1:
                 return matches[0]
             time.sleep(0.25)
-        raise SafetyError("application USB CDC endpoint was not discovered")
+        raise SafetyError("selected device's Iris 0.2 data CDC was not discovered")
 
     def wait_console_marker(
         self,

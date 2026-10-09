@@ -37,6 +37,10 @@ def matching_artifact(store: Any, report: dict[str, Any]) -> dict[str, Any] | No
 def archive_key(device_id: str, report: dict[str, Any]) -> str:
     failed_boot_id = int(report.get("crash_failed_boot_id") or 0)
     identity = str(failed_boot_id) if failed_boot_id else ":".join((
+        # Equal ELF, size and panic text do not identify an incident. Without
+        # its failed Boot ID, only reuse retained evidence within this boot.
+        "observed-boot",
+        str(report.get("boot_id") or 0),
         str(report.get("core_dump_elf_sha256") or "unknown"),
         str(report.get("core_dump_size") or 0),
         str(report.get("panic_reason") or "unknown"),
@@ -189,6 +193,6 @@ def register_routes(app: web.Application, service: Any) -> None:
         device_id = service.resolve_device(request.match_info["device_id"])
         return web.json_response(await archive_evidence(service, device_id))
 
-    app.router.add_get("/v1/devices/{device_id}/crashes", report)
-    app.router.add_get("/v1/devices/{device_id}/crashes/core-dump", core_dump)
-    app.router.add_post("/v1/devices/{device_id}/crashes/archive", archive)
+    app.router.add_get("/v2/devices/{device_id}/crashes", report)
+    app.router.add_get("/v2/devices/{device_id}/crashes/core-dump", core_dump)
+    app.router.add_post("/v2/devices/{device_id}/crashes/archive", archive)

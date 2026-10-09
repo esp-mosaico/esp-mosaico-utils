@@ -24,12 +24,14 @@ def test_negotiated_reopen_waits_for_fresh_session(authenticated: bool) -> None:
     async def scenario() -> None:
         link = AsyncMock()
         link.endpoint = "fake:usj"
+        link.console = False
         session = DeviceSession(link, AsyncMock(), AsyncMock(),
                                 pairing_token=b"a" * 32 if authenticated else None)
         session._complete_ready = AsyncMock()
         hello = encode_tlv([
             (TlvTag.DEVICE_ID, b"d" * 16), (TlvTag.BOOT_ID, struct.pack("<Q", 7)),
-            (TlvTag.PROTOCOL_VERSION, struct.pack("<H", 1)),
+            (TlvTag.PROTOCOL_VERSION, struct.pack("<H", 2)),
+            (TlvTag.LINK_ROLE, b"\x01"),
             (TlvTag.CAPABILITIES, struct.pack("<Q", Capability.SESSION_REOPEN)),
             (TlvTag.AUTH_MODE, bytes([int(authenticated)])),
             (TlvTag.AUTH_CHALLENGE, b"c" * 32),
@@ -52,11 +54,10 @@ def test_negotiated_reopen_waits_for_fresh_session(authenticated: bool) -> None:
         ack = decode_frame(link.write.call_args.args[0][:-1])
         assert ack.flags == 0 and ack.session_id == 21 and ack.sequence == 1
         assert session._last_rx_sequence[0] is None
-        if authenticated:
-            session._complete_ready.assert_not_called()
-            await session._handle_frame(Frame(channel=Channel.CONTROL,
-                type=ControlType.AUTH_RESULT, session_id=21, sequence=2,
-                payload=b"\x01"), 0)
+        session._complete_ready.assert_not_called()
+        await session._handle_frame(Frame(channel=Channel.CONTROL,
+            type=ControlType.AUTH_RESULT, session_id=21, sequence=2,
+            payload=b"\x01"), 0)
         session._complete_ready.assert_awaited_once()
         await session._handle_hello(fresh)
         assert decode_frame(link.write.call_args.args[0][:-1]).flags == 0

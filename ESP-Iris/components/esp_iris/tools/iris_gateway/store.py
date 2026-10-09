@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import base64
 import gzip
 import hashlib
 import json
 import pathlib
+import re
 import shutil
 import sqlite3
 import tempfile
@@ -13,8 +15,8 @@ from collections.abc import Iterable
 from typing import Any
 
 from .boot_identity import boot_id_text
-from .migrations import apply_migrations
 from .operation_identity import request_fingerprint, require_same_request
+from .schema import initialize_schema
 
 
 def _json(value: Any) -> str:
@@ -43,10 +45,14 @@ class GatewayStore:
         self.artifacts_dir.mkdir(exist_ok=True)
         self.db = sqlite3.connect(root / "gateway.sqlite3")
         self.db.row_factory = sqlite3.Row
+        try:
+            self.schema_version = initialize_schema(self.db)
+        except BaseException:
+            self.db.close()
+            raise
         self.db.execute("PRAGMA journal_mode=WAL")
         self.db.execute("PRAGMA foreign_keys=ON")
         self._last_log_cleanup_ns = 0
-        self.schema_version = apply_migrations(self.db)
 
     def close(self) -> None:
         self.db.close()
@@ -82,24 +88,28 @@ class GatewayStore:
                    cached_json=excluded.cached_json""",
             (device_id, now, now, _json(cached)),
         )
-        boot_id = info.get("boot_id")
-        session_id = info.get("session_id")
-        endpoint = info.get("endpoint")
-        if session_id is not None:
+        link_infos = [info[key] for key in ("control_link", "data_link") if info.get(key)]
+        if not link_infos:
+            link_infos = [info]
+        for link in link_infos:
+            boot_id = link.get("boot_id")
+            session_id = link.get("session_id")
+            endpoint = link.get("endpoint")
+            role = link.get("link_role", "control")
+            if session_id is None:
+                continue
             active = self.db.execute(
                 "SELECT id, boot_id, session_id FROM sessions "
-                "WHERE device_id=? AND ended_ns IS NULL ORDER BY id DESC LIMIT 1",
-                (device_id,),
+                "WHERE device_id=? AND link_role=? AND ended_ns IS NULL ORDER BY id DESC LIMIT 1",
+                (device_id, role),
             ).fetchone()
-            if active is None or str(active["session_id"]) != str(session_id):
+            if active is None or str(active["session_id"]) != str(session_id) or str(active["boot_id"]) != str(boot_id):
                 if active is not None:
-                    self.db.execute(
-                        "UPDATE sessions SET ended_ns=? WHERE id=?", (now, active["id"])
-                    )
+                    self.db.execute("UPDATE sessions SET ended_ns=? WHERE id=?", (now, active["id"]))
                 self.db.execute(
-                    "INSERT INTO sessions(device_id, boot_id, session_id, endpoint, started_ns) "
-                    "VALUES(?, ?, ?, ?, ?)",
-                    (device_id, str(boot_id), str(session_id), endpoint, now),
+                    "INSERT INTO sessions(device_id, boot_id, session_id, endpoint, link_role, started_ns) "
+                    "VALUES(?, ?, ?, ?, ?, ?)",
+                    (device_id, str(boot_id), str(session_id), endpoint, role, now),
                 )
         self.db.commit()
 
@@ -153,10 +163,43 @@ class GatewayStore:
         self, category: str, payload: dict[str, Any], device_id: str | None = None
     ) -> dict[str, Any]:
         host_ns = int(payload.get("host_receive_wall_ns") or time.time_ns())
+        if payload.get("kind") == "connection" and payload.get("connection_state") == "disconnected":
+            self.db.execute("UPDATE sessions SET ended_ns=? WHERE device_id=? AND endpoint=? AND session_id=? AND ended_ns IS NULL",
+                (host_ns, device_id, payload.get("endpoint"), str(payload.get("session_id"))))
+        capture_id = payload.get("capture_id")
+        if capture_id is not None and not re.fullmatch(r"[0-9a-f]{32}", str(capture_id)):
+            raise ValueError("invalid console capture identity")
+        if payload.get("kind") == "console_raw":
+            raw = base64.b64decode(payload["data_base64"], validate=True)
+            offset = int(payload["offset"])
+            row = self.db.execute("SELECT bytes_received FROM console_captures WHERE capture_id=?",
+                                  (capture_id,)).fetchone()
+            expected = int(row[0]) if row else 0
+            if offset != expected:
+                raise ValueError("raw console capture contains an offset gap")
+            self.db.execute(
+                "INSERT INTO console_captures(capture_id, endpoint, device_id, first_ns, last_ns, bytes_received) "
+                "VALUES(?, ?, ?, ?, ?, ?) ON CONFLICT(capture_id) DO UPDATE SET "
+                "last_ns=excluded.last_ns, bytes_received=excluded.bytes_received",
+                (capture_id, payload["endpoint"], device_id, host_ns, host_ns, offset + len(raw)))
+        elif payload.get("kind") == "console_binding" and device_id:
+            pending = self.db.execute(
+                "SELECT MIN(event_id), MAX(event_id) FROM events "
+                "WHERE capture_id=? AND device_id IS NULL", (capture_id,)
+            ).fetchone()
+            if pending[0] is not None:
+                payload = dict(payload, history_start_event_id=int(pending[0]),
+                               history_end_event_id=int(pending[1]))
+            self.db.execute("UPDATE console_captures SET device_id=?, binding_offset=? WHERE capture_id=?",
+                            (device_id, int(payload["offset"]), capture_id))
+            # The later HELLO associates the capture with a device. It cannot
+            # establish which boot produced earlier bytes, so boot_id stays NULL.
+            self.db.execute("UPDATE events SET device_id=? WHERE capture_id=? AND device_id IS NULL",
+                            (device_id, capture_id))
         cursor = self.db.execute(
-            "INSERT INTO events(device_id, category, host_receive_ns, payload_json) "
-            "VALUES(?, ?, ?, ?)",
-            (device_id, category, host_ns, _json(payload)),
+            "INSERT INTO events(device_id, category, host_receive_ns, payload_json, capture_id) "
+            "VALUES(?, ?, ?, ?, ?)",
+            (device_id, category, host_ns, _json(payload), capture_id),
         )
         if cursor.lastrowid is None:
             raise RuntimeError("SQLite did not return an event ID")
@@ -164,7 +207,9 @@ class GatewayStore:
         self.db.commit()
         item = dict(payload)
         item.update(event_id=event_id, category=category, host_receive_ns=host_ns)
-        if category == "log" and device_id:
+        if capture_id and payload.get("kind") in {"console_raw", "console_binding", "console_gap", "hardware_reset"}:
+            self._append_raw_log("capture-" + capture_id, event_id, host_ns, item)
+        elif category == "log" and device_id:
             self._append_raw_log(device_id, event_id, host_ns, item)
         return item
 
@@ -174,6 +219,8 @@ class GatewayStore:
         *,
         device_id: str | None = None,
         categories: Iterable[str] | None = None,
+        capture_id: str | None = None,
+        endpoint: str | None = None,
         limit: int = 1000,
     ) -> tuple[list[dict[str, Any]], bool]:
         oldest_row = self.db.execute("SELECT MIN(event_id) AS value FROM events").fetchone()
@@ -184,6 +231,12 @@ class GatewayStore:
         if device_id:
             clauses.append("device_id=?")
             values.append(device_id)
+        if capture_id:
+            clauses.append("capture_id=?")
+            values.append(capture_id)
+        if endpoint:
+            clauses.append("capture_id IN (SELECT capture_id FROM console_captures WHERE endpoint=?)")
+            values.append(endpoint)
         category_values = list(categories or ())
         if category_values:
             clauses.append(
@@ -199,6 +252,8 @@ class GatewayStore:
         items: list[dict[str, Any]] = []
         for row in rows:
             item = _loads(row["payload_json"], {})
+            if row["device_id"] is not None:
+                item["device_id"] = row["device_id"]
             item.update(
                 event_id=row["event_id"],
                 category=row["category"],
@@ -212,6 +267,8 @@ class GatewayStore:
         *,
         device_id: str | None = None,
         categories: Iterable[str] | None = None,
+        capture_id: str | None = None,
+        endpoint: str | None = None,
         limit: int = 1000,
     ) -> list[dict[str, Any]]:
         clauses: list[str] = []
@@ -219,6 +276,12 @@ class GatewayStore:
         if device_id:
             clauses.append("device_id=?")
             values.append(device_id)
+        if capture_id:
+            clauses.append("capture_id=?")
+            values.append(capture_id)
+        if endpoint:
+            clauses.append("capture_id IN (SELECT capture_id FROM console_captures WHERE endpoint=?)")
+            values.append(endpoint)
         category_values = list(categories or ())
         if category_values:
             clauses.append(
@@ -234,6 +297,8 @@ class GatewayStore:
         items: list[dict[str, Any]] = []
         for row in reversed(rows):
             item = _loads(row["payload_json"], {})
+            if row["device_id"] is not None:
+                item["device_id"] = row["device_id"]
             item.update(
                 event_id=row["event_id"],
                 category=row["category"],

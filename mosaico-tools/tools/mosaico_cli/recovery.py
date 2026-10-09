@@ -15,6 +15,7 @@ from .errors import DeviceError, EnvironmentError, OperationError, SelectionErro
 from .gateway import GatewaySession, connected_devices, gateway_json, locate_iris_tools
 from .host import HostEnvironmentError, prepare_idf_environment, state_root
 from .registry import DeviceModel
+from .product_contract import COMPATIBILITY
 from .runtime import RunContext
 from .workspace import WorkspaceConfig
 
@@ -34,33 +35,7 @@ def _verification_key(device_id: str) -> str:
 
 def _verification_path(device_id: str) -> Path:
     """Return the host-wide path shared by every consuming workspace."""
-    return state_root("esp-mosaico") / "devices" / f"{_verification_key(device_id)}.json"
-
-
-def _host_verification_path(device_id: str) -> Path:
-    key = hashlib.sha256(device_id.encode("utf-8")).hexdigest()
-    return state_root("esp-mosaico") / "devices" / f"{key}.json"
-
-
-def _workspace_verification_path(
-    workspace: WorkspaceConfig, device_id: str
-) -> Path:
-    """Locate records written by the pre-submodule repository-local CLI."""
-
-    return (
-        workspace.root
-        / ".mosaico-state"
-        / "devices"
-        / f"{_verification_key(device_id)}.json"
-    )
-
-
-def _legacy_verification_path(device_id: str) -> Path:
-    key = hashlib.sha256(device_id.encode("utf-8")).hexdigest()
-    legacy_root = Path(
-        os.environ.get("XDG_STATE_HOME", Path.home() / ".local" / "state")
-    )
-    return legacy_root / "esp-mosaico" / "devices" / f"{key}.json"
+    return state_root("esp-mosaico") / "0.2" / "devices" / f"{_verification_key(device_id)}.json"
 
 
 def _read_verification_record(
@@ -125,13 +100,7 @@ def recovery_verification_details(
             "ota_ready": isinstance(capabilities, list) and "ota" in capabilities,
         }
     records: list[dict[str, Any]] = []
-    paths = [
-        _verification_path(device_id),
-        _host_verification_path(device_id),
-        _legacy_verification_path(device_id),
-    ]
-    if workspace is not None:
-        paths.append(_workspace_verification_path(workspace, device_id))
+    paths = [_verification_path(device_id)]
     for path in dict.fromkeys(paths):
         value = _read_verification_record(path, records)
         if value is None:
@@ -140,18 +109,6 @@ def recovery_verification_details(
             value.get("device_id") == device_id
             and value.get("recovery_version") == expected_version
         ):
-            if path != _verification_path(device_id):
-                try:
-                    record_recovery_verification(
-                        device_id,
-                        expected_version,
-                        value.get("recovery_boot_id"),
-                    )
-                except OSError:
-                    # The existing host record remains valid for this process;
-                    # installation diagnostics will expose a later shared-path
-                    # write failure if the other environment still cannot read it.
-                    pass
             return True, {
                 "source": "host_record",
                 "firmware_mode": status.get("firmware_mode"),
@@ -254,12 +211,14 @@ def load_bundle(directory: Path, expected_target: str) -> dict[str, Any]:
         ) from error
     except (OSError, json.JSONDecodeError) as error:
         raise EnvironmentError(f"Invalid Vibe Mode manifest: {manifest_path}") from error
-    if manifest.get("schema_version") != 2:
+    if manifest.get("schema_version") != 3:
         raise EnvironmentError(
             "The Vibe Mode bundle schema is obsolete; publish a complete reviewed bundle again."
         )
     if manifest.get("target") != expected_target or manifest.get("profile") != "recovery":
         raise EnvironmentError("The Vibe Mode bundle is incompatible with the target model.")
+    if manifest.get("compatibility") != COMPATIBILITY:
+        raise EnvironmentError("The Vibe Mode bundle does not match the 0.2 product contract.")
     images = manifest.get("images")
     if not isinstance(images, dict):
         raise EnvironmentError("The Vibe Mode manifest is missing 'images'.")
@@ -444,18 +403,18 @@ def provisioning_candidate(
             "power it on, release Boot after it enters ROM Download Mode, and retry recover. "
             "Vibe Mode and ESP-Iris do not run in ROM Download Mode."
         )
+    if hardware_mac is not None:
+        if idf_path is None:
+            raise EnvironmentError("ESP-IDF is required to select a ROM endpoint by hardware MAC.")
+        discovered = {
+            str(item["path"]): read_mac(str(item["path"]))
+            for item in candidates
+        }
+        matches = [port for port, value in discovered.items() if value == hardware_mac]
+        if len(matches) == 1:
+            return matches[0]
+        raise SelectionError(f"No unique ROM endpoint reported hardware MAC {hardware_mac}.")
     if len(candidates) != 1:
-        if hardware_mac and idf_path is not None:
-            discovered = {
-                str(item["path"]): read_mac(str(item["path"]))
-                for item in candidates
-            }
-            matches = [
-                port for port, value in discovered.items()
-                if value == hardware_mac
-            ]
-            if len(matches) == 1:
-                return matches[0]
         raise SelectionError(
             "Multiple low-level device candidates were detected; select the target "
             "with --hardware-mac."

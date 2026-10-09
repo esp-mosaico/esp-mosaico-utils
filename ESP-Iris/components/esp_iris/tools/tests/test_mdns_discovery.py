@@ -21,7 +21,7 @@ class FakeServiceInfo:
     ) -> None:
         self.properties = properties or {
             b"device_id": b"00112233445566778899aabbccddeeff",
-            b"protocol": b"1",
+            b"protocol": b"2",
             b"transport": b"tcp",
             b"pairing": b"none",
             b"mode": b"normal",
@@ -52,7 +52,7 @@ def test_mdns_service_parsing_prefers_ipv4() -> None:
     ("key", "value"),
     [
         (b"device_id", b"not-a-device-id"),
-        (b"protocol", b"2"),
+        (b"protocol", b"1"),
         (b"transport", b"udp"),
         (b"pairing", b"token-in-txt"),
         (b"port", b"19773"),

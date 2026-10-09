@@ -1,6 +1,6 @@
 # Lifecycle stop, unregister, and restart
 
-This USB CDC0 example demonstrates a complete application-owned Iris lifecycle.
+This dual-CDC USB example demonstrates a complete application-owned Iris lifecycle.
 It starts with a small screenshot backend and RPC `0x1300/1`. Calling the RPC
 queues work outside the Iris worker, lets the response drain, stops Iris,
 unregisters both services, waits two seconds, re-registers them, and starts

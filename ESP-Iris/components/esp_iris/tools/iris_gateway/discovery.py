@@ -22,6 +22,8 @@ class IrisUsbDevice:
     product: str = ""
     transport: str = "usb"
     location: str = ""
+    interface: str = ""
+    link_role: str = "control"
 
 
 def _stable_linux_path(device: str) -> str:
@@ -73,6 +75,8 @@ def discover_iris_usb_devices(
                         "usb_serial_jtag" if is_usb_serial_jtag else "usb"
                     ),
                     location=getattr(port, "location", None) or "",
+                    interface=getattr(port, "interface", None) or "",
+                    link_role="data" if getattr(port, "interface", None) == "ESP-Iris 0.2 data" else "control",
                 )
             )
     return sorted(devices, key=lambda item: item.path)
@@ -123,6 +127,8 @@ def resolve_usb_port(identifier: str) -> dict[str, Any]:
             "serial_number": port.serial_number or "",
             "product": port.product or "",
             "location": getattr(port, "location", None) or "",
+            "interface": getattr(port, "interface", None) or "",
+            "link_role": "data" if getattr(port, "interface", None) == "ESP-Iris 0.2 data" else "control",
         }
         if identifier == usb_endpoint(metadata) or (
             serial_port_key(identifier) == serial_port_key(port.device)

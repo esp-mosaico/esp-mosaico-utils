@@ -39,7 +39,7 @@ class MosaicoArgumentParser(argparse.ArgumentParser):
 
     def parse_args(self, args=None, namespace=None):
         if self.prog == "mosaico.py":
-            args = _canonical_argv(_normalize_globals(list(sys.argv[1:] if args is None else args)))
+            args = _normalize_globals(list(sys.argv[1:] if args is None else args))
         return super().parse_args(args, namespace)
 
     def error(self, message: str) -> NoReturn:
@@ -99,6 +99,16 @@ def monitor_timeout(value: str) -> float:
     return result
 
 
+def serial_baudrate(value: str) -> int:
+    try:
+        result = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("must be an integer baud rate") from error
+    if not 9600 <= result <= 3000000:
+        raise argparse.ArgumentTypeError("must be between 9600 and 3000000")
+    return result
+
+
 def nand_manifest_path(value: str) -> str:
     if not value.startswith("/nand/") or value.endswith("/") or "\\" in value:
         raise argparse.ArgumentTypeError("must be an absolute file below /nand")
@@ -110,8 +120,8 @@ def nand_manifest_path(value: str) -> str:
     return value
 
 
-# Legacy spellings remain accepted but are omitted from the public command tree.
-COMMAND_PATHS = {
+# Internal operation identifiers map to exactly one public command path.
+PUBLIC_COMMAND_PATHS = {
     "init": ("project", "init"),
     "install": ("iris", "app-update"),
     "system-update": ("iris", "system-update"),
@@ -124,27 +134,6 @@ COMMAND_PATHS = {
     "recovery-wifi": ("iris", "test", "recovery-wifi"),
     "bridge-code": ("iris", "test", "bridge-code"),
 }
-
-
-def _canonical_argv(argv: Sequence[str]) -> list[str]:
-    result = list(argv)
-    index = 0
-    while index < len(result):
-        token = result[index]
-        if token == "--workspace":
-            index += 2
-            continue
-        if token.startswith("-"):
-            index += 1
-            continue
-        if token in COMMAND_PATHS:
-            result[index:index + 1] = COMMAND_PATHS[token]
-        elif token == "session":
-            result[index] = "iris"
-        elif token == "device":
-            result[index] = "iris"
-        break
-    return result
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -197,7 +186,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     def command(name, **kwargs):
         # Keep operation identifiers stable for evidence records and handlers.
-        path = COMMAND_PATHS.get(name, (name,))
+        path = PUBLIC_COMMAND_PATHS.get(name, (name,))
         if path[0] == "project":
             parent = project_commands
         elif path[:2] == ("iris", "test"):
@@ -246,6 +235,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     install_parser.add_argument(
         "--skip-build", action="store_true", help="Reuse a complete existing build"
+    )
+    install_parser.add_argument(
+        "--recovery-source", choices=("reviewed", "current"), default="reviewed",
+        help="Vibe Mode reference bundle; current explicitly uses the candidate prepared by recover --source current",
     )
     install_parser.add_argument(
         "--validation",
@@ -424,6 +417,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     for name, help_text in (
+        ("restart", "Restart the selected device and verify its new Boot ID"),
         ("device-status", "Read verified live device identity, Boot ID and firmware state"),
         ("screenshot", "Save the device image directly, with identity and operation evidence"),
         ("operation-status", "Query an existing Gateway operation without acquiring a device or replaying it"),
@@ -550,6 +544,11 @@ def build_parser() -> argparse.ArgumentParser:
             child.add_argument("--endpoint", help="Explicit discovered endpoint for first identity handshake")
         if "--device-id" in child._option_string_actions and "--pairing-token-file" not in child._option_string_actions:
             child.add_argument("--pairing-token-file", type=Path, help="Private TCP pairing token file")
+    claim_parsers = [child for child in device_parsers if child.get_default("device_action") == "claim"]
+    for child in [*leaves, run_parser, *claim_parsers]:
+        if child is not recover_parser and "--endpoint" in child._option_string_actions:
+            child.add_argument("--baudrate", type=serial_baudrate,
+                               help="Baud rate for an explicitly selected UART console")
     return parser
 
 
@@ -815,7 +814,7 @@ def _main(
             result = invoke_rpc(arguments, context)
         elif arguments.command == "crash":
             result = inspect_crash(arguments, context)
-        elif arguments.command in {"device-status", "screenshot", "operation-status"}:
+        elif arguments.command in {"restart", "device-status", "screenshot", "operation-status"}:
             from .evidence import collect_evidence
             result = collect_evidence(arguments, context)
         elif arguments.command == "memory":
@@ -832,7 +831,7 @@ def _main(
         return 0 if arguments.command in {"monitor", "memory"} else 5
     if arguments.json:
         print(json.dumps({"ok": True, **result}, ensure_ascii=False, sort_keys=True))
-    elif arguments.command in {"device-status", "screenshot", "operation-status"}:
+    elif arguments.command in {"restart", "device-status", "screenshot", "operation-status"}:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
         status = result.get("status", "succeeded")
@@ -885,7 +884,7 @@ def _project_command(arguments: Any, context: RunContext) -> int:
                 print(f"Gateway ready; automatic connection: {error}", file=sys.stderr)
                 for candidate in error.details.get("candidates", []):
                     print(f"  {candidate}", file=sys.stderr)
-        result = request(url, "/v1/project")
+        result = request(url, "/v2/project")
         result["running"] = True
         if arguments.json:
             print(json.dumps(result, ensure_ascii=False), flush=True)
@@ -909,17 +908,18 @@ def _project_command(arguments: Any, context: RunContext) -> int:
     action = arguments.device_action
     if action == "claim":
         pairing = read_pairing_token(arguments.pairing_token_file) if arguments.pairing_token_file else None
-        result = request(url, "/v1/project/acquire", {
+        result = request(url, "/v2/project/acquire", {
             "device_id": arguments.device_id, "endpoint": arguments.endpoint,
+            **({"baudrate": arguments.baudrate} if arguments.baudrate is not None else {}),
             "pairing_token": pairing, "auto": not (arguments.device_id or arguments.endpoint),
         }, timeout=35)
     elif action == "release":
-        result = request(url, "/v1/project/release", {
+        result = request(url, "/v2/project/release", {
             "device_id": arguments.device_id, "endpoint": arguments.endpoint,
             "auto": not (arguments.device_id or arguments.endpoint),
         })
     elif action == "reconcile":
-        result = request(url, "/v1/project/reconcile", {"device_id": arguments.device_id, "endpoint": arguments.endpoint})
+        result = request(url, "/v2/project/reconcile", {"device_id": arguments.device_id, "endpoint": arguments.endpoint})
     elif action == "takeover-start":
         import math
 
@@ -928,7 +928,7 @@ def _project_command(arguments: Any, context: RunContext) -> int:
         takeover_id = arguments.takeover_id or str(uuid.uuid4())
         context.status(f"takeover: {takeover_id}")
         try:
-            result = request(url, "/v1/project/takeovers", {
+            result = request(url, "/v2/project/takeovers", {
                 "device_id": arguments.device_id, "endpoint": arguments.endpoint,
                 "takeover_id": takeover_id, "force": arguments.force, "timeout": arguments.timeout,
             }, timeout=arguments.timeout + 45)
@@ -937,10 +937,10 @@ def _project_command(arguments: Any, context: RunContext) -> int:
             error.details["hint"] = "Query 'iris takeover status' before retrying with the same ID or using 'iris takeover resume'."
             raise
     elif action == "takeover-status":
-        result = request(url, "/v1/project/takeovers/" + arguments.takeover_id)
+        result = request(url, "/v2/project/takeovers/" + arguments.takeover_id)
     else:
         verb = {"takeover-abort": "abort", "takeover-resume": "resume", "takeover-reconcile": "reconcile"}[action]
-        result = request(url, f"/v1/project/takeovers/{arguments.takeover_id}/{verb}", {}, timeout=35)
+        result = request(url, f"/v2/project/takeovers/{arguments.takeover_id}/{verb}", {}, timeout=35)
     print(json.dumps(result, ensure_ascii=False, indent=None if arguments.json else 2))
     return 0
 

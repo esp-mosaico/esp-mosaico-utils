@@ -14,6 +14,7 @@ from iris_gateway.protocol import (
     ControlType,
     Frame,
     TlvTag,
+    decode_frame,
     encode_frame,
     encode_tlv,
 )
@@ -31,7 +32,8 @@ class SupervisorLink:
             [
                 (TlvTag.DEVICE_ID, bytes.fromhex("00112233445566778899aabbccddeeff")),
                 (TlvTag.BOOT_ID, struct.pack("<Q", boot_id)),
-                (TlvTag.PROTOCOL_VERSION, struct.pack("<H", 1)),
+                (TlvTag.PROTOCOL_VERSION, struct.pack("<H", 2)),
+                (TlvTag.LINK_ROLE, b"\x01"),
                 (TlvTag.CAPABILITIES, struct.pack("<Q", 0x0F)),
                 (TlvTag.TRANSPORT, b"\x01"),
                 (TlvTag.AUTH_MODE, b"\x00"),
@@ -55,6 +57,11 @@ class SupervisorLink:
 
     async def write(self, data: bytes) -> None:
         self.writes.append(data)
+        frame = decode_frame(data[:-1])
+        if frame.channel == Channel.CONTROL and frame.type == ControlType.HELLO_ACK and len(frame.payload) == 17 and not frame.flags & (1 << 5):
+            await self.incoming.put(encode_frame(Frame(
+                channel=Channel.CONTROL, type=ControlType.AUTH_RESULT,
+                session_id=frame.session_id, sequence=0, payload=b"\x01")))
 
     async def close(self) -> None:
         self.closed = True
@@ -298,6 +305,12 @@ def test_input_gesture_is_one_gateway_operation_with_fixed_pointer_rpc_frames(wi
 
 
 class MirrorSession:
+    _console = False
+
+    async def screenshot(self, description=None):
+        from iris_gateway.session import DeviceError
+        raise DeviceError(0x106)
+
     def __init__(self) -> None:
         self.start_calls = 0
         self.stop_calls = 0
@@ -360,6 +373,21 @@ def _screen_tile(frame_id: int, y: int, data: bytes) -> dict[str, object]:
         },
         "data": data,
     }
+
+
+def test_control_only_screenshot_never_starts_a_mirror():
+    async def scenario():
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+        session = SimpleNamespace(_console=True, data_session=None,
+            screenshot=AsyncMock(return_value=({"width": 2, "height": 1}, b"shot")),
+            mirror_start=AsyncMock())
+        hub = IrisHub()
+        hub._devices["device-a"] = session
+        description, data = await hub.screenshot("device-a")
+        assert description["transfer_path"] == "control" and data == b"shot"
+        session.mirror_start.assert_not_called()
+    asyncio.run(scenario())
 
 
 def test_screenshot_uses_a_temporary_mirror_and_assembles_one_frame() -> None:

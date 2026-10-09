@@ -69,7 +69,7 @@ class DemoHub:
         self._jobs: dict[str, dict[int, dict[str, Any]]] = collections.defaultdict(dict)
         self._devices: dict[str, dict[str, Any]] = {
             "demo-a1b2c3d4": self._device(
-                "demo-a1b2c3d4", "Mosaico Alpha", "normal", "3.5.0", 0xA10A
+                "demo-a1b2c3d4", "Iris Alpha", "normal", "3.5.0", 0xA10A
             ),
             "demo-e5f6a7b8": self._device(
                 "demo-e5f6a7b8", "Camera Bench", "normal", "3.5.0", 0xB20B
@@ -844,7 +844,7 @@ class DemoHub:
             ("D", "esp_iris", "LOG credit replenished"),
             ("I", "sensor", "frame sampled and published"),
             ("W", "wifi", "demo link RSSI below preferred threshold"),
-            ("I", "mosaico", "worker queue idle"),
+            ("I", "application", "worker queue idle"),
         ]
         while True:
             await asyncio.sleep(0.45)

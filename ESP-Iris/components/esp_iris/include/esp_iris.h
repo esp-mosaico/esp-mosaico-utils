@@ -17,6 +17,7 @@ typedef enum {
     ESP_IRIS_TRANSPORT_KIND_USB = 1,
     ESP_IRIS_TRANSPORT_KIND_TCP = 2,
     ESP_IRIS_TRANSPORT_KIND_USB_SERIAL_JTAG = 3,
+    ESP_IRIS_TRANSPORT_KIND_UART = 4,
 } esp_iris_transport_kind_t;
 
 typedef enum {
@@ -176,10 +177,20 @@ esp_err_t esp_iris_crash_loop_reset(void);
  * PC session, so callers do not need to wait for a link. */
 esp_err_t esp_iris_mark_planned_restart(void);
 
+/* Schedule a restart on Iris's existing protocol task, without allocating a
+ * task or timer. Requires started Iris; callable from a task/RPC callback.
+ * Delay is 100..60000 ms. Repeated requests keep the earliest deadline.
+ * The restart waits for the service callback. Both protocol TX queues get up
+ * to 100 ms additional grace; a stalled receiver cannot defer it indefinitely.
+ * Disconnect does not cancel it, esp_iris_stop() does. This does not select a
+ * boot target or mark a planned restart: the caller owns those product steps. */
+esp_err_t esp_iris_schedule_restart(uint32_t delay_ms);
+
 /* Product recovery glue may provide strong platform hook implementations.
- * The base component returns ESP_ERR_NOT_SUPPORTED: Iris start is never
- * mistaken for product acceptance, and OTA cannot select a boot slot until
- * prepare_ota has persisted the product's recovery metadata. */
+ * Lifecycle markers default to ESP_ERR_NOT_SUPPORTED; starting Iris never
+ * implies application acceptance. The default OTA preparation succeeds for
+ * standard IDF layouts. Products persist their recovery metadata by overriding
+ * prepare_ota, whose failure prevents boot selection. */
 /* Accept the installed image and publish HEALTHY without clearing crash-loop
  * history. This keeps installation acceptance independent from the configured
  * runtime-stability interval. */
@@ -187,6 +198,9 @@ esp_err_t esp_iris_mark_healthy(void);
 esp_err_t esp_iris_platform_mark_healthy(void);
 esp_err_t esp_iris_platform_mark_planned_restart(void);
 esp_err_t esp_iris_platform_select_recovery_target(uint32_t *target_address);
+/** Commit a product boot target. The default supports standard factory/OTA
+ * selection; products with test-partition boot intents override this hook. */
+esp_err_t esp_iris_platform_set_boot_target(uint32_t target_address);
 esp_err_t esp_iris_platform_select_ota_target(uint32_t default_address,
                                                uint32_t *target_address);
 esp_err_t esp_iris_platform_prepare_ota(uint32_t running_address,

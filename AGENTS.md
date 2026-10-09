@@ -11,7 +11,7 @@ identifiers and ABI names stable. See the [firmware guide](esp-mosaico-recovery/
 - `mosaico-tools/` owns the ESP-Mosaico host CLI and build runner. It consumes
   the public Iris host API and product Recovery contracts.
 - `esp-mosaico-recovery/` owns retained Vibe Mode firmware, its public product
-  ABI header, reviewed bundle, and integration tests. Legacy tool paths only forward.
+  ABI header, reviewed bundle, and integration tests. Legacy tool paths are removed.
 - Do not recreate a nested ESP-Iris submodule. Both products resolve from the
   same `esp-mosaico-utils` revision.
 - Keep consuming applications and workspace-specific `.mosaico.json` files in
@@ -23,7 +23,7 @@ identifiers and ABI names stable. See the [firmware guide](esp-mosaico-recovery/
 
 ## Versions
 
-- ESP-Iris and ESP-Mosaico Tools are pre-1.0 products on the `0.1.x` release
+- ESP-Iris and ESP-Mosaico Tools are pre-1.0 products on the `0.2.x` release
   line. Their release versions are independent even when released together.
 - ESP-Iris has its version source in
   `ESP-Iris/components/esp_iris/idf_component.yml`.
@@ -31,8 +31,9 @@ identifiers and ABI names stable. See the [firmware guide](esp-mosaico-recovery/
   `mosaico-tools/tools/mosaico_cli/__init__.py`.
 - The retained Vibe Mode firmware version is a separate on-device compatibility
   identifier. Do not reset or downgrade it merely to match the tools release.
-  ESP-30 explicitly sets source builds and the prebuilt bundle to `0.1`.
-  Do not accept update bundles or Vibe Mode image rollback from the old 2.x line.
+  The 0.2 architecture uses Recovery ABI 2 and layout version 5. Keep 0.1
+  migration guidance in documentation; do not add protocol or code compatibility.
+  Publish the 0.2 prebuilt bundle only after the validation below.
 - Use product-specific tags: `esp-iris-vX.Y.Z` and
   `esp-mosaico-tools-vX.Y.Z`.
 

@@ -13,10 +13,10 @@ behavior.
 
 | Profile | Defaults file | Notes |
 | --- | --- | --- |
-| Raw TCP | `sdkconfig.defaults` | Default; the example does not create Wi-Fi/Ethernet, so another application layer must provide networking |
-| Application USB CDC0 | `sdkconfig.usb.defaults` | ESP32-S31; ESP-Iris owns TinyUSB CDC0 |
-| USB Serial/JTAG | `sdkconfig.usj.defaults` | ESP-Iris owns the fixed serial channel while JTAG remains available |
-| Multi transport | `sdkconfig.multi.defaults` | ESP32-S31; TCP, application USB CDC0, and USB Serial/JTAG wait for one validated winner |
+| TCP | `sdkconfig.defaults` | Independent text/control and binary data ports; an application layer must provide networking |
+| Application USB CDC0 + CDC1 | `sdkconfig.usb.defaults` | ESP32-S31; CDC0 text/control, CDC1 binary data |
+| USB Serial/JTAG | `sdkconfig.usj.defaults` | Standard text console with Iris commands; JTAG remains available, no data link |
+| Multi transport | `sdkconfig.multi.defaults` | ESP32-S31; control and data links negotiate independently and bind to the same owner/device/boot |
 
 ## Build
 
@@ -58,11 +58,12 @@ After the Gateway connects, logs should contain the device ID and periodic
 status lines. A local `esp_iris_stop()`/`esp_iris_start()` cycle keeps the same
 `boot_id`; a real reboot produces a new one.
 
-In the multi profile, merely opening a socket or serial port creates only a
-provisional candidate. It must return a valid HELLO_ACK within the configured
-claim timeout. Once validated, other transport drivers stop until that session
-disconnects. Candidates are negotiated in bounded round-robin turns, so an
-unresponsive open port cannot hold the other links indefinitely.
+In the multi profile, a socket or serial descriptor is only a discovery hint.
+Each link must complete its role-specific handshake within the claim timeout.
+Control and data choose their transport independently and verify a shared
+owner, device identity and boot identity. A data link may connect first; losing
+candidates for the same role yield without disconnecting the other role.
+An unresponsive candidate cannot retain ownership indefinitely.
 
 The 2 MB defaults intentionally contain no coredump partition. Crash metadata
 remains queryable, while `core_dump_present` is false. Use the internal

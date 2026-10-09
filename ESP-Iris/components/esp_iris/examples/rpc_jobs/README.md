@@ -1,6 +1,6 @@
 # RPC handlers and cancellable jobs
 
-This USB CDC0 example registers two cataloged RPCs and one application-defined
+This dual-CDC USB example registers two cataloged RPCs and one application-defined
 long-running job.
 
 | Operation | ID | Request | Response |
@@ -24,8 +24,9 @@ idf.py -C components/esp_iris/examples/rpc_jobs \
   -p /dev/serial/by-id/<programming-port> flash
 ```
 
-Application CDC0 is the ESP-Iris binary endpoint. Use a separate UART or USB
-Serial/JTAG programming interface for flashing and monitoring.
+CDC0 carries text logs and Iris commands for stock `idf.py monitor`; CDC1
+carries binary data. Close Gateway before monitoring the same console. Flash
+through the board's ROM download interface.
 
 ## Exercise the example
 

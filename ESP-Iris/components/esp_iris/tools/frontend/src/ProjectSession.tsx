@@ -15,10 +15,10 @@ export default function ProjectSession() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [message, setMessage] = useState("");
   const [pending, setPending] = useState(false);
-  async function refresh() { setSnapshot(await api<Snapshot>("/v1/project")); }
+  async function refresh() { setSnapshot(await api<Snapshot>("/v2/project")); }
   useEffect(() => {
     let alive = true;
-    const update = () => { void api<Snapshot>("/v1/project").then((value) => { if (alive) setSnapshot(value); }).catch(() => {}); };
+    const update = () => { void api<Snapshot>("/v2/project").then((value) => { if (alive) setSnapshot(value); }).catch(() => {}); };
     update();
     const timer = setInterval(update, 2000);
     return () => { alive = false; clearInterval(timer); };
@@ -27,7 +27,7 @@ export default function ProjectSession() {
     setPending(true);
     setMessage("");
     try {
-      await api(`/v1/project/${action}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      await api(`/v2/project/${action}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       setMessage("操作完成");
     } catch (error) { setMessage(String(error)); }
     finally { setPending(false); await refresh().catch(() => {}); }

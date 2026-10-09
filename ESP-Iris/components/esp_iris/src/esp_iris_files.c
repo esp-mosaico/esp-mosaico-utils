@@ -121,7 +121,16 @@ typedef struct {
     iris_file_write_receipt_t receipt;
 } iris_file_task_context_t;
 
+/* Only immutable registration strings/flags move out of internal RAM. The
+ * lock and worker bookkeeping remain internal, including static RTOS objects. */
+#if CONFIG_ESP_IRIS_SERVICE_STATE_PSRAM && CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY
+#include "esp_attr.h"
+#define IRIS_FILE_REGISTRY_EXTERNAL 1
+static EXT_RAM_BSS_ATTR iris_file_volume_t s_volumes[CONFIG_ESP_IRIS_MAX_FILE_VOLUMES];
+#else
+#define IRIS_FILE_REGISTRY_EXTERNAL 0
 static iris_file_volume_t s_volumes[CONFIG_ESP_IRIS_MAX_FILE_VOLUMES];
+#endif
 static portMUX_TYPE s_volume_lock = portMUX_INITIALIZER_UNLOCKED;
 static QueueHandle_t s_work_queue;
 static QueueHandle_t s_completion_queue;
@@ -1711,7 +1720,7 @@ uint32_t iris_files_allocated_bytes(void)
 
 uint32_t iris_files_static_bytes(void)
 {
-    return sizeof(s_volumes) + sizeof(s_volume_lock) + sizeof(s_work_queue) +
+    return (IRIS_FILE_REGISTRY_EXTERNAL ? 0 : sizeof(s_volumes)) + sizeof(s_volume_lock) + sizeof(s_work_queue) +
         sizeof(s_completion_queue) + sizeof(s_file_task) +
         sizeof(s_active_token) + sizeof(s_next_token) +
         sizeof(s_task_context) + sizeof(s_allocated_bytes);

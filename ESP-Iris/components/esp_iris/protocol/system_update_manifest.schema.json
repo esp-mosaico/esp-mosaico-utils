@@ -12,7 +12,7 @@
   ],
   "properties": {
     "schema": {
-      "const": "esp-iris-system-update/v1"
+      "const": "esp-iris-system-update/0.2"
     },
     "release": {
       "type": "string",

@@ -2,7 +2,9 @@
 
 Vibe Mode is the retained firmware that runs ESP-Iris; ROM Download Mode is the
 chip flashing path without Iris. Recovery component paths, ABI and protocol
-names remain unchanged. See the [firmware guide](../../esp-mosaico-recovery/firmware/recovery/README.md).
+names retain their technical spelling. The 0.2 implementation uses Recovery
+ABI 2 and the `mosaico-retained-test-2m-v2` layout. See the
+[0.2 migration guide](migration-0.2.md).
 
 For Vibe Mode installation and optional Iris logging in an existing application,
 start with the [migration guide (中文)](../../docs/recovery-iris-migration.zh-CN.md).
@@ -33,6 +35,17 @@ Add `esp-mosaico-recovery/components/esp_mosaico_app_recovery` to
 EXTRA_COMPONENT_DIRS and call iris_ota_support_start(). This component has no
 GSP, BSP or display dependency. Its configure gate validates the effective
 configuration, including existing sdkconfig files; the OTA writer stays in Vibe Mode.
+For the S31 retained product, keep `CONFIG_ESPTOOLPY_FLASHMODE_QIO=y` in both
+applications and Vibe Mode. Native application flashing also replaces the
+bootloader, so all retained product images must agree on the Flash bus mode.
+The shared defaults and both build/host checks
+enforce this setting, including reused builds. This product constraint does
+not apply to independent third-party IDF examples.
+
+The pinned SDK intentionally emits `--flash-mode dio` for the bootloader image
+even when QIO is selected: its bootloader enables quad mode during initialization.
+Check `CONFIG_ESPTOOLPY_FLASHMODE_QIO=y` and `CONFIG_ESPTOOLPY_FLASHMODE_VAL=1`
+in the effective configuration; do not override the generated flashing arguments.
 
 Optional GSP components are `mosaico-tools/components/esp_mosaico_gsp_bundle`
 (ui_bundle_open) and `esp_mosaico_gsp_iris` (iris_screen_mirror_init/attach).
@@ -48,14 +61,41 @@ GSPC 0.5.0 with ESP-GSP 1.4.0, selecting `MOSAICO_GSPC_VERSION` before including
 the shared compiler bootstrap. Explicit `GSPC_EXECUTABLE` overrides must match
 the project's component version.
 Include `cmake/system_update.cmake` after project() to declare System Update
-artifacts and reject unsafe direct IDF flash/app-flash targets. Other resources
+artifacts and verify the native `flash`/`app-flash` layout. Other resources
 use MOSAICO_SYSTEM_UPDATE_DATA_LABELS and per-label IMAGE/TARGET global properties.
 No normal application bundle replaces the retained bootloader.
+
+With a matching 0.2 base installation, stock `idf.py flash monitor` writes the
+normal image to `main_app` (`app/ota_0`, `0x210000`). The generated native flash
+manifest also contains the matching product bootloader, partition table and
+standard blank otadata; it does not write `vibe_mode` (`app/test`, `0x20000`).
+The shared CMake entry point installs the product bootloader selection code.
+Check the complete `flasher_args.json`, including declared resources, before
+device validation. Use `mosaico.py recover` first on a blank or incompatible board.
+
+The default delivery flow remains `mosaico.py iris system-update` or, for an
+identical full partition table and code-only changes, `iris app-update`.
+Firmware and file delivery require the independent Iris data link. UART and
+USB Serial/JTAG provide control, logs, RPC and on-demand screenshots; they do
+not carry Iris firmware updates. Stock IDF ROM flashing is independent of this
+restriction. Close the owning Gateway before opening stock monitor on the same
+console. No Iris host extension or device protocol-mode switch is needed.
+With HS USB, the ROM and application CDC interfaces re-enumerate on reboot.
+The pinned IDF Monitor 1.9.0 exits if its first port-open occurs during that
+gap; start stock `idf.py monitor` after the application port appears. UART and
+USB Serial/JTAG keep their native combined flash/monitor workflow.
+
+System Update bundles use `esp-iris-system-update/0.2`. The old `/v1` and `/v2`
+manifest names are rejected. Rebuild old applications and bundles with the
+matching tools instead of relabeling their manifests.
 
 Vibe Mode's `product_contract.json` owns host identity and fixed partition values.
 The C ABI remains in `esp-mosaico-recovery/include/mosaico_recovery_contract.h`;
 contract tests compare the product manifest, configuration and partition tables.
 
-Validation: `python -m pytest mosaico-tools/tests esp-mosaico-recovery/tests`.
+Host validation: run `pytest mosaico-tools/tests` and
+`pytest esp-mosaico-recovery/tests/test_*.py` separately. Recovery UI tests also
+require its pinned GSPC 0.5.0 and simulator 1.4.0. Hardware acceptance remains
+separate from these host checks.
 No consumer workspace source is needed. Old workspace paths have no forwarding
 layer; consumers migrate to these public entry points and rebuild.

@@ -22,7 +22,7 @@ export default function Login({ configured, onAuthenticated }: Props) {
     setBusy(true);
     setError("");
     try {
-      await api(configured ? "/v1/auth/login" : "/v1/auth/setup", {
+      await api(configured ? "/v2/auth/login" : "/v2/auth/setup", {
         method: "POST",
         body: JSON.stringify({ password }),
         headers: { "Content-Type": "application/json" },

@@ -7,7 +7,7 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
-CAPABILITY = "project-client-lifecycle/v1"
+CAPABILITY = "project-client-lifecycle/v2"
 IDLE_SECONDS = 10.0
 LEASE_SECONDS = 20.0
 RENEW_SECONDS = 5.0

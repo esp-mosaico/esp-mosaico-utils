@@ -5,14 +5,18 @@
 `esp_mosaico_app_recovery`；没有屏幕/BSP/LVGL 依赖。正常固件关闭 OTA writer，
 使用 `iris_ota_support_start()` 保留 enter-Recovery RPC、System Inventory，
 启动约 3 秒后由原有组件自动报告 healthy。
+夹具启用 Flash Core Dump 和完整 ELF 哈希；非预期复位后可通过
+`mosaico.py iris crash --archive --save-core <文件>` 保存现场并匹配本次构建。
 
-当前采用固定系统前缀 2 MiB 的 `mosaico-retained-recovery-2m-v1` 契约；
-Recovery 分区为 1.75 MiB。此前验收报告记录的是旧布局，不能作为当前布局的
+当前采用固定系统前缀 2 MiB 的 `mosaico-retained-test-2m-v2` 契约；
+`vibe_mode` 为 0x20000 处 1.75 MiB 的 app/test 分区，`main_app` 为
+0x210000 处的 app/ota_0 分区。此前验收报告记录的是旧布局，不能作为当前布局的
 实机验收证据。旧布局设备须先完成保留数据的产品迁移，不能直接安装本构建；
 普通安装仍校验实际分区表摘要。
 
-从仓库根目录通过 `python mosaico.py iris app-update --project tests/firmware/iris_acceptance`
-安装；空白或未验证设备须先执行 `python mosaico.py recover`。
+通过消费工作区的 `python mosaico.py iris system-update --project <本目录绝对路径>`
+首次安装；分区表完全一致的后续代码更新可使用 `iris app-update`。
+空白或未验证设备须先执行 `python mosaico.py recover`。
 使用 `python mosaico.py iris logs --timeout 20` 观察
 `IRIS_READY ... mode=normal writer=0`、`IRIS_OTA_HEALTHY` 和
 `ACCEPTANCE_ALIVE service=0x6a02`。安装后须记录同一 Device ID 的
@@ -52,4 +56,5 @@ RPC 方法 3 本身也进入同一 RPC 执行队列，不能用它代替 CONTROL
 不写入 NVS。连接成功仅输出 `ACCEPTANCE_WIFI_READY ip=...`，不打印凭据。
 编译产物仍会包含凭据，按私有验收产物保存。TCP pairing 保持参考项目默认开启。
 改变或取消该环境变量后，应重新配置构建目录；Gateway 仍按单个物理所有者规则
-管理 USB/TCP 连接，不应同时抢占两个入口。
+管理控制和数据连接；数据链路独立认证后绑定相同设备、Boot ID 与 Gateway owner。
+同一控制角色不应同时由不同 USB/TCP 客户端抢占。

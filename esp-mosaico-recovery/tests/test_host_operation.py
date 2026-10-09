@@ -45,15 +45,15 @@ def test_cli_records_operation_and_never_cancels_a_writer_on_timeout(tmp_path, m
     assert "secret" not in str(context.note.call_args_list)
 
 
-@pytest.mark.parametrize("managed", [False, True])
+@pytest.mark.parametrize("managed,source", [(False, "reviewed"), (True, "reviewed"), (True, "current")])
 @pytest.mark.parametrize("failed", [False, True])
-def test_recover_prepares_then_submits_one_operation(tmp_path, monkeypatch, managed, failed):
-    arguments = SimpleNamespace(model=None, source="reviewed", device_id="a" if managed else None,
+def test_recover_prepares_then_submits_one_operation(tmp_path, monkeypatch, managed, source, failed):
+    arguments = SimpleNamespace(model=None, source=source, device_id="a" if managed else None,
                                 gateway_profile=None, timeout=180, dry_run=False)
     context = Mock(workspace=WORKSPACE, repository=REPOSITORY, directory=tmp_path, log_path=tmp_path / "run.log")
     session = SimpleNamespace(started_local=False)
     before = {"device_id": "a", "boot_id": "before"}
-    after = {"device_id": "a", "boot_id": "after", "app_version": "0.1",
+    after = {"device_id": "a", "boot_id": "after", "app_version": "0.2.0",
              "firmware_mode": "recovery", "capability_names": ["ota"]}
     prepare = Mock()
     execute = Mock(side_effect=OperationError("write failed") if failed else None,
@@ -61,7 +61,7 @@ def test_recover_prepares_then_submits_one_operation(tmp_path, monkeypatch, mana
     record = Mock()
     for name, value in {
         "resolve_idf_path": Mock(return_value=Path("/idf")),
-        "load_bundle": Mock(return_value={"version": "0.1", "images": {"recovery": {}}}),
+        "load_bundle": Mock(return_value={"version": "0.2.0", "images": {"recovery": {}}}),
         "ensure_gateway": Mock(return_value=session),
         "connected_devices": Mock(return_value=[before] if managed else []),
         "provisioning_candidate": Mock(return_value="/dev/test-rom"),
@@ -69,6 +69,8 @@ def test_recover_prepares_then_submits_one_operation(tmp_path, monkeypatch, mana
         "idf_target_command": Mock(return_value={"argv": ["test-flash"], "env": {"ESPPORT": "{port}"}}),
         "run_host_operation": execute,
         "record_recovery_verification": record,
+        "recovery_build_defaults_are_current": Mock(return_value=True),
+        "record_recovery_build_defaults": Mock(),
     }.items():
         monkeypatch.setattr(commands, name, value)
     if failed:
@@ -78,7 +80,9 @@ def test_recover_prepares_then_submits_one_operation(tmp_path, monkeypatch, mana
     else:
         result = commands.recover(arguments, context)
         assert result["operation_id"] == "rom-1"
-        record.assert_called_once_with("a", "0.1", "after")
+        assert result["recovery_version"] == "0.2.0"
+        assert result["checks"]["bundle_verified"] is True
+        record.assert_called_once_with("a", "0.2.0", "after")
     assert [call.kwargs["target"] for call in prepare.call_args_list] == ["mosaico-recover-prepare"]
     execute.assert_called_once()
     spec = execute.call_args.args[2]

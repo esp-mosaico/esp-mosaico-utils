@@ -3,6 +3,11 @@ import { useLayoutEffect } from "react";
 export type UiLanguage = "zh" | "en";
 
 const translations: Record<string, string> = {
+  "控制：": "Control: ",
+  "数据：": "Data: ",
+  "未连接": "Disconnected",
+  "数据链路未连接": "Data link disconnected",
+  "文件传输需要 High-Speed USB 或 TCP 数据链路；控制链路仍可用于日志、RPC 和截图。": "Files require a High-Speed USB or TCP data link; logs, RPC and snapshots remain available on the control link.",
   "空闲": "Idle",
   "忙碌": "Busy",
   "连接中": "Connecting",
@@ -343,13 +348,13 @@ const translations: Record<string, string> = {
   "默认传输": "Default transport",
   "系统审计": "System audit",
   "非设备行为": "Non-device activity",
-  "网关设备接口的可执行参考；CLI 与 Agent 使用相同的 /v1 契约。": "Executable reference for gateway device APIs; the CLI and Agent share the same /v1 contract.",
+  "网关设备接口的可执行参考；CLI 与 Agent 使用相同的 /v2 契约。": "Executable reference for gateway device APIs; the CLI and Agent share the same /v2 contract.",
   "可以查看文档；设备业务请求会返回 423，不会到达设备。": "Documentation remains available; device requests return 423 and never reach the device.",
   "请求": "Request",
   "发送": "Send",
   "响应": "Response",
-  "在这里执行已认证的 /v1 请求": "Run an authenticated /v1 request here",
-  "在这里执行 /v1 请求": "Run a /v1 request here",
+  "在这里执行已认证的 /v2 请求": "Run an authenticated /v2 request here",
+  "在这里执行 /v2 请求": "Run a /v2 request here",
   "API 文档与试验台": "API Documentation and Console",
   "RPC 已完成": "RPC completed",
   "原始 RPC 已完成": "Raw RPC completed",

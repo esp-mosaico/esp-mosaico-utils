@@ -1,10 +1,10 @@
-"""Public command routing and compatibility with existing automation."""
+"""Public 0.2 command routing and rejection of removed compatibility aliases."""
 from pathlib import Path
 import sys
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "mosaico-tools/tools"))
 from mosaico_cli.cli import build_parser, main
 
 
@@ -26,11 +26,12 @@ from mosaico_cli.cli import build_parser, main
     ("iris test recovery-wifi", "recovery-wifi", ["--ssid", "test-network"]),
     ("iris test bridge-code", "bridge-code", []),
 ])
-def test_public_command_preserves_operation_arguments(public, legacy, options):
+def test_public_command_is_the_only_accepted_path(public, legacy, options):
     parser = build_parser()
     current = parser.parse_args([*public.split(), *options, "--json"])
-    previous = parser.parse_args([*legacy.split(), *options, "--json"])
-    assert vars(current) == vars(previous)
+    with pytest.raises(SystemExit) as rejected:
+        parser.parse_args([*legacy.split(), *options, "--json"])
+    assert rejected.value.code == 2
     assert current.public_command == public
     assert current.json is True
 

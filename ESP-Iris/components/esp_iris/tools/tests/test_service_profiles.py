@@ -52,7 +52,7 @@ def test_screen_description_closes_without_transferring_pixels(valid):
         description = {"width": 320, "height": 240}
         payload = session._encode_media_description(description) + struct.pack("<I", 320 * 240 * 2)
         session._request = AsyncMock(side_effect=[
-            SimpleNamespace(type=MediaType.OPENED, payload=payload if valid else b""), None,
+            SimpleNamespace(type=MediaType.OPENED, stream_id=37, payload=payload if valid else b""), None,
         ])
         if valid:
             actual = await session.screen_description()

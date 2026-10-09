@@ -1,6 +1,6 @@
 # Retained Core Dump and factory recovery
 
-This destructive USB CDC0 example demonstrates Iris' default crash-loop
+This destructive dual-CDC USB example demonstrates Iris' default crash-loop
 recovery policy on a 16 MB layout. A normal OTA application deliberately
 crashes after startup, but the injection path does not increment a counter or
 select a partition. On the following boot, `esp_iris_boot_probe()` attributes

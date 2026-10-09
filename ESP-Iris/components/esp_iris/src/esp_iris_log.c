@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/lock.h>
 
 #include "esp_attr.h"
 #include "esp_timer.h"
@@ -48,6 +49,53 @@ static FILE *s_previous_stdout;
 static FILE *s_previous_stderr;
 static FILE *s_iris_stdout;
 static FILE *s_iris_stderr;
+/* No lock is held across protocol pump iterations. While a printable record
+ * drains, producers retain logs in the bounded ring instead of interleaving
+ * native bytes into it. Deferred logs are forwarded after the record. */
+static _lock_t s_console_lock;
+static bool s_console_frame;
+
+bool iris_log_uses_native_console(const iris_runtime_t *runtime)
+{
+    const esp_iris_transport_kind_t kind = iris_runtime_transport_kind(runtime);
+#if CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG || CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG
+    if (kind == ESP_IRIS_TRANSPORT_KIND_USB_SERIAL_JTAG) return true;
+#endif
+#if CONFIG_ESP_IRIS_TRANSPORT_UART
+    if (kind == ESP_IRIS_TRANSPORT_KIND_UART &&
+        CONFIG_ESP_CONSOLE_UART_NUM == CONFIG_ESP_IRIS_UART_NUM) return true;
+#endif
+    (void)kind;
+    return false;
+}
+
+void iris_log_console_frame_begin(iris_runtime_t *runtime)
+{
+    if (runtime->data_link || !iris_log_uses_native_console(runtime)) return;
+    _lock_acquire_recursive(&s_console_lock);
+    s_console_frame = true;
+    _lock_release_recursive(&s_console_lock);
+}
+
+void iris_log_console_frame_end(iris_runtime_t *runtime)
+{
+    if (runtime->data_link) return;
+    _lock_acquire_recursive(&s_console_lock);
+    s_console_frame = false;
+    _lock_release_recursive(&s_console_lock);
+}
+
+void iris_log_forward_deferred(const iris_log_record_t *record)
+{
+    if (!(record->flags & IRIS_LOG_DEFERRED_CONSOLE)) return;
+    _lock_acquire_recursive(&s_console_lock);
+    FILE *original = record->source == 2 ? s_previous_stderr : s_previous_stdout;
+    if (original != NULL) {
+        (void)fwrite(record->data, 1, record->length, original);
+        (void)fflush(original);
+    }
+    _lock_release_recursive(&s_console_lock);
+}
 
 static int log_open(void *ctx, const char *path, int flags, int mode)
 {
@@ -216,6 +264,8 @@ static ssize_t log_write(void *ctx, int fd, const void *data, size_t size)
         return -1;
     }
 
+    _lock_acquire_recursive(&s_console_lock);
+    const bool deferred = s_console_frame;
     const uint8_t source = fd == 2 ? 2U : 1U;
     const uint8_t *bytes = data;
     size_t offset = 0;
@@ -225,7 +275,7 @@ static ssize_t log_write(void *ctx, int fd, const void *data, size_t size)
         uint8_t header[IRIS_LOG_RECORD_HEADER_SIZE];
         iris_put_le64(header, (uint64_t)esp_timer_get_time());
         header[8] = source;
-        header[9] = 0;
+        header[9] = deferred ? IRIS_LOG_DEFERRED_CONSOLE : 0;
         iris_put_le16(header + 10, (uint16_t)chunk);
 
         taskENTER_CRITICAL(&runtime->log_lock);
@@ -246,8 +296,16 @@ static ssize_t log_write(void *ctx, int fd, const void *data, size_t size)
     if (runtime->task != NULL) {
         xTaskNotifyGive(runtime->task);
     }
-    /* stdout must remain nonblocking even when Iris drops a record. */
-    return (ssize_t)size;
+    /* Retention is a tap, not a replacement console. Preserve the original
+     * driver's output and blocking/error semantics even without a Gateway. */
+    FILE *original = fd == 2 ? s_previous_stderr : s_previous_stdout;
+    ssize_t result = (ssize_t)size;
+    if (!deferred && original != NULL) {
+        const size_t written = fwrite(data, 1, size, original);
+        result = fflush(original) != 0 && written == 0 ? -1 : (ssize_t)written;
+    }
+    _lock_release_recursive(&s_console_lock);
+    return result;
 }
 
 static const esp_vfs_fs_ops_t s_log_vfs = {

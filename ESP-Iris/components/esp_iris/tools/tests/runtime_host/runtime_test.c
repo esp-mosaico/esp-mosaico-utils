@@ -57,7 +57,7 @@ static bool test_handle_rpc(iris_runtime_t *runtime,
 {
     uint8_t payload[IRIS_EXEC_RESULT_BYTES];
     iris_service_call_t call = {.payload = payload, .capacity = sizeof(payload)};
-    const esp_err_t admission = rpc_accept_request(frame);
+    const esp_err_t admission = rpc_accept_request(runtime, frame);
     bool handled = admission == ESP_OK ? handle_rpc(&call, frame, received_us)
         : iris_service_error(&call, frame->header.request_id, admission,
             frame->header.channel, frame->header.type) == ESP_OK;
@@ -70,7 +70,7 @@ static bool test_handle_rpc(iris_runtime_t *runtime,
 }
 
 static void test_rpc_lengths(void) {
-    iris_runtime_t rt = {0};
+    iris_runtime_t rt = {.data_link = true};
     iris_service_state_t state = { .magic = IRIS_SERVICE_STATE_MAGIC };
     s_services = &state;
     state.rpc[0] = (iris_rpc_entry_t){true, 1, 1, callback, NULL};
@@ -116,7 +116,7 @@ static void test_coalesced_frames(void) {
     append_control(ESP_IRIS_CONTROL_PING, 4, NULL, 0);
     for (size_t segment = 1; segment <= incoming_size; ++segment) {
         for (size_t partial = 1; partial <= 40; partial += 13) {
-            iris_runtime_t rt = {.session_id = 123, .hello_acked = true,
+            iris_runtime_t rt = {.data_link = true, .session_id = 123, .hello_acked = true,
                 .next_hello_us = INT64_MAX};
             rt.transport.active_ops = &g_iris_tcp_transport_ops;
             rt.transport.active_state = &rt.transport.tcp;
@@ -197,7 +197,7 @@ static unsigned worker_notify_take(unsigned ticks)
 static void test_worker_scheduling(void)
 {
     for (worker_load = WORKER_TX_BLOCKED; worker_load <= WORKER_IDLE; ++worker_load) {
-        iris_runtime_t rt = {
+        iris_runtime_t rt = {.data_link = true,
             .session_id = 123, .hello_acked = true, .running = true,
             .session_state = IRIS_SESSION_READY, .link_connected = true,
             .next_hello_us = INT64_MAX,
@@ -254,7 +254,7 @@ static void deliver(iris_runtime_t *runtime, const iris_decoded_frame_t *frame) 
     if (runtime->tx_wire_length == 0) (void)executor_queue_next(runtime);
 }
 static void test_replay_and_reopen(void) {
-    iris_runtime_t rt = { .session_id = 123, .hello_acked = true,
+    iris_runtime_t rt = {.data_link = true,  .session_id = 123, .hello_acked = true,
         .session_state = IRIS_SESSION_READY, .link_connected = true };
     iris_service_state_t state = {.magic = IRIS_SERVICE_STATE_MAGIC};
     s_services = &state;
@@ -279,7 +279,7 @@ static void test_replay_and_reopen(void) {
     frame.header.sequence = 8; frame.header.request_id = 12; payload[2] = 2;
     deliver(&rt, &frame); assert(callback_calls == 3); payload[2] = 1;
     /* Wrap acceptance and half-space rejection. */
-    state.session->last_rpc_request_id = UINT32_MAX; rt.rx_sequence[0] = UINT32_MAX;
+    rt.last_rpc_request_id = UINT32_MAX; rt.rx_sequence[0] = UINT32_MAX;
     frame.header.request_id = 1; frame.header.sequence = 0;
     rt.tx_wire_length = 0; deliver(&rt, &frame); assert(callback_calls == 4);
     frame.header.request_id = UINT32_C(0x80000001); frame.header.sequence = 1;
@@ -287,7 +287,9 @@ static void test_replay_and_reopen(void) {
     /* A negotiated reopen produces a fresh session; delayed ACK of the old
      * session cannot reset it again, and normal ACK replay remains harmless. */
     frame.header.type = ESP_IRIS_CONTROL_HELLO_ACK;
-    frame.header.flags = ESP_IRIS_FLAG_NEW_SESSION; frame.header.payload_size = 0;
+    uint8_t binding[17] = {1, 0x42};
+    frame.payload = binding;
+    frame.header.flags = ESP_IRIS_FLAG_NEW_SESSION; frame.header.payload_size = sizeof(binding);
     rt.tx_wire_length = 0; deliver(&rt, &frame);
     const uint32_t new_session = rt.session_id;
     assert(new_session != 123 && new_session != 0 && !rt.hello_acked);
@@ -299,7 +301,7 @@ static void test_replay_and_reopen(void) {
     test_release_contexts(s_services); s_services = NULL;
 }
 static void test_claim_timeout(void) {
-    iris_runtime_t rt = {0};
+    iris_runtime_t rt = {.data_link = true};
     now_us = 0; starts = stops = 0; candidate = false;
     assert(iris_transport_start(&rt) == ESP_OK);
     assert(iris_transport_poll(&rt) == IRIS_LINK_EVENT_NONE);
@@ -360,7 +362,7 @@ static void slow_callback_hook(void) {
     now_us = 2000000;
 }
 static void test_executor_rpc(void) {
-    iris_runtime_t rt = {.session_id = 600, .hello_acked = true};
+    iris_runtime_t rt = {.data_link = true, .session_id = 600, .hello_acked = true};
     iris_service_state_t state = {.magic = IRIS_SERVICE_STATE_MAGIC};
     s_services = &state; responsive_runtime = &rt;
     state.rpc[0] = (iris_rpc_entry_t){true, 1, 1, callback, NULL};
@@ -418,7 +420,7 @@ static void disconnect_after_ota_commit(void) {
     responsive_runtime->session_id++;
 }
 static void test_executor_ota(void) {
-    iris_runtime_t rt = {.session_id = 700, .hello_acked = true};
+    iris_runtime_t rt = {.data_link = true, .session_id = 700, .hello_acked = true};
     iris_service_state_t state = {.magic = IRIS_SERVICE_STATE_MAGIC};
     s_services = &state; responsive_runtime = &rt;
     uint8_t begin[40] = {4}; uint8_t data[8] = {0,0,0,0,1,2,3,4};
@@ -464,7 +466,7 @@ static void test_executor_ota(void) {
 }
 
 static void test_ota_begin_erase_cleanup(void) {
-    iris_runtime_t rt = {.session_id = 701, .hello_acked = true};
+    iris_runtime_t rt = {.data_link = true, .session_id = 701, .hello_acked = true};
     iris_service_state_t state = {.magic = IRIS_SERVICE_STATE_MAGIC};
     s_services = &state; responsive_runtime = &rt;
     uint8_t begin[40] = {0};
@@ -494,6 +496,10 @@ static void test_ota_begin_erase_cleanup(void) {
         } else {
             /* An erase failure/cancellation must not prevent a later retry. */
             assert(response.header.type == ESP_IRIS_OTA_BEGIN_RESPONSE);
+            assert(response.payload[10] == strlen(target_partition.label));
+            assert(response.header.payload_size == 11 + strlen(target_partition.label));
+            assert(memcmp(response.payload + 11, target_partition.label,
+                          strlen(target_partition.label)) == 0);
             assert(state.ota != NULL && state.ota->active && ota_handle_open);
             ota_abort(&state, ESP_ERR_INVALID_STATE);
             assert(!ota_handle_open && flash_aborts == 3);
@@ -559,7 +565,7 @@ static esp_err_t write_bounded_chunk(const esp_iris_system_update_component_t *c
 }
 
 static void test_system_update_chunk_boundaries(void) {
-    iris_runtime_t rt = {.session_id = 901, .hello_acked = true};
+    iris_runtime_t rt = {.data_link = true, .session_id = 901, .hello_acked = true};
     iris_service_state_t state = {.magic = IRIS_SERVICE_STATE_MAGIC};
     s_services = &state;
     s_system_update = (iris_system_update_state_t){.backend_registered = true};
@@ -630,7 +636,7 @@ static esp_err_t system_commit(const uint8_t *id, void *ctx) {
 }
 static void system_abort(const uint8_t *id, esp_err_t reason, void *ctx) { ++system_aborts; }
 static void test_executor_system_update(void) {
-    iris_runtime_t rt = {.session_id = 900, .hello_acked = true};
+    iris_runtime_t rt = {.data_link = true, .session_id = 900, .hello_acked = true};
     iris_service_state_t state = {.magic = IRIS_SERVICE_STATE_MAGIC};
     s_services = &state; responsive_runtime = &rt;
     s_system_update = (iris_system_update_state_t){.backend_registered = true};
@@ -686,7 +692,7 @@ static esp_err_t read_inventory(esp_iris_system_inventory_t *out, void *ctx) {
     return inventory_result;
 }
 static void test_inventory_executor_dispatch(void) {
-    iris_runtime_t rt = {.session_id = 950, .hello_acked = true};
+    iris_runtime_t rt = {.data_link = true, .session_id = 950, .hello_acked = true};
     responsive_runtime = &rt;
     const esp_iris_system_inventory_provider_t provider = {.get_inventory = read_inventory};
     assert(esp_iris_system_inventory_register(&provider) == ESP_OK);
@@ -725,7 +731,7 @@ static void test_inventory_executor_dispatch(void) {
 }
 #endif
 static void test_unsupported_executor_channel_type(void) {
-    iris_runtime_t rt = {.session_id = 960};
+    iris_runtime_t rt = {.data_link = true, .session_id = 960};
     uint8_t payload[1] = {0};
     iris_decoded_frame_t request = {.header = {.channel = ESP_IRIS_CHANNEL_SYSTEM_UPDATE,
         .type = 0xff, .request_id = 200}, .payload = payload};
@@ -743,7 +749,7 @@ static uint32_t fuzz_random(uint32_t *seed) {
 }
 static void test_fragmented_malformed_corpus(void) {
     uint32_t seed = UINT32_C(0x49524953);
-    iris_runtime_t rt = {.session_id = 800, .hello_acked = true};
+    iris_runtime_t rt = {.data_link = true, .session_id = 800, .hello_acked = true};
     for (unsigned round = 0; round < 512; ++round) {
         size_t remaining = fuzz_random(&seed) % (ESP_IRIS_MAX_WIRE_FRAME_SIZE + 128);
         while (remaining != 0) {
@@ -797,13 +803,14 @@ static void test_executor_idle_reap(void) {
 #endif
 }
 static void test_fragmented_rpc_during_media(void) {
-    iris_runtime_t rt = {.session_id = 600, .hello_acked = true};
+    iris_runtime_t rt = {.data_link = true, .session_id = 600, .hello_acked = true};
     iris_service_state_t state = {.magic = IRIS_SERVICE_STATE_MAGIC};
     s_services = &state;
     state.rpc[0] = (iris_rpc_entry_t){true, 1, 1, callback, NULL};
     uint8_t media[64] = {0};
     assert(service_streams(&state, true) != NULL);
     state.streams->media[1] = (iris_media_slot_t){.active = true, .pending = true,
+        .session_id = rt.session_id,
         .data = media, .size = sizeof(media), .credit = UINT32_MAX};
     uint8_t body[12 + CONFIG_ESP_IRIS_RPC_BODY_BYTES] = {1,0,1,0};
     iris_put_le16(body + 8, CONFIG_ESP_IRIS_RPC_BODY_BYTES);
@@ -853,7 +860,7 @@ static esp_err_t owned_callback(const esp_iris_rpc_request_t *request,
 
 static void test_owned_request_result(void)
 {
-    iris_runtime_t rt = {.session_id = 1234, .hello_acked = true};
+    iris_runtime_t rt = {.data_link = true, .session_id = 1234, .hello_acked = true};
     iris_service_state_t state = {.magic = IRIS_SERVICE_STATE_MAGIC};
     s_services = &state;
     state.rpc[0] = (iris_rpc_entry_t){true, 1, 1, owned_callback, NULL};
@@ -927,7 +934,7 @@ static void test_service_lifetimes(void)
     state->rpc[0] = (iris_rpc_entry_t){true, 1, 1, callback, NULL};
     const uint32_t registration_bytes = state->allocated_bytes;
     for (unsigned cycle = 0; cycle < 40; ++cycle) {
-        iris_runtime_t rt = {0};
+        iris_runtime_t rt = {.data_link = true};
         iris_services_session_begin(&rt);
         assert(state->session != NULL && state->streams == NULL);
         assert(service_streams(state, true) != NULL);
@@ -977,7 +984,7 @@ static void test_media_context_lifecycle(void)
     s_services = &state;
     state.screen = (esp_iris_screen_backend_t){
         test_screen_begin, test_screen_read, test_screen_end, NULL};
-    iris_runtime_t rt = {.session_id = 2222, .hello_acked = true};
+    iris_runtime_t rt = {.data_link = true, .session_id = 2222, .hello_acked = true};
     uint8_t payload[20] = {0};
     iris_put_le16(payload + 16, 5);
     iris_decoded_frame_t frame = {.header = {
@@ -991,6 +998,7 @@ static void test_media_context_lifecycle(void)
         assert(iris_services_handle_frame(&rt, &frame, 0));
         assert(state.streams != NULL && state.streams->capture.active);
         frame.header.type = ESP_IRIS_MEDIA_CLOSE;
+        frame.header.stream_id = state.streams->capture.stream_id;
         frame.header.payload_size = 0;
         rt.tx_wire_length = 0;
         assert(iris_services_handle_frame(&rt, &frame, 0));
@@ -1004,12 +1012,22 @@ static void test_media_context_lifecycle(void)
         assert(iris_services_handle_frame(&rt, &frame, 0));
         assert(state.streams != NULL && state.streams->media[0].active);
         assert(state.streams->media[0].data != NULL);
+        const uint32_t stream_id = state.streams->media[0].stream_id;
+        assert(!iris_services_credit(&rt, ESP_IRIS_CHANNEL_SCREEN, stream_id + 1, 1024));
+        iris_runtime_t other = {.session_id = rt.session_id + 1};
+        assert(!iris_services_credit(&other, ESP_IRIS_CHANNEL_SCREEN, stream_id, 1024));
+        assert(iris_services_credit(&rt, ESP_IRIS_CHANNEL_SCREEN, stream_id, 1024));
         frame.header.type = ESP_IRIS_MEDIA_MIRROR_STOP;
         frame.header.payload_size = 0;
+        frame.header.stream_id = stream_id + 1;
+        rt.tx_wire_length = 0;
+        assert(iris_services_handle_frame(&rt, &frame, 0));
+        assert(state.streams != NULL && state.streams->media[0].active);
+        frame.header.stream_id = stream_id;
         rt.tx_wire_length = 0;
         assert(iris_services_handle_frame(&rt, &frame, 0));
         assert(state.streams == NULL);
-        assert(!iris_services_credit(ESP_IRIS_CHANNEL_SCREEN, 1024));
+        assert(!iris_services_credit(&g_iris, ESP_IRIS_CHANNEL_SCREEN, 0, 1024));
     }
     assert(screen_ends == 80);
     test_release_contexts(s_services); s_services = NULL;
@@ -1021,7 +1039,7 @@ static void test_reconnect_before_worker_cleanup(void)
     iris_service_state_t state = {.magic = IRIS_SERVICE_STATE_MAGIC};
     s_services = &state;
     state.rpc[0] = (iris_rpc_entry_t){true, 1, 1, callback, NULL};
-    iris_runtime_t rt = {.session_id = 3333, .hello_acked = true};
+    iris_runtime_t rt = {.data_link = true, .session_id = 3333, .hello_acked = true};
     uint8_t payload[12] = {1, 0, 1, 0};
     iris_decoded_frame_t frame = {.header = {
         .channel = ESP_IRIS_CHANNEL_CONTROL, .type = ESP_IRIS_CONTROL_REQUEST,
@@ -1031,6 +1049,7 @@ static void test_reconnect_before_worker_cleanup(void)
     iris_services_session_end(&rt);
     assert(state.session == NULL && executor_busy());
     rt.session_id++;
+    rt.rpc_request_seen = false;
     iris_services_session_begin(&rt);
     iris_service_session_t *new_session = state.session;
     assert(new_session != NULL && !new_session->rpc_request_seen);
@@ -1042,7 +1061,7 @@ static void test_reconnect_before_worker_cleanup(void)
     assert(executor_dispatch(&rt, &frame, 0));
     executor_run_one();
     assert(executor_queue_next(&rt));
-    assert(state.session == new_session && new_session->rpc_request_seen);
+    assert(state.session == new_session && rt.rpc_request_seen);
     test_release_contexts(s_services); s_services = NULL;
 }
 
@@ -1083,6 +1102,79 @@ static void test_external_allocation_failure(void) {
     assert(s_executor.work == NULL && s_executor.task == NULL);
     fail_task_create = false;
 }
+#include "console_test.inc"
+
+static void test_scheduled_restart_lifecycle(void)
+{
+    iris_services_deinit(&g_iris);
+    assert(esp_iris_schedule_restart(500) == ESP_ERR_INVALID_STATE);
+    assert(iris_services_init(&g_iris) == ESP_OK);
+    assert(esp_iris_schedule_restart(99) == ESP_ERR_INVALID_ARG);
+    assert(esp_iris_schedule_restart(60001) == ESP_ERR_INVALID_ARG);
+    now_us = 1000;
+    assert(esp_iris_schedule_restart(500) == ESP_OK);
+    assert(esp_iris_schedule_restart(600) == ESP_OK);
+    assert(s_restart_at_us == 501000); /* duplicate cannot defer shutdown */
+    assert(esp_iris_schedule_restart(100) == ESP_OK);
+    assert(s_restart_at_us == 101000);
+    now_us = 101000;
+    g_iris.tx_wire_length = 1;
+    allow_restart = true;
+    iris_services_poll(&g_iris);
+    assert(restart_calls == 0);
+    g_iris.tx_wire_length = 0;
+#if CONFIG_ESP_IRIS_DATA_LINK
+    g_iris_data.tx_wire_length = 1;
+    iris_services_poll(&g_iris);
+    assert(restart_calls == 0); /* neither link may strand the other response */
+    g_iris_data.tx_wire_length = 0;
+#endif
+    g_iris.tx_wire_length = 1;
+    now_us += IRIS_RESTART_FLUSH_GRACE_US;
+    iris_services_poll(&g_iris);
+    assert(restart_calls == 1); /* a stalled receiver cannot strand Vibe entry */
+    restart_calls = 0;
+    g_iris.tx_wire_length = 0;
+    assert(esp_iris_schedule_restart(100) == ESP_OK);
+    iris_services_deinit(&g_iris);
+    now_us += 100000;
+    iris_services_poll(&g_iris);
+    assert(restart_calls == 0); /* stop cancels an accepted request */
+    assert(esp_iris_schedule_restart(500) == ESP_ERR_INVALID_STATE);
+    allow_restart = false;
+}
+
+static void test_acknowledged_restart_survives_disconnect(void)
+{
+    assert(iris_services_init(&g_iris) == ESP_OK);
+    g_iris.started = true;
+    g_iris.hello_acked = true;
+    g_iris.session_id = 999;
+    g_iris.tx_wire_length = 0;
+    now_us = 1000;
+    uint8_t payload[4];
+    iris_put_le32(payload, 100);
+    iris_decoded_frame_t request = {.header = {
+        .channel = ESP_IRIS_CHANNEL_CONTROL, .type = ESP_IRIS_CONTROL_RESTART,
+        .payload_size = sizeof(payload), .request_id = 4000}, .payload = payload};
+    assert(handle_restart(&g_iris, &request));
+    assert(s_restart_at_us == 101000);
+    g_iris.tx_wire_length = 0; /* restart acknowledgement reached the client */
+    iris_services_session_end(&g_iris);
+    g_iris.hello_acked = false;
+    allow_restart = true;
+    now_us = 100999;
+    iris_services_poll(&g_iris);
+    assert(restart_calls == 0);
+    now_us = 101000;
+    iris_services_poll(&g_iris);
+    assert(restart_calls == 1);
+    iris_services_poll(&g_iris);
+    assert(restart_calls == 1);
+    allow_restart = false;
+    g_iris.started = false;
+}
+
 int main(void) {
     test_rpc_lengths(); test_coalesced_frames(); test_worker_scheduling(); test_replay_and_reopen();
     test_claim_timeout(); test_executor_rpc(); test_fragmented_malformed_corpus();
@@ -1106,5 +1198,10 @@ int main(void) {
     test_reconnect_before_worker_cleanup();
     test_executor_idle_reap();
     test_external_allocation_failure();
+    test_printable_console();
+    test_independent_link_binding();
+    test_console_snapshot_binding_crc_expiry();
+    test_scheduled_restart_lifecycle();
+    test_acknowledged_restart_survives_disconnect();
     executor_work_free(s_executor.work); return 0;
 }

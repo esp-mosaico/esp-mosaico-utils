@@ -110,7 +110,7 @@ class GatewayApi:
         last_error: Exception | None = None
         while time.monotonic() < deadline:
             try:
-                status, payload, _ = self.request("GET", "/v1/health", timeout=2)
+                status, payload, _ = self.request("GET", "/v2/health", timeout=2)
                 if status == 200 and isinstance(payload, dict):
                     return payload
             except (OSError, ValueError) as exc:
@@ -121,7 +121,7 @@ class GatewayApi:
     def wait_device(self, timeout: float = 45) -> dict[str, Any]:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            status, payload, _ = self.request("GET", "/v1/devices", timeout=3)
+            status, payload, _ = self.request("GET", "/v2/devices", timeout=3)
             if status == 200 and isinstance(payload, dict):
                 connected = [
                     item for item in payload.get("devices", []) if item.get("connected")
@@ -227,7 +227,7 @@ class GatewayProcess:
                     )
                 try:
                     status, payload, _ = api.request(
-                        "GET", "/v1/health", timeout=1
+                        "GET", "/v2/health", timeout=1
                     )
                     if status == 200 and isinstance(payload, dict):
                         return api

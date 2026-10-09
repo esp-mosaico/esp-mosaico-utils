@@ -17,7 +17,7 @@ project(iris_internal_budget VERSION 1.0.0)
 idf_component_get_property(app_main main COMPONENT_LIB)
 target_sources(${app_main} PRIVATE "${CMAKE_CURRENT_LIST_DIR}/budget.c")
 foreach(symbol app_main iris_ota_support_start esp_iris_start esp_iris_boot_probe
-        esp_iris_mark_healthy esp_iris_rpc_register esp_iris_screen_register esp_ota_set_boot_partition)
+        esp_iris_mark_healthy esp_iris_rpc_register esp_iris_screen_register mosaico_boot_request_recovery)
     target_link_options(${app_main} INTERFACE "-Wl,--wrap=${symbol}")
 endforeach()
 include("${MOSAICO_UTILS_ROOT}/mosaico-tools/cmake/system_update.cmake")

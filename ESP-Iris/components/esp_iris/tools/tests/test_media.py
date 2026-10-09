@@ -8,6 +8,15 @@ import pytest
 from iris_gateway.media import JPEG, PNG, RGB565, RGB888, encode_media_image
 
 
+def test_encoded_snapshot_preserves_transfer_path():
+    image = encode_media_image(
+        {"format": RGB565, "width": 1, "height": 1, "stride": 2,
+         "transfer_path": "control"}, b"\x00\xf8"
+    )
+    assert image.description["transfer_path"] == "control"
+    assert image.description["format"] == PNG
+
+
 def _decode_png_rgb(data: bytes) -> tuple[int, int, bytes]:
     assert data.startswith(b"\x89PNG\r\n\x1a\n")
     offset = 8

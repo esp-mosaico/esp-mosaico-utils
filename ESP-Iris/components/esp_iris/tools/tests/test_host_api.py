@@ -14,7 +14,7 @@ from iris_gateway.source_identity import source_identity
 
 def test_public_api_imports_without_site_packages(tmp_path):
     tools = Path(__file__).resolve().parents[1]
-    result = subprocess.run([sys.executable, "-S", "-c", "from iris_gateway import client; assert client.API_MAJOR == 1"],
+    result = subprocess.run([sys.executable, "-S", "-c", "from iris_gateway import client; assert client.API_MAJOR == 2"],
                             cwd=tmp_path, env={**os.environ, "PYTHONPATH": str(tools)}, capture_output=True, check=False)
     assert result.returncode == 0, result.stderr
 
@@ -41,18 +41,18 @@ def test_registry_reader_rejects_unknown_schema_without_migration(tmp_path, vers
     assert path.read_bytes() == original
 
 
-def test_registry_reader_accepts_legacy_metadata_and_observes_lock_liveness(tmp_path):
+def test_registry_reader_requires_02_metadata_and_observes_lock_liveness(tmp_path):
     registry = OwnershipRegistry(tmp_path / "ownership")
     try:
         registry.register("session", "project", "/workspace/app", "instance")
-        registry.db.execute("DROP TABLE session_metadata")
-        registry.db.commit()
         before = registry_snapshot(tmp_path)
         assert before["sessions"][0]["alive"] is True
-        assert "workspace_path" not in before["sessions"][0]
+        registry.db.execute("DROP TABLE session_metadata")
+        registry.db.commit()
+        with pytest.raises(LocalStateError, match="Could not read"):
+            registry_snapshot(tmp_path)
     finally:
         registry.close()
-    assert registry_snapshot(tmp_path)["sessions"][0]["alive"] is False
 
 
 def test_source_fingerprint_is_scoped_and_detects_uncommitted_runtime_changes(tmp_path):

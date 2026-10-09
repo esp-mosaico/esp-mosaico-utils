@@ -1,7 +1,7 @@
 import { expect, test } from "@playwright/test";
 
 test("desktop workbench keeps the device workflow focused", async ({ page }) => {
-  await page.route("**/v1/devices", async (route) => {
+  await page.route("**/v2/devices", async (route) => {
     const response = await route.fetch();
     const body = await response.json();
     for (const device of body.devices) {
@@ -13,12 +13,12 @@ test("desktop workbench keeps the device workflow focused", async ({ page }) => 
   const errors: string[] = [];
   let systemUpdateUploaded = false;
   page.on("console", (message) => { if (message.type() === "error") errors.push(message.text()); });
-  await page.route("**/v1/health", async (route) => {
+  await page.route("**/v2/health", async (route) => {
     const response = await route.fetch();
     const body = await response.json();
     await route.fulfill({ response, json: { ...body, system_update_trust_configured: true } });
   });
-  await page.route("**/v1/devices/*/system-update", async (route) => {
+  await page.route("**/v2/devices/*/system-update", async (route) => {
     systemUpdateUploaded = route.request().postDataBuffer()?.equals(Buffer.from("signed-irisfw-test")) ?? false;
     await route.fulfill({
       status: 202,
@@ -46,8 +46,8 @@ test("desktop workbench keeps the device workflow focused", async ({ page }) => 
   // Camera Bench intentionally disconnects on the demo's periodic schedule.
   // Exercise the online workflow against the stable device explicitly rather
   // than whichever recent device the inventory initially selects.
-  await page.getByRole("button", { name: /Mosaico Alpha demo-a1b2c3d/ }).click();
-  await expect(page.getByRole("heading", { name: "Mosaico Alpha" })).toBeVisible();
+  await page.getByRole("button", { name: /Iris Alpha demo-a1b2c3d/ }).click();
+  await expect(page.getByRole("heading", { name: "Iris Alpha" })).toBeVisible();
   await page.locator(".device-details summary").click();
   await expect(page.locator(".device-details dd").filter({ hasText: /^12238782771570883527$/ })).toBeVisible();
   await page.locator(".device-details summary").click();
@@ -152,7 +152,7 @@ test("desktop workbench keeps the device workflow focused", async ({ page }) => 
 
   await page.getByRole("button", { name: "API 文档", exact: true }).click();
   await expect(page.getByRole("heading", { name: "API 文档" })).toBeVisible();
-  await expect(page.getByText("/v1/health", { exact: true })).toBeVisible();
+  await expect(page.getByText("/v2/health", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "发送", exact: true })).toHaveCount(0);
 
   await page.getByRole("button", { name: "设备", exact: true }).click();
@@ -191,10 +191,10 @@ test("desktop workbench keeps the device workflow focused", async ({ page }) => 
 
 test("an offline device can be removed from inventory", async ({ page }) => {
   let removed = false;
-  await page.route("**/v1/devices**", async (route) => {
+  await page.route("**/v2/devices**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
-    if (path === "/v1/devices" && request.method() === "GET") {
+    if (path === "/v2/devices" && request.method() === "GET") {
       await route.fulfill({
         json: {
           demo: false,
@@ -211,12 +211,12 @@ test("an offline device can be removed from inventory", async ({ page }) => {
       });
       return;
     }
-    if (path === "/v1/devices/offline-device" && request.method() === "DELETE") {
+    if (path === "/v2/devices/offline-device" && request.method() === "DELETE") {
       removed = true;
       await route.fulfill({ json: { device_id: "offline-device", removed: true, history_preserved: true } });
       return;
     }
-    if (path === "/v1/devices/offline-device" && request.method() === "GET") {
+    if (path === "/v2/devices/offline-device" && request.method() === "GET") {
       await route.fulfill({
         json: {
           device_id: "offline-device",
@@ -252,7 +252,7 @@ test("an offline device can be removed from inventory", async ({ page }) => {
 });
 
 test("operation details show calendar dates across midnight", async ({ page }) => {
-  await page.route("**/v1/operations", async (route) => {
+  await page.route("**/v2/operations", async (route) => {
     await route.fulfill({
       json: {
         operations: [{

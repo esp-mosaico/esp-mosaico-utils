@@ -52,16 +52,16 @@ def test_http_live_demo_and_old_cached_status_preserve_boot_id(tmp_path):
                 hub.get(device_id)["boot_id"] = value
                 assert hub.list_devices()[0]["boot_id_text"] == str(value)
                 assert (await hub.status(device_id))["boot_id_text"] == str(value)
-                devices = (await (await client.get("/v1/devices")).json())["devices"]
+                devices = (await (await client.get("/v2/devices")).json())["devices"]
                 device = next(item for item in devices if item["device_id"] == device_id)
                 assert device["boot_id"] == value
                 assert device["boot_id_text"] == str(value)
-                status = await (await client.get(f"/v1/devices/{device_id}")).json()
+                status = await (await client.get(f"/v2/devices/{device_id}")).json()
                 assert status["boot_id_text"] == str(value)
             store.set_setting(f"status.{device_id}", {"device_id": device_id, "boot_id": value})
             service.mode = "observe"
             service.hub = None
-            cached = await (await client.get(f"/v1/devices/{device_id}")).json()
+            cached = await (await client.get(f"/v2/devices/{device_id}")).json()
             assert cached["boot_id"] == value
             assert cached["boot_id_text"] == str(value)
             # Legacy cached list metadata has no string alias either.

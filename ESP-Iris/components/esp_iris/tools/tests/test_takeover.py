@@ -24,7 +24,7 @@ async def gateways(tmp_path):
     projects, clients = [], []
     opened = []
 
-    async def open_link(host, port):
+    async def open_link(host, port, **kwargs):
         link = SupervisorLink(len(opened) + 1, endpoint=f"tcp:{host}:{port}")
         opened.append(link)
         return link
@@ -70,14 +70,14 @@ def test_receiver_initiates_idle_handoff_with_live_monitor_and_idempotent_retry(
                 assert owner.keepalive_reasons()["host_workers"] == 1
                 assert receiver.keepalive_reasons()["host_workers"] == 0
             body = {**selector, "takeover_id": str(uuid.uuid4())}
-            response = await clients[1].post("/v1/project/takeovers", json=body)
+            response = await clients[1].post("/v2/project/takeovers", json=body)
             result = await response.json()
             assert response.status == 200, result
             assert result["takeover"]["state"] == "completed"
             assert receiver.registry.claim("device:" + D)["owner"] == "receiver"
             assert len(opened) == 2 and opened[0].closed
             assert not owner.closing and len(owner.clients.clients) == 2
-            response = await clients[1].post("/v1/project/takeovers", json=body)
+            response = await clients[1].post("/v2/project/takeovers", json=body)
             assert await response.json() == result
             assert len(opened) == 2
             owner.streams = 0
@@ -108,17 +108,17 @@ def test_force_waits_for_write_cancels_queue_and_stops_mirrors_jobs(tmp_path):
                 {"job_id": 7, "job_state": "cancelled"},
             ])
             body = {"device_id": D, "takeover_id": str(uuid.uuid4()), "timeout": 2}
-            response = await clients[1].post("/v1/project/takeovers", json=body)
+            response = await clients[1].post("/v2/project/takeovers", json=body)
             assert response.status == 409
             result = await response.json()
             reasons = result["error"]["details"]["cause"]["details"]["busy_reasons"]
             assert {item["kind"] for item in reasons} == {"operation", "mirror", "job"}
             assert not owner.blocked and not gate.is_set()
-            request = asyncio.create_task(clients[1].post("/v1/project/takeovers", json={**body, "force": True}))
+            request = asyncio.create_task(clients[1].post("/v2/project/takeovers", json={**body, "force": True}))
             await until(lambda: D in owner.blocked)
-            response = await clients[0].post(f"/v1/devices/{D}/restart", json={})
+            response = await clients[0].post(f"/v2/devices/{D}/restart", json={})
             assert response.status == 409
-            response = await clients[0].post("/v1/project/acquire", json={"endpoint": E})
+            response = await clients[0].post("/v2/project/acquire", json={"endpoint": E})
             assert response.status == 409
             # Work for another device continues through the normal operation queue.
             other = AsyncMock(return_value={"ok": True})
@@ -154,7 +154,7 @@ def test_force_timeout_retains_owner_unblocks_admission_and_never_cancels_write(
                 owner.hub.job = AsyncMock(return_value={"job_id": 7, "job_state": "running"})
             workers = [{"resources": [D], "operation_id": "external"}] if blocker == "worker" else []
             with patch("iris_gateway.project_gateway.active_workers", return_value=workers):
-                response = await clients[1].post("/v1/project/takeovers", json={
+                response = await clients[1].post("/v2/project/takeovers", json={
                     "device_id": D, "takeover_id": str(uuid.uuid4()), "force": True, "timeout": 0.08,
                 })
             assert response.status == 409, await response.text()
@@ -176,13 +176,13 @@ def test_receiver_rejects_reused_id_and_dead_owner(tmp_path):
         async with gateways(tmp_path) as (projects, clients, _):
             owner, receiver, _ = projects
             body = {"device_id": D, "takeover_id": str(uuid.uuid4())}
-            response = await clients[1].post("/v1/project/takeovers", json=body)
+            response = await clients[1].post("/v2/project/takeovers", json=body)
             assert response.status == 200
-            response = await clients[2].post("/v1/project/takeovers", json=body)
+            response = await clients[2].post("/v2/project/takeovers", json=body)
             assert response.status == 409
             assert receiver.registry.claim("device:" + D)["owner"] == "receiver"
             with patch.object(owner.registry, "alive", return_value=False):
-                response = await clients[0].post("/v1/project/takeovers", json={"device_id": D})
+                response = await clients[0].post("/v2/project/takeovers", json={"device_id": D})
             assert response.status == 409
             assert not owner.hub.list_devices()
     asyncio.run(scenario())
@@ -192,11 +192,11 @@ def test_public_transfer_routes_are_removed(tmp_path):
     async def scenario():
         async with gateways(tmp_path) as (projects, clients, _):
             for path in ("transfer", "prepare", "accept", "abort", "reconcile-transfer", "takeover"):
-                response = await clients[0].post("/v1/project/" + path, json={})
+                response = await clients[0].post("/v2/project/" + path, json={})
                 assert response.status == 404, path
-            response = await clients[0].get("/v1/project/transfers/" + str(uuid.uuid4()))
+            response = await clients[0].get("/v2/project/transfers/" + str(uuid.uuid4()))
             assert response.status == 404
-            response = await clients[1].post("/v1/project/takeovers", json={
+            response = await clients[1].post("/v2/project/takeovers", json={
                 "device_id": D, "transfer_id": str(uuid.uuid4()),
             })
             assert response.status == 400
@@ -209,9 +209,9 @@ def test_status_and_resume_after_receiver_validation_was_interrupted(tmp_path):
         async with gateways(tmp_path) as (projects, clients, opened):
             owner, receiver, _ = projects
             takeover_id = str(uuid.uuid4())
-            path = "/v1/project/takeovers/" + takeover_id
+            path = "/v2/project/takeovers/" + takeover_id
             with patch.object(receiver, "accept", side_effect=RuntimeError("validation interrupted")):
-                response = await clients[1].post("/v1/project/takeovers", json={
+                response = await clients[1].post("/v2/project/takeovers", json={
                     "device_id": D, "takeover_id": takeover_id,
                 })
             assert response.status == 409
@@ -241,9 +241,9 @@ def test_abort_restores_original_owner_without_repeating_device_detach(tmp_path)
         async with gateways(tmp_path) as (projects, clients, opened):
             owner, receiver, _ = projects
             takeover_id = str(uuid.uuid4())
-            path = "/v1/project/takeovers/" + takeover_id
+            path = "/v2/project/takeovers/" + takeover_id
             with patch.object(receiver, "accept", side_effect=RuntimeError("validation interrupted")):
-                response = await clients[1].post("/v1/project/takeovers", json={
+                response = await clients[1].post("/v2/project/takeovers", json={
                     "device_id": D, "takeover_id": takeover_id,
                 })
             assert response.status == 409
@@ -286,7 +286,7 @@ def test_reconcile_takeover_requires_dead_participants_and_restores_ownership(tm
         client = TestClient(TestServer(create_app(service)))
         await client.start_server()
         try:
-            path = "/v1/project/takeovers/" + takeover_id + "/reconcile"
+            path = "/v2/project/takeovers/" + takeover_id + "/reconcile"
             with patch.object(reg, "alive", return_value=True):
                 response = await client.post(path, json={})
                 assert response.status == 409

@@ -8,7 +8,7 @@ import tempfile
 import unittest
 
 
-TOOL_ROOT = Path(__file__).resolve().parents[1]
+TOOL_ROOT = Path(__file__).resolve().parents[2] / "mosaico-tools"
 sys.path.insert(0, str(TOOL_ROOT / "tools"))
 
 from mosaico_cli.errors import EnvironmentError
@@ -17,7 +17,7 @@ from mosaico_cli.workspace import CONFIG_NAME, load_workspace
 
 def configuration() -> dict[str, object]:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "workspace": {
             "projects_dir": "apps",
             "default_project": "apps/demo",
@@ -44,7 +44,7 @@ def configuration() -> dict[str, object]:
 
 class WorkspaceTests(unittest.TestCase):
     def test_recovery_build_resolves_monorepo_iris_checkout(self) -> None:
-        manifest = TOOL_ROOT / "firmware" / "recovery" / "main" / "idf_component.yml"
+        manifest = TOOL_ROOT.parent / "esp-mosaico-recovery" / "firmware" / "recovery" / "main" / "idf_component.yml"
         manifest_text = manifest.read_text(encoding="utf-8")
         override = re.search(r"^\s*override_path:\s*(\S+)\s*$", manifest_text, re.MULTILINE)
         self.assertIsNotNone(override)
@@ -55,7 +55,7 @@ class WorkspaceTests(unittest.TestCase):
         )
         self.assertTrue((component / "idf_component.yml").is_file())
 
-        cmake = TOOL_ROOT / "firmware" / "recovery" / "cmake" / "recovery_image.cmake"
+        cmake = TOOL_ROOT.parent / "esp-mosaico-recovery" / "firmware" / "recovery" / "cmake" / "recovery_image.cmake"
         cmake_text = cmake.read_text(encoding="utf-8")
         bundle_tool = re.search(
             r'\$\{CMAKE_CURRENT_LIST_DIR\}/([^"\n]+system_update_bundle\.py)',
@@ -94,11 +94,11 @@ class WorkspaceTests(unittest.TestCase):
             self.assertTrue(str(workspace.build_runner).startswith(str(TOOL_ROOT)))
             self.assertEqual(
                 workspace.recovery_project,
-                TOOL_ROOT / "firmware" / "recovery",
+                TOOL_ROOT.parent / "esp-mosaico-recovery" / "firmware" / "recovery",
             )
             self.assertEqual(
                 workspace.recovery_dir,
-                TOOL_ROOT / "firmware" / "recovery" / "prebuilt" / "recovery",
+                TOOL_ROOT.parent / "esp-mosaico-recovery" / "firmware" / "recovery" / "prebuilt" / "recovery",
             )
 
     def test_explicit_workspace_accepts_config_file(self) -> None:
@@ -113,6 +113,18 @@ class WorkspaceTests(unittest.TestCase):
 
             self.assertEqual(workspace.config_path, path.resolve())
             self.assertEqual(workspace.root, root.resolve())
+
+    def test_rejects_old_schema_without_modifying_configuration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            value = configuration()
+            value["schema_version"] = 1
+            path = root / CONFIG_NAME
+            original = json.dumps(value)
+            path.write_text(original, encoding="utf-8")
+            with self.assertRaisesRegex(EnvironmentError, "schema_version 2"):
+                load_workspace(TOOL_ROOT, explicit=str(root))
+            self.assertEqual(path.read_text(encoding="utf-8"), original)
 
     def test_rejects_unknown_schema(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

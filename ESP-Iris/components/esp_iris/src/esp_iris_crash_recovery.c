@@ -173,25 +173,6 @@ static bool current_image(uint32_t *out_address, uint8_t out_sha256[32])
     return true;
 }
 
-#if CONFIG_ESP_IRIS_CRASH_LOOP_RECOVERY
-static esp_err_t set_boot_address(uint32_t address)
-{
-    esp_partition_iterator_t iterator = esp_partition_find(
-        ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_ANY, NULL);
-    esp_err_t result = ESP_ERR_NOT_FOUND;
-    while (iterator != NULL) {
-        const esp_partition_t *partition = esp_partition_get(iterator);
-        if (partition != NULL && partition->address == address) {
-            result = esp_ota_set_boot_partition(partition);
-            break;
-        }
-        iterator = esp_partition_next(iterator);
-    }
-    esp_partition_iterator_release(iterator);
-    return result;
-}
-#endif
-
 static void runtime_from_state(iris_runtime_t *runtime,
                                const iris_crash_state_t *state)
 {
@@ -335,7 +316,7 @@ esp_err_t iris_crash_recovery_probe(iris_runtime_t *runtime)
             err = state_write(handle, &state);
         }
         if (err == ESP_OK) {
-            err = set_boot_address(recovery_address);
+            err = esp_iris_platform_set_boot_target(recovery_address);
         }
         if (err == ESP_OK) {
             nvs_close(handle);

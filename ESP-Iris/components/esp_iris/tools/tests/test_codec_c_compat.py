@@ -68,6 +68,7 @@ def c_codec(tmp_path_factory: pytest.TempPathFactory):
             "-I",
             str(COMPONENT / "src"),
             str(COMPONENT / "src" / "esp_iris_codec.c"),
+            str(COMPONENT / "src" / "esp_iris_console_codec.c"),
             "-o",
             str(output),
         ],
@@ -160,7 +161,7 @@ def _c_decode_status(c_codec, wire: bytes) -> int:
 def test_c_and_python_match_normative_vectors(c_codec) -> None:
     document = json.loads(VECTORS.read_text())
     assert document["schema_version"] == 1
-    assert document["protocol_version"] == 1
+    assert document["protocol_version"] == 2
     for vector in document["vectors"]:
         frame = _frame(vector)
         expected = bytes.fromhex(vector["wire_hex"])

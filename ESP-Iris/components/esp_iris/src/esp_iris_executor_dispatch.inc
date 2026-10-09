@@ -111,7 +111,7 @@ static bool executor_dispatch(iris_runtime_t *runtime,
         return true;
     }
     if (rpc) {
-        const esp_err_t admission = rpc_accept_request(frame);
+        const esp_err_t admission = rpc_accept_request(runtime, frame);
         if (admission != ESP_OK) {
             atomic_store(&s_executor.stage, IRIS_EXEC_IDLE);
             (void)iris_queue_error(runtime, h->request_id, admission,
@@ -134,7 +134,9 @@ static bool executor_queue_next(iris_runtime_t *runtime)
 {
     if (runtime->tx_wire_length != 0) return false;
     taskENTER_CRITICAL(&s_services_lock);
-    const bool ready = atomic_load(&s_executor.stage) == IRIS_EXEC_DONE;
+    const bool ready = atomic_load(&s_executor.stage) == IRIS_EXEC_DONE &&
+        (s_executor.work->session_id == runtime->session_id ||
+         !iris_session_is_live(s_executor.work->session_id));
     if (ready) atomic_store(&s_executor.stage, IRIS_EXEC_DRAINING);
     taskEXIT_CRITICAL(&s_services_lock);
     if (!ready) return false;

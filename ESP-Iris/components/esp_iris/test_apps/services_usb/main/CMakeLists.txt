@@ -1,6 +1,7 @@
 if(CONFIG_ESP_IRIS_ENABLE)
     set(iris_fixture_sources
         "main.c"
+        "network_test.c"
         "../../../examples/media_streams/main/media_assets.c")
 else()
     set(iris_fixture_sources "disabled.c")
@@ -11,4 +12,5 @@ endif()
 idf_component_register(
     SRCS ${iris_fixture_sources}
     INCLUDE_DIRS "." "../../../examples/media_streams/main"
-    REQUIRES esp_iris fatfs joltwallet__littlefs wear_levelling)
+    REQUIRES esp_iris console fatfs joltwallet__littlefs wear_levelling
+             esp_event esp_netif esp_wifi nvs_flash)

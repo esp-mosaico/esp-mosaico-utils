@@ -1,6 +1,6 @@
 # Streamed file transfer
 
-This USB CDC0 example mounts the `storage` flash partition as a wear-levelled
+This dual-CDC USB example mounts the `storage` flash partition as a wear-levelled
 FATFS volume and exposes only its `/files` mount through ESP-Iris. The logical
 volume ID visible to the Gateway is `files`.
 
@@ -21,8 +21,9 @@ idf.py -C components/esp_iris/examples/file_transfer \
   -p /dev/serial/by-id/<programming-port> flash
 ```
 
-Application CDC0 is the ESP-Iris binary endpoint. Use a separate UART or USB
-Serial/JTAG programming interface for flashing and monitoring.
+CDC0 carries text logs and Iris commands for stock `idf.py monitor`; CDC1
+carries binary data. Close Gateway before monitoring the same console. Flash
+through the board's ROM download interface.
 
 ## Exercise the example
 

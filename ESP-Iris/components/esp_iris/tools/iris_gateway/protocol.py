@@ -8,7 +8,7 @@ import zlib
 from collections.abc import Iterable
 
 MAGIC = b"IRIS"
-VERSION = 1
+VERSION = 2
 HEADER_SIZE = 32
 MAX_PAYLOAD = 4000
 MAX_WIRE_FRAME = 4096
@@ -36,6 +36,7 @@ class Transport(enum.IntEnum):
     USB = 1
     TCP = 2
     USB_SERIAL_JTAG = 3
+    UART = 4
 
 
 class Capability(enum.IntFlag):
@@ -225,6 +226,9 @@ class TlvTag(enum.IntEnum):
     HEALTH_TIMEOUT_MS = 0x14
     LAYOUT_ID = 0x15
     HARDWARE_MAC = 0x16
+    LINK_ROLE = 0x17
+    DATA_TCP_PORT = 0x18
+    DATA_AVAILABLE = 0x19
     FREE_INTERNAL = 0x20
     MIN_FREE_INTERNAL = 0x21
     LOG_DROPPED = 0x22

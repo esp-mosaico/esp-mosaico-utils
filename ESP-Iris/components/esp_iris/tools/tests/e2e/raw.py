@@ -5,6 +5,7 @@ import contextlib
 from collections.abc import AsyncIterator
 from typing import Any, Self
 
+from iris_gateway.console_protocol import encode_record
 from iris_gateway.link import SerialLink, TcpLink
 from iris_gateway.protocol import Frame, ProtocolError, encode_frame
 from iris_gateway.session import DeviceInfo, DeviceSession
@@ -20,11 +21,16 @@ class RawIrisSession:
         usb_serial_jtag: bool = False,
         tcp_host: str | None = None,
         pairing_token: str | None = None,
+        data_link: bool | None = None,
+        owner_id: bytes | None = None,
     ) -> None:
         self.port = port
         self.usb_serial_jtag = usb_serial_jtag
         self.tcp_host = tcp_host
         self.pairing_token = pairing_token
+        self.data_link = (not usb_serial_jtag and tcp_host is None
+                          if data_link is None else data_link)
+        self.owner_id = owner_id
         self.events: list[dict[str, Any]] = []
         self.media: list[dict[str, Any]] = []
         self.session: DeviceSession | None = None
@@ -33,10 +39,12 @@ class RawIrisSession:
     async def open(self) -> DeviceInfo:
         if self.tcp_host is None:
             link = await SerialLink.open(
-                self.port, hupcl=False if self.usb_serial_jtag else None
+                self.port, hupcl=False, console=not self.data_link,
+                assert_dtr=not self.usb_serial_jtag,
             )
         else:
-            link = await TcpLink.open(self.tcp_host, int(self.port))
+            link = await TcpLink.open(self.tcp_host, int(self.port),
+                                      console=not self.data_link)
 
         async def ready(session: DeviceSession) -> None:
             del session
@@ -53,6 +61,7 @@ class RawIrisSession:
             event,
             on_media=media,
             pairing_token=self.pairing_token,
+            owner_id=self.owner_id,
         )
         self.task = asyncio.create_task(self.session.run())
         ready_task = asyncio.create_task(self.session.wait_ready(10))
@@ -114,7 +123,8 @@ class RawIrisSession:
 
     async def send_frame(self, frame: Frame) -> None:
         assert self.session is not None
-        await self.session.link.write(encode_frame(frame))
+        encoder = encode_frame if self.data_link else encode_record
+        await self.session.link.write(encoder(frame))
 
     async def send_wire(self, wire: bytes) -> None:
         assert self.session is not None

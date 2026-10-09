@@ -1,6 +1,6 @@
 # Recovery-first and direct OTA
 
-This ESP32-S31 USB CDC0 example provides repeatable OTA test images without a
+This ESP32-S31 dual-CDC USB example provides repeatable OTA test images without a
 product BSP or GSP. It includes a 16 MB dual-slot partition table, retained
 factory recovery image, bootloader rollback, product recovery hooks, automatic
 health acceptance, and diagnostic RPCs.

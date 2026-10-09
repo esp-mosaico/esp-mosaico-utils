@@ -4,17 +4,18 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 
 #include "esp_check.h"
 #include "esp_littlefs.h"
 #include "esp_log.h"
-#include "esp_rom_sys.h"
 #include "esp_vfs_fat.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "media_assets.h"
+#include "network_test.h"
 #include "wear_levelling.h"
 
 #define TEST_SERVICE_ID 0x7FFEU
@@ -537,6 +538,32 @@ static esp_err_t boundary_rpc(const esp_iris_rpc_request_t *request,
 
 static esp_err_t register_services(void);
 
+#if CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH
+static TaskHandle_t s_crash_task;
+
+static void crash_task(void *arg)
+{
+    (void)arg;
+    vTaskDelay(pdMS_TO_TICKS(250));
+    ESP_LOGE(TAG, "IRIS_TEST_INTENTIONAL_PANIC");
+    abort();
+}
+
+static esp_err_t crash_rpc(const esp_iris_rpc_request_t *request,
+                          uint8_t *response, size_t capacity,
+                          size_t *size, void *ctx)
+{
+    (void)response;
+    (void)capacity;
+    (void)ctx;
+    *size = 0;
+    if (request->payload_size != 0) return ESP_ERR_INVALID_ARG;
+    if (s_crash_task != NULL) return ESP_ERR_INVALID_STATE;
+    return xTaskCreate(crash_task, "iris_test_panic", 2048, NULL, 4,
+                       &s_crash_task) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM;
+}
+#endif
+
 static void lifecycle_task(void *arg)
 {
     const bool restart = (bool)(uintptr_t)arg;
@@ -555,6 +582,12 @@ static void lifecycle_task(void *arg)
             {TEST_SERVICE_ID, TEST_MEDIA_METHOD},
             {TEST_SERVICE_ID, TEST_STOP_FOR_FLASH_METHOD},
             {TEST_SERVICE_ID, TEST_BOUNDARY_METHOD},
+#if CONFIG_ESP_IRIS_TRANSPORT_TCP
+            {TEST_SERVICE_ID, 7},
+#endif
+#if CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH
+            {0x7FFC, 1},
+#endif
         };
         for (size_t i = 0; i < sizeof(methods) / sizeof(methods[0]); ++i) {
             err = esp_iris_rpc_unregister(methods[i][0], methods[i][1]);
@@ -642,6 +675,12 @@ static esp_err_t register_services(void)
     REGISTER_RPC(TEST_SERVICE_ID, TEST_STOP_FOR_FLASH_METHOD,
                  stop_for_flash_rpc);
     REGISTER_RPC(TEST_SERVICE_ID, TEST_BOUNDARY_METHOD, boundary_rpc);
+#if CONFIG_ESP_IRIS_TRANSPORT_TCP
+    REGISTER_RPC(TEST_SERVICE_ID, 7, iris_test_network_rpc);
+#endif
+#if CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH
+    REGISTER_RPC(0x7FFC, 1, crash_rpc);
+#endif
     ESP_RETURN_ON_ERROR(esp_iris_screen_register(&s_screen), TAG,
                         "screen register");
     ++s_state.register_count;
@@ -672,22 +711,25 @@ static void exercise_rpc_table_boundary(void)
     }
 }
 
+static uint32_t s_capture_size;
+
 static esp_err_t screen_begin(const esp_iris_media_desc_t *requested,
                               esp_iris_media_desc_t *actual,
                               uint32_t *total_size, void *user_ctx)
 {
     (void)user_ctx;
     if (requested == NULL || actual == NULL || total_size == NULL ||
-        requested->width > 2 || requested->height > 2) {
+        requested->width > 64 || requested->height > 64) {
         return ESP_ERR_INVALID_ARG;
     }
     *actual = (esp_iris_media_desc_t) {
-        .width = 2,
-        .height = 2,
-        .stride = 4,
+        .width = requested->width != 0 ? requested->width : 2,
+        .height = requested->height != 0 ? requested->height : 2,
+        .stride = (requested->width != 0 ? requested->width : 2) * 2U,
         .format = ESP_IRIS_PIXEL_FORMAT_RGB565,
     };
-    *total_size = 8;
+    s_capture_size = actual->stride * actual->height;
+    *total_size = s_capture_size;
     return ESP_OK;
 }
 
@@ -698,15 +740,15 @@ static esp_err_t screen_read(uint32_t offset, uint8_t *out, size_t capacity,
         0x00, 0xF8, 0xE0, 0x07, 0x1F, 0x00, 0xFF, 0xFF,
     };
     (void)user_ctx;
-    if (out == NULL || out_size == NULL || offset >= sizeof(pixels) ||
+    if (out == NULL || out_size == NULL || offset >= s_capture_size ||
         capacity == 0) {
         return ESP_ERR_INVALID_ARG;
     }
-    size_t size = sizeof(pixels) - offset;
+    size_t size = s_capture_size - offset;
     if (size > capacity) {
         size = capacity;
     }
-    memcpy(out, pixels + offset, size);
+    for (size_t i = 0; i < size; ++i) out[i] = pixels[(offset + i) % sizeof(pixels)];
     *out_size = size;
     return ESP_OK;
 }
@@ -818,8 +860,62 @@ static void media_task(void *arg)
     }
 }
 
+#if CONFIG_ESP_IRIS_CONSOLE_EXTERNAL_INPUT
+#include "esp_console.h"
+#include "esp_iris_console.h"
+#if CONFIG_ESP_IRIS_TRANSPORT_UART
+#include "driver/uart.h"
+#else
+#include "driver/usb_serial_jtag.h"
+#endif
+
+static int product_ping(int argc, char **argv)
+{
+    (void)argc;
+    (void)argv;
+    printf("product pong\n");
+    return 0;
+}
+
+static void start_product_console(void)
+{
+    esp_console_repl_t *repl = NULL;
+    esp_console_repl_config_t config = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
+    config.max_cmdline_length = ESP_IRIS_CONSOLE_LINE_BYTES;
+    config.prompt = "fixture> ";
+#if CONFIG_ESP_IRIS_TRANSPORT_UART
+    const esp_console_dev_uart_config_t device = ESP_CONSOLE_DEV_UART_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_console_new_repl_uart(&device, &config, &repl));
+    /* The product sizes its RX queue before starting its sole reader. IDF's
+     * small interactive defaults cannot absorb a complete machine record. */
+    ESP_ERROR_CHECK(uart_driver_delete(device.channel));
+    ESP_ERROR_CHECK(uart_driver_install(device.channel,
+        ESP_IRIS_CONSOLE_LINE_BYTES * 2, ESP_IRIS_CONSOLE_LINE_BYTES * 2, 0, NULL, 0));
+#else
+    const esp_console_dev_usb_serial_jtag_config_t device = ESP_CONSOLE_DEV_USB_SERIAL_JTAG_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_console_new_repl_usb_serial_jtag(&device, &config, &repl));
+    ESP_ERROR_CHECK(usb_serial_jtag_driver_uninstall());
+    usb_serial_jtag_driver_config_t driver = {
+        .rx_buffer_size = ESP_IRIS_CONSOLE_LINE_BYTES * 2,
+        .tx_buffer_size = 2048,
+    };
+    ESP_ERROR_CHECK(usb_serial_jtag_driver_install(&driver));
+#endif
+    const esp_console_cmd_t ping = {.command = "product-ping", .help = "Product command", .func = product_ping};
+    ESP_ERROR_CHECK(esp_console_cmd_register(&ping));
+    ESP_ERROR_CHECK(esp_iris_console_register_commands());
+    ESP_ERROR_CHECK(esp_console_start_repl(repl));
+}
+#endif
+
 void app_main(void)
 {
+#if CONFIG_ESP_IRIS_TRANSPORT_TCP
+    ESP_ERROR_CHECK(iris_test_network_start());
+#endif
+#if CONFIG_ESP_IRIS_CONSOLE_EXTERNAL_INPUT
+    start_product_console();
+#endif
     register_file_volumes();
     ESP_ERROR_CHECK(register_services());
     exercise_rpc_table_boundary();
@@ -827,13 +923,20 @@ void app_main(void)
     ++s_state.start_count;
     ESP_ERROR_CHECK(xTaskCreate(media_task, "iris_e2e_media", 3072, NULL, 4,
                                 NULL) == pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
-    esp_rom_printf("IRIS_SERVICES_READY schema=1 transport=%u volumes=3 "
+#if CONFIG_ESP_IRIS_ENABLE
+    ESP_ERROR_CHECK(esp_iris_mark_healthy());
+#endif
+    esp_rom_printf("IRIS_SERVICES_READY schema=2 transport=%u volumes=3 "
                    "rpc=0x7ffe\n",
                    (unsigned)(
 #if CONFIG_ESP_IRIS_TRANSPORT_USB
                        ESP_IRIS_TRANSPORT_KIND_USB
-#else
+#elif CONFIG_ESP_IRIS_TRANSPORT_USB_SERIAL_JTAG
                        ESP_IRIS_TRANSPORT_KIND_USB_SERIAL_JTAG
+#elif CONFIG_ESP_IRIS_TRANSPORT_UART
+                       ESP_IRIS_TRANSPORT_KIND_UART
+#else
+                       ESP_IRIS_TRANSPORT_KIND_TCP
 #endif
                    ));
 }

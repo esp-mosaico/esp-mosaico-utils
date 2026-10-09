@@ -22,7 +22,7 @@ export function useGateway() {
   const cursor = useRef(0);
 
   const refreshAuth = useCallback(async () => {
-    const value = await api<AuthState>("/v1/auth/state");
+    const value = await api<AuthState>("/v2/auth/state");
     setAuth(value);
     return value;
   }, []);
@@ -30,11 +30,11 @@ export function useGateway() {
   const refresh = useCallback(async () => {
     try {
       const [modeData, deviceData, operationData, auditData, healthData] = await Promise.all([
-        api<ModeState>("/v1/mode"),
-        api<{ devices: Device[]; demo: boolean }>("/v1/devices"),
-        api<{ operations: Operation[] }>("/v1/operations"),
-        api<{ audits: Audit[] }>("/v1/system-audit"),
-        api<GatewayHealth>("/v1/health"),
+        api<ModeState>("/v2/mode"),
+        api<{ devices: Device[]; demo: boolean }>("/v2/devices"),
+        api<{ operations: Operation[] }>("/v2/operations"),
+        api<{ audits: Audit[] }>("/v2/system-audit"),
+        api<GatewayHealth>("/v2/health"),
       ]);
       setModeState(modeData);
       setDevices(deviceData.devices);
@@ -61,7 +61,7 @@ export function useGateway() {
       return;
     }
     try {
-      setStatus(await api<DeviceStatus>(`/v1/devices/${encodeURIComponent(selectedId)}`));
+      setStatus(await api<DeviceStatus>(`/v2/devices/${encodeURIComponent(selectedId)}`));
     } catch (reason) {
       setStatus(null);
       setError(reason instanceof Error ? reason.message : String(reason));
@@ -97,7 +97,7 @@ export function useGateway() {
     const connect = () => {
       const protocol = location.protocol === "https:" ? "wss:" : "ws:";
       if (closed) return;
-      socket = new WebSocket(`${protocol}//${location.host}/v1/events/ws?cursor=${cursor.current}&client=workbench`);
+      socket = new WebSocket(`${protocol}//${location.host}/v2/events/ws?cursor=${cursor.current}&client=workbench`);
       socket.onopen = () => { retry = 500; setConnectionError(""); };
       socket.onmessage = (message) => {
         const item = JSON.parse(message.data) as GatewayEvent;
@@ -128,13 +128,13 @@ export function useGateway() {
 
   const setMode = useCallback(async (value: "develop" | "observe") => {
     setModeState((current) => ({ ...current, transitioning: true }));
-    const result = await api<ModeState>("/v1/mode", { method: "PUT", body: JSON.stringify({ mode: value }), headers: { "Content-Type": "application/json" } });
+    const result = await api<ModeState>("/v2/mode", { method: "PUT", body: JSON.stringify({ mode: value }), headers: { "Content-Type": "application/json" } });
     setModeState(result);
     await refresh();
   }, [refresh]);
 
   const removeDevice = useCallback(async (deviceId: string) => {
-    await api<{ removed: boolean }>(`/v1/devices/${encodeURIComponent(deviceId)}`, { method: "DELETE" });
+    await api<{ removed: boolean }>(`/v2/devices/${encodeURIComponent(deviceId)}`, { method: "DELETE" });
     await refresh();
   }, [refresh]);
 

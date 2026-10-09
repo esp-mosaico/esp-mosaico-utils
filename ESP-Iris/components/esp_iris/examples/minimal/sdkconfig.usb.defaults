@@ -1,13 +1,15 @@
 CONFIG_IDF_TARGET="esp32s31"
 CONFIG_IDF_EXPERIMENTAL_FEATURES=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
 CONFIG_ESPTOOLPY_FLASHSIZE_2MB=y
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 
-# High-Speed CDC0 belongs exclusively to ESP-Iris. Flash over the separate
-# Serial-JTAG/UART path, or manually enter the ROM downloader as a last resort.
+# CDC0 carries text/control; CDC1 carries binary data. Flash through a ROM
+# download interface; stock monitor may use CDC0 when Gateway releases it.
 CONFIG_ESP_IRIS_TRANSPORT_USB=y
+CONFIG_TINYUSB_CDC_COUNT=2
 CONFIG_ESP_IRIS_TASK_STACK_SIZE=3328
 
 CONFIG_ESP_IRIS_FIRMWARE_ROLE=1

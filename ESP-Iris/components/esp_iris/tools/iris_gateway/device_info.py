@@ -32,6 +32,7 @@ class DeviceInfo:
     required_features: int = 0
     health_timeout_ms: int = 45000
     hardware_mac: str = ""
+    link_role: str = "control"
 
     def as_dict(self) -> dict[str, Any]:
         result = boot_id_text(dataclasses.asdict(self))

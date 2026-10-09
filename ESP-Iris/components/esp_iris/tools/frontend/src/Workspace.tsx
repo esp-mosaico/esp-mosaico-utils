@@ -90,7 +90,7 @@ export default function Workspace({
   );
 
   useEffect(() => {
-    api<{ methods?: RpcMethod[] }>("/v1/rpc-catalog")
+    api<{ methods?: RpcMethod[] }>("/v2/rpc-catalog")
       .then((value) => {
         const methods = value.methods || [];
         setRpcMethods(methods);
@@ -130,11 +130,11 @@ export default function Workspace({
       form.append("elf", otaFiles.elf);
       form.append("map", otaFiles.map);
       const archived = await api<{ artifact: { artifact_id: string } }>(
-        "/v1/firmware-artifacts",
+        "/v2/firmware-artifacts",
         { method: "POST", body: form },
       );
       const accepted = await api<{ operation: { operation_id: string } }>(
-        `/v1/devices/${deviceId}/ota`,
+        `/v2/devices/${deviceId}/ota`,
         {
           method: "POST",
           body: JSON.stringify({
@@ -163,7 +163,7 @@ export default function Workspace({
     setNotice("");
     try {
       const accepted = await api<{ operation: { operation_id: string } }>(
-        `/v1/devices/${deviceId}/system-update`,
+        `/v2/devices/${deviceId}/system-update`,
         {
           method: "POST",
           body: systemUpdateBundle,
@@ -196,7 +196,7 @@ export default function Workspace({
         return;
       }
       call(
-        `/v1/devices/${id}/rpc/${encodeURIComponent(rpcMethod)}`,
+        `/v2/devices/${id}/rpc/${encodeURIComponent(rpcMethod)}`,
         {
           method: "POST",
           body: JSON.stringify({ params }),
@@ -206,7 +206,7 @@ export default function Workspace({
       );
     } else if (dialog === "raw") {
       call(
-        `/v1/devices/${id}/rpc/raw`,
+        `/v2/devices/${id}/rpc/raw`,
         {
           method: "POST",
           body: JSON.stringify({
@@ -220,7 +220,7 @@ export default function Workspace({
       );
     } else if (dialog === "restart") {
       call(
-        `/v1/devices/${id}/restart`,
+        `/v2/devices/${id}/restart`,
         {
           method: "POST",
           body: JSON.stringify({ delay_ms: 250 }),
@@ -230,13 +230,13 @@ export default function Workspace({
       );
     } else if (dialog === "factory") {
       call(
-        `/v1/devices/${id}/factory-recovery`,
+        `/v2/devices/${id}/factory-recovery`,
         { method: "POST" },
         "设备已进入 factory recovery",
       );
     } else if (dialog === "job") {
       call(
-        `/v1/devices/${id}/jobs/${Number(jobId)}`,
+        `/v2/devices/${id}/jobs/${Number(jobId)}`,
         { method: "DELETE" },
         "Job 取消请求已发送",
       );
@@ -297,6 +297,8 @@ export default function Workspace({
               {device.transport_name || device.endpoint || "传输未知"}
             </span>
             <span>{firmwareModeLabel(device.firmware_mode)}</span>
+            <span>控制：{device.control_link || device.demo ? "已连接" : "未连接"}</span>
+            <span>数据：{device.data_available || device.demo ? "已连接" : "未连接"}</span>
           </div>
         </div>
         {mode === "observe" && (
@@ -360,7 +362,7 @@ export default function Workspace({
             disabled={disabled || busy}
             onClick={() =>
               call(
-                `/v1/devices/${encodeURIComponent(device.device_id)}/rpc/system.info`,
+                `/v2/devices/${encodeURIComponent(device.device_id)}/rpc/system.info`,
                 {
                   method: "POST",
                   body: JSON.stringify({ params: {} }),
@@ -398,14 +400,15 @@ export default function Workspace({
                 取消 Job
               </button>
               <button
-                disabled={disabled}
+                disabled={disabled || (!device.data_available && !device.demo)}
+                title={!device.data_available && !device.demo ? "固件传输需要数据链路" : undefined}
                 onClick={() => openAdvancedDialog("ota")}
               >
                 OTA 更新
               </button>
               <button
                 className="danger-outline"
-                disabled={disabled || !systemUpdateReady}
+                disabled={disabled || !systemUpdateReady || (!device.data_available && !device.demo)}
                 title={
                   systemUpdateReady
                     ? systemUpdateTrustConfigured
@@ -617,7 +620,7 @@ function DeviceScreen({
     let currentUrl = "";
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
     const socket = new WebSocket(
-      `${protocol}//${location.host}/v1/devices/${encodeURIComponent(device.device_id)}/streams/screen`,
+      `${protocol}//${location.host}/v2/devices/${encodeURIComponent(device.device_id)}/streams/screen`,
     );
     socket.binaryType = "arraybuffer";
     socket.onmessage = (message) => {
@@ -659,7 +662,7 @@ function DeviceScreen({
     setScreenNotice(next ? "正在启动镜像…" : "正在停止镜像…");
     try {
       const result = await api<{ mirror?: { description?: MediaDescription } }>(
-        `/v1/devices/${encodeURIComponent(device.device_id)}/mirror/${next ? "start" : "stop"}`,
+        `/v2/devices/${encodeURIComponent(device.device_id)}/mirror/${next ? "start" : "stop"}`,
         {
           method: "POST",
           body: JSON.stringify({ channel: "screen", fps: 5, description: {} }),
@@ -684,7 +687,7 @@ function DeviceScreen({
     setScreenNotice("正在读取并转换截图，请稍候…");
     try {
       const response = await fetch(
-        `/v1/devices/${encodeURIComponent(device.device_id)}/screenshot?save=true`,
+        `/v2/devices/${encodeURIComponent(device.device_id)}/screenshot?save=true`,
         {
           method: "POST",
           credentials: "same-origin",
@@ -760,7 +763,7 @@ function DeviceScreen({
       moves: current.moves,
       end,
     };
-    await api(`/v1/devices/${encodeURIComponent(device.device_id)}/input`, {
+    await api(`/v2/devices/${encodeURIComponent(device.device_id)}/input`, {
       method: "POST",
       body: JSON.stringify(value),
       headers: { "Content-Type": "application/json" },
@@ -782,7 +785,8 @@ function DeviceScreen({
             截图
           </button>
           <button
-            disabled={mode === "observe" || screenBusy}
+            disabled={mode === "observe" || screenBusy || (!device.data_available && !device.demo)}
+            title={!device.data_available && !device.demo ? "连续画面需要数据链路；仍可按需截图" : undefined}
             onClick={toggleMirror}
           >
             {mirroring ? "停止镜像" : "启动镜像"}
@@ -796,6 +800,7 @@ function DeviceScreen({
           </button>
         </div>
       </div>
+      {!device.data_available && !device.demo && <div className="inline-notice">仅控制链路：支持按需截图和输入；连续画面、音频及文件传输需要数据链路。</div>}
       {screenNotice && <div className="inline-notice">{screenNotice}</div>}
       <div
         className={`screen-surface ${inputEnabled ? "input-enabled" : ""}`}
@@ -844,7 +849,7 @@ function DeviceScreen({
           <div className="input-overlay-label">INPUT CAPTURE</div>
         )}
       </div>
-      {device.capability_names?.includes("audio") && (
+      {device.capability_names?.includes("audio") && (device.data_available || device.demo) && (
         <AudioControls deviceId={device.device_id} mode={mode} />
       )}
     </section>
@@ -978,7 +983,7 @@ function AudioControls({
     socket.current = null;
     if (timer.current) window.clearInterval(timer.current);
     timer.current = null;
-    await api(`/v1/devices/${encodeURIComponent(deviceId)}/mirror/stop`, {
+    await api(`/v2/devices/${encodeURIComponent(deviceId)}/mirror/stop`, {
       method: "POST",
       body: JSON.stringify({ channel: "audio" }),
       headers: { "Content-Type": "application/json" },
@@ -998,7 +1003,7 @@ function AudioControls({
   async function start() {
     chunks.current = [];
     setSeconds(0);
-    await api(`/v1/devices/${encodeURIComponent(deviceId)}/mirror/start`, {
+    await api(`/v2/devices/${encodeURIComponent(deviceId)}/mirror/start`, {
       method: "POST",
       body: JSON.stringify({
         channel: "audio",
@@ -1009,7 +1014,7 @@ function AudioControls({
     });
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
     const ws = new WebSocket(
-      `${protocol}//${location.host}/v1/devices/${encodeURIComponent(deviceId)}/streams/audio`,
+      `${protocol}//${location.host}/v2/devices/${encodeURIComponent(deviceId)}/streams/audio`,
     );
     ws.binaryType = "arraybuffer";
     ws.onmessage = (message) => {
@@ -1035,7 +1040,7 @@ function AudioControls({
   async function upload(file?: File) {
     if (!file) return;
     const response = await fetch(
-      `/v1/devices/${encodeURIComponent(deviceId)}/audio`,
+      `/v2/devices/${encodeURIComponent(deviceId)}/audio`,
       {
         method: "POST",
         credentials: "same-origin",
@@ -1417,7 +1422,7 @@ function ConsoleDialog({
     try {
       const response = await api<{
         console: { job_id: number; accepted: boolean };
-      }>(`/v1/devices/${encodeURIComponent(deviceId)}/console`, {
+      }>(`/v2/devices/${encodeURIComponent(deviceId)}/console`, {
         method: "POST",
         body: JSON.stringify({ line: command }),
         headers: { "Content-Type": "application/json" },

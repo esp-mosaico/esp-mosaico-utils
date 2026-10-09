@@ -8,7 +8,7 @@ int mock_create_fail, mock_alloc_fail, mock_commit_error, mock_writes, mock_comm
     mock_reserved, mock_abort;
 void (*mock_worker)(void *);
 esp_partition_t mock_factory = {
-    .address = 0x20000, .size = 0x1c0000, .label = "factory"};
+    .address = 0x20000, .size = 0x1c0000, .subtype = ESP_PARTITION_SUBTYPE_APP_TEST, .label = "vibe_mode"};
 void *esp_flash_default_chip;
 static uint8_t flash[0x1000000];
 static int erased, persisted, corrupt_readback;
@@ -118,7 +118,7 @@ const esp_partition_t *esp_partition_find_first(int type, int subtype,
 {
     (void)type;
     (void)subtype;
-    return !strcmp(label, "factory") ? &mock_factory : NULL;
+    return !strcmp(label, "vibe_mode") ? &mock_factory : NULL;
 }
 const esp_partition_t *esp_ota_get_boot_partition(void)
 {
@@ -181,7 +181,7 @@ static void setup(void)
                                         .type = ESP_PARTITION_TYPE_APP,
                                         .subtype = 16,
                                         .pos = {0x210000, 0x100000},
-                                        .label = "ota_0"};
+                                        .label = "main_app"};
 }
 static char *manifest(bool preserve, const char *kind, uint32_t offset, uint32_t size)
 {
@@ -630,3 +630,9 @@ int main(void)
     assert(!erased && !mock_writes);
     puts("Recovery backend ownership, layout, readback and factory gates passed");
 }
+
+esp_err_t mosaico_boot_request_recovery(void) { boot = &mock_factory; return ESP_OK; }
+esp_err_t mosaico_boot_recovery_requested(bool *requested)
+{ *requested = boot == &mock_factory; return ESP_OK; }
+esp_err_t mosaico_boot_select(uint32_t address)
+{ assert(address >= 0x200000); return ESP_OK; }

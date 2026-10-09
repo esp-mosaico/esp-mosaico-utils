@@ -14,7 +14,7 @@ class IrisCrashFixtureTests(unittest.TestCase):
             FIXTURE / "sdkconfig.application.defaults"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("factory,   app,  factory, 0x20000,  0x1c0000", partitions)
+        self.assertIn("vibe_mode, app,  test,    0x20000,  0x1c0000", partitions)
         self.assertIn("coredump,  data, coredump,0x1e0000, 0x20000", partitions)
         self.assertIn("CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y", defaults)
         self.assertIn("CONFIG_ESP_TASK_WDT_PANIC=y", defaults)
