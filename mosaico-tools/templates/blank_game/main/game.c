@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <stdlib.h>
 #include "game.h"
-#include "mosaico_raylib_fast.h"
+#include "raylib_lite_raylib.h"
 
 struct game_t {
     game_config_t config;
@@ -55,7 +55,7 @@ bool game_render(game_handle_t game)
 {
     if (!game) return false;
     BeginDrawing();
-    if (!MosaicoFastFrameAvailable()) {
+    if (!raylib_lite_raylib_frame_available()) {
         EndDrawing();
         return false;
     }

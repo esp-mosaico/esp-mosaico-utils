@@ -940,10 +940,7 @@ def recover(arguments: Any, context: RunContext) -> dict[str, Any]:
         workspace.bsp_path / "components" / "esp-mosaico-bsp",
         workspace.esp_iris_path / "components" / "esp_iris",
     )
-    optional_boot_splash = workspace.bsp_path / "components" / "mosaico_boot_splash"
-    recovery_components = required_recovery_components + (
-        (optional_boot_splash,) if (optional_boot_splash / "CMakeLists.txt").is_file() else ()
-    )
+    recovery_components = required_recovery_components
     missing_components = [
         str(path)
         for path in required_recovery_components

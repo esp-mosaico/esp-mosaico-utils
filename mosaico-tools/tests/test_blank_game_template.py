@@ -22,9 +22,10 @@ def workspace():
         root = Path(temporary) / "workspace with spaces"
         root.mkdir()
         # Creation needs an initialized engine, but neither BSP nor an SDK install.
-        engine = root / "engine/cmake/mosaico_game_sdk.cmake"
-        engine.parent.mkdir(parents=True)
-        engine.touch()
+        engine = root / "engine"
+        engine.mkdir()
+        (engine / "idf_component.yml").touch()
+        (engine / "CMakeLists.txt").touch()
         (root / ".mosaico.json").write_text(json.dumps({
             "schema_version": 2,
             "workspace": {"projects_dir": "projects"},
@@ -90,18 +91,18 @@ def test_blank_dry_run_and_refusal_to_overwrite(workspace, capsys):
     assert marker.read_text() == "user game\n"
 
 
-@pytest.mark.parametrize("option,directory", [
-    ("shooter", "raylib_shooter"), ("sky-hop", "sky_hop"), ("tower-defense", "tower_defense"),
-])
-def test_explicit_example_selection_still_uses_bsp(workspace, capsys, option, directory):
-    example = workspace / "board/examples" / directory
-    example.mkdir(parents=True)
-    (example / "example.txt").write_text(option)
-    (example / "mosaico-template.json").write_text(json.dumps({
-        "schema_version": 1, "files": [{"source": "example.txt"}],
-    }))
-    assert main(["--workspace", str(workspace), "game", "create", "demo",
-                 "--template", option, "--json"]) == 0
-    result = json.loads(capsys.readouterr().out)
-    assert Path(result["template"]).parent == example
-    assert (Path(result["project"]) / "example.txt").read_text() == option
+@pytest.mark.parametrize("option", ["shooter", "sky-hop", "tower-defense"])
+def test_example_selection_uses_engine_creator(workspace, capsys, option, monkeypatch):
+    from types import SimpleNamespace
+    engine = workspace / "engine"
+    (engine / "tools").mkdir()
+    (engine / "tools/game_cli.py").touch()
+    calls = []
+    def create(command, **kwargs):
+        calls.append(command)
+        return SimpleNamespace(returncode=0, stdout=json.dumps({"project": str(workspace / "projects/demo")}), stderr="")
+    monkeypatch.setattr("mosaico_cli.app_commands.subprocess.run", create)
+    assert main(["--workspace", str(workspace), "game", "create", "demo", "--template", option, "--json"]) == 0
+    assert str(engine / "tools/game_cli.py") in calls[0]
+    assert option in calls[0]
+    assert not (workspace / "board").exists()

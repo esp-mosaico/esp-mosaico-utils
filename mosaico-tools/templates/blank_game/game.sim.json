@@ -1,4 +1,7 @@
 {
-  "schema": "mosaico-game-sim/v1",
-  "sources": ["main/game_module.c", "main/game.c"]
+  "schema": "raylib-lite-game-sim/v1",
+  "sources": [
+    "main/game_module.c",
+    "main/game.c"
+  ]
 }

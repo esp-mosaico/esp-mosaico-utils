@@ -86,23 +86,10 @@
       "source": "main/idf_component.yml",
       "replacements": [
         {
-          "pattern": "^    override_path: .*components/esp-mosaico-bsp$",
-          "replacement": "    override_path: {{bsp_component|json}}"
-        },
-        {
-          "pattern": "^    override_path: .*components/esp_iris$",
-          "replacement": "    override_path: {{iris_component|json}}"
+          "pattern": "^    override_path: .*$",
+          "replacement": "    override_path: {{engine_root|json}}"
         }
       ]
-    },
-    {
-      "source": "main/main.c"
-    },
-    {
-      "source": "main/make_canvas_png.py"
-    },
-    {
-      "source": "main/scene.json.in"
     },
     {
       "source": "partitions.csv"
