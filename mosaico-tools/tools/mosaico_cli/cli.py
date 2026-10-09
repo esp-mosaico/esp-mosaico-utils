@@ -27,6 +27,7 @@ from .commands import (
 )
 from .doctor import diagnose_host, print_diagnosis
 from .errors import MosaicoError, SelectionError
+from .platform_client import DEFAULT_SERVER
 from .runtime import RunContext
 from .scaffold import initialize_project
 from .workspace import load_workspace
@@ -169,13 +170,17 @@ def build_parser() -> argparse.ArgumentParser:
     upload_target.add_argument("--create", action="store_true")
     upload_target.add_argument("--update", metavar="APPLICATION_ID")
     upload_parser.add_argument("--yes", action="store_true", help="Confirm creation/update and replacement of any existing draft")
-    upload_parser.add_argument("--server", help="Mosaico Ideas HTTPS origin (or MAKER_SPARK_SERVER)")
+    server_help = (
+        "Mosaico Ideas HTTPS origin; overrides MOSAICO_IDEAS_SERVER, then "
+        "MAKER_SPARK_SERVER (legacy); fallback: " + DEFAULT_SERVER
+    )
+    upload_parser.add_argument("--server", help=server_help)
     account_parser = commands.add_parser("account", help="Manage browser-approved Mosaico Ideas login")
     account_commands = account_parser.add_subparsers(dest="account_action", required=True)
     for account_action in ("login", "status", "logout"):
         account_child = account_commands.add_parser(account_action)
         account_child.set_defaults(command="account")
-        account_child.add_argument("--server", help="Mosaico Ideas HTTPS origin (or MAKER_SPARK_SERVER)")
+        account_child.add_argument("--server", help=server_help)
         if account_action == "login":
             account_child.add_argument("--open-browser", action="store_true", help="Open the verification page in the system browser")
     iris_parser = commands.add_parser("iris", help="Project Gateway and ESP-Iris device operations")

@@ -297,9 +297,9 @@ Limits: 9 covers, 20 attachments, 100 resource files/100 MiB total; images up to
 UTF-8, at most 100,000 characters and 400,000 bytes. The manifest is at most 64 KiB.
 
 ```sh
-python mosaico.py account login --server https://ideas.example --open-browser
-python mosaico.py account status --server https://ideas.example
-python mosaico.py project upload --project projects/my_app --server https://ideas.example
+python mosaico.py account login --open-browser
+python mosaico.py account status
+python mosaico.py project upload --project projects/my_app
 ```
 
 Login displays a verification page and a separate user code. Approve the code
@@ -310,9 +310,15 @@ their original directories and are never imported or rewritten.
 Native Windows account directory permissions apply. `account logout` revokes
 the selected token. `MAKER_SPARK_TOKEN` takes precedence over saved credentials;
 logout with that environment variable revokes it, without deleting a different
-saved token. `MAKER_SPARK_SERVER` supplies the default server origin. HTTPS is
-required except for localhost development. Tokens never appear in JSON or run logs.
-These environment variable names belong to the unchanged Ideas service contract.
+saved token. Tokens never appear in JSON or run logs.
+
+The default server is `https://mosaico-ideas.espressif.com`. Server selection uses
+the first non-empty value in this order: `--server`, `MOSAICO_IDEAS_SERVER`,
+`MAKER_SPARK_SERVER` (legacy), then the default. Use `MOSAICO_IDEAS_SERVER` for
+new configurations; `MAKER_SPARK_SERVER` remains supported for existing setups.
+HTTPS is required except for localhost development. Supply only the origin
+(no `/api/v1` or other path); the CLI adds API paths automatically.
+The token environment variable remains `MAKER_SPARK_TOKEN`.
 
 Interactive upload asks whether to create a new application or update an owned
 one, showing the complete application ID, version and status. It asks for
@@ -323,9 +329,9 @@ the operation, including replacement of an existing draft:
 
 ```sh
 # Inject MAKER_SPARK_TOKEN through the CI secret store, not a command argument.
-python mosaico.py project upload --project projects/my_app --create --yes --json --server https://ideas.example
-python mosaico.py project upload --project projects/my_app --skip-build --update APPLICATION_ID --yes --json --server https://ideas.example
-python mosaico.py project upload --project projects/my_app --bundle dist/app.irisfw --version 0.1.2 --update APPLICATION_ID --yes --json --server https://ideas.example
+python mosaico.py project upload --project projects/my_app --create --yes --json
+python mosaico.py project upload --project projects/my_app --skip-build --update APPLICATION_ID --yes --json
+python mosaico.py project upload --project projects/my_app --bundle dist/app.irisfw --version 0.1.2 --update APPLICATION_ID --yes --json
 ```
 
 By default the CLI runs the existing `system-update-bundle` build target.
