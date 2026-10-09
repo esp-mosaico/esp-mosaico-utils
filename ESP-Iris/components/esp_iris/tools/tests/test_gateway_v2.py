@@ -377,7 +377,9 @@ def test_authenticated_gateway_mode_and_idempotent_operations(tmp_path) -> None:
             )
             console_body = await console.json()
             assert console.status == 200
-            assert console_body["console"] == {"job_id": 1, "accepted": True}
+            assert console_body["console"]["sent"] is True
+            assert console_body["console"]["completion"] == "unconfirmed"
+            assert "job_id" not in console_body["console"]
             assert console_body["operation"]["params"]["command"] == "help"
             assert "line" not in console_body["operation"]["params"]
 

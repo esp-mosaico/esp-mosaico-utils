@@ -932,6 +932,7 @@ class IrisHub:
                     peer.info.as_dict() if peer is not None and peer.info is not None else None
                 )
             item["data_available"] = "data" in links
+            item["console_available"] = bool(getattr(links.get("control"), "console_available", False))
             state = self._endpoint_states.get(session.link.endpoint, {})
             item["firmware_mode"] = state.get("firmware_mode", "unknown")
             item["transport_name"] = {
@@ -990,6 +991,12 @@ class IrisHub:
             return self._devices[device_id]
         except KeyError as exc:
             raise KeyError(f"unknown ESP-Iris device: {device_id}") from exc
+
+    async def console_write(self, device_id: str, line: str) -> dict[str, Any]:
+        control = self._links.get(device_id, {}).get("control")
+        if control is None:
+            raise ConnectionError("console control link is disconnected; data links cannot accept text")
+        return await control.console_write(line)
 
     async def status(self, device_id: str) -> dict[str, Any]:
         session = self.get(device_id)

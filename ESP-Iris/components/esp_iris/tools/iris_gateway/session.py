@@ -13,6 +13,7 @@ import zlib
 from typing import Any, Awaitable, Callable, Dict
 
 from . import ota_transport, system_update_transport
+from .console_input import CONSOLE_WRITE_TIMEOUT_SECONDS, encode_console_line
 from .console_protocol import HELLO_COMMAND, ConsoleDecoder, encode_record
 from .device_info import DeviceInfo
 from .files import DeviceFiles
@@ -135,6 +136,25 @@ class DeviceSession:
         # A reconnect must not silently move an active transfer to another link.
         return self._require_data_link()._files if self._console else self._files
 
+    @property
+    def console_available(self) -> bool:
+        return self._console and not self._closed and self.info is not None and self.state is SessionState.READY
+
+    async def console_write(self, line: str) -> dict[str, Any]:
+        wire = encode_console_line(line)
+        async with self._write_lock:
+            if not self.console_available:
+                raise ConnectionError("a live console control link is required")
+            try:
+                await asyncio.wait_for(self.link.write(wire), CONSOLE_WRITE_TIMEOUT_SECONDS)
+            except (Exception, asyncio.CancelledError):
+                # A partial line must never be followed by a machine record or
+                # retried on a replacement session: its execution is unknown.
+                await self.close()
+                raise
+            return {"sent": True, "bytes_written": len(wire), "endpoint": self.link.endpoint,
+                    "completion": "unconfirmed"}
+
     async def run(self) -> None:
         try:
             if self._console:
@@ -186,7 +206,10 @@ class DeviceSession:
         await asyncio.sleep(0)
         while not self._closed:
             try:
-                await self.link.write(HELLO_COMMAND)
+                async with self._write_lock:
+                    if self._closed or self._ready.is_set():
+                        return
+                    await self.link.write(HELLO_COMMAND)
             except (ConnectionError, OSError):
                 await self.link.close()
                 return

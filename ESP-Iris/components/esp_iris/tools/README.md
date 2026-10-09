@@ -153,6 +153,29 @@ must complete the ESP-Iris handshake. Espressif `303A:1001` still requires the
 Serial/JTAG opt-in below, and `303A:0020` ROM download ports remain reserved for
 local ROM operation executor.
 
+### Console commands from the Workbench
+
+The device log panel includes a command input. Enter submits one text line;
+Up/Down recalls the last 32 commands in that device view. `iris help` and
+`iris status` work with the built-in 0.2 console; application commands depend
+on the product's existing console/REPL. The **Enter command** button focuses
+this input. Offline, Observe-mode and data-only devices cannot send text.
+
+`POST /v2/devices/{device_id}/console` accepts `{"line":"iris status"}` and
+writes UTF-8 text plus LF through the active console control link, sharing the
+Iris record write lock. It no longer invokes a `console.execute` RPC or returns
+a Job ID. `console.sent=true` and `completion="unconfirmed"` mean the host write
+completed; firmware output remains in the ordinary log stream, without a
+synthetic command-success result. The operation's success describes sending,
+not command execution. `X-Operation-ID` deduplicates repeated submissions.
+Failed/partial writes are never automatically replayed onto a new session.
+
+Lines are limited to 255 UTF-8 bytes and exclude control characters and line
+separators. Machine records (`iris @…`) and `iris hello` remain owned by Gateway
+so manual input cannot replace its protocol/session negotiation. No extra RPC
+handler, firmware update or second serial reader is needed. This is line input,
+not a terminal emulator or a channel for Ctrl-C/debugger control sequences.
+
 ### Device state and local ROM operations
 
 Device and endpoint inventories expose one `state`: `offline`, `discovered`, `connecting`,

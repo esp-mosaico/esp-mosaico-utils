@@ -8,7 +8,6 @@ import json
 import os
 import pathlib
 import re
-import struct
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -19,6 +18,7 @@ from aiohttp import BodyPartReader, WSMsgType, web
 from .boot_identity import boot_id_text
 from .client_lifecycle import CAPABILITY as LIFECYCLE_CAPABILITY
 from .compatibility import compatibility_expectation, validate_update_compatibility
+from .console_input import encode_console_line
 from .contracts import GatewayHub
 from .crashes import (
     archive_evidence,
@@ -85,7 +85,6 @@ from .update_acceptance import validate_updated_contract
 
 LOG_PATTERN = re.compile(r"^(?P<level>[EWIDV])\s+\((?P<stamp>\d+)\)\s+(?P<tag>[^:]+):\s?(?P<message>.*)$")
 CONSOLE_METHOD_NAME = "console.execute"
-CONSOLE_LINE_MAX_BYTES = 255
 GATEWAY_CLIENT_MAX_SIZE = 1024 * 1024 * 1024
 GATEWAY_API = {"major": 2, "minor": 0}
 GATEWAY_CAPABILITIES = [
@@ -319,7 +318,7 @@ class GatewayService:
         for device_id, item in cached.items():
             if device_id not in connected:
                 item.update(connected=False, online=False, cached=True, stale=True, control_link=None,
-                            data_link=None, data_available=False)
+                            data_link=None, data_available=False, console_available=False)
         result = sorted(
             cached.values(), key=lambda item: str(item.get("alias") or item["device_id"])
         )
@@ -1122,67 +1121,18 @@ def create_app(service: GatewayService) -> web.Application:
         line = body.get("line")
         if not isinstance(line, str):
             raise TypeError("console line must be a string")
-        line = line.strip()
-        encoded = line.encode("utf-8")
-        if (
-            not encoded
-            or len(encoded) > CONSOLE_LINE_MAX_BYTES
-            or "\x00" in line
-            or "\r" in line
-            or "\n" in line
-        ):
-            raise ValueError(
-                f"console line must contain 1 to {CONSOLE_LINE_MAX_BYTES} UTF-8 bytes without CR, LF, or NUL"
-            )
-        method = next(
-            (
-                item
-                for item in service.rpc_catalog.get("methods", [])
-                if item.get("name") == CONSOLE_METHOD_NAME
-            ),
-            None,
-        )
-        if method is None:
-            raise RuntimeError("console RPC is missing from the catalog")
+        encoded = encode_console_line(line)
         device_id = service.resolve_device(request.match_info["device_id"])
-        deadline_ms = int(method.get("timeout_ms", 1000))
-        command_name = line.split(maxsplit=1)[0]
         operation, result, created = await service.operations.execute(
-            device_id,
-            _actor(request),
-            CONSOLE_METHOD_NAME,
-            {
-                "command": command_name,
-                "service_id": int(method["service_id"]),
-                "method_id": int(method["method_id"]),
-                "request_sha256": hashlib.sha256(encoded).hexdigest(),
-                "request_bytes": len(encoded),
-                "deadline_ms": deadline_ms,
-            },
-            lambda: service.device_hub.rpc(
-                device_id,
-                int(method["service_id"]),
-                int(method["method_id"]),
-                encoded,
-                deadline_ms=deadline_ms,
-            ),
+            device_id, _actor(request), CONSOLE_METHOD_NAME,
+            {"command": line.split(maxsplit=1)[0], "request_sha256": hashlib.sha256(encoded).hexdigest(),
+             "request_bytes": len(encoded), "transport": "console-text"},
+            lambda: service.device_hub.console_write(device_id, line),
             operation_id=request.headers.get("X-Operation-ID"),
         )
-        if not created:
-            return web.json_response(
-                {"operation": operation, "idempotent_reuse": True, "console": None}
-            )
-        if result is None or len(result) != 4:
-            raise RuntimeError("console RPC returned an invalid job response")
-        return web.json_response(
-            {
-                "operation": operation,
-                "console": {
-                    "job_id": struct.unpack("<I", result)[0],
-                    "accepted": True,
-                },
-            }
-        )
+        return web.json_response({"operation": operation,
+                                  "idempotent_reuse": not created,
+                                  "console": result if created else operation.get("result")})
 
     async def job(request: web.Request) -> web.Response:
         blocked = service.require_develop()

@@ -14,6 +14,7 @@ from typing import Any, Awaitable, Callable, Dict
 
 from .boot_identity import boot_id_text
 from .compat import remove_prefix
+from .console_input import encode_console_line
 from .firmware import inspect_firmware_image
 from .system_update import SystemUpdateBundle, SystemUpdateComponentKind
 
@@ -124,6 +125,7 @@ class DemoHub:
             "auth_mode": 0,
             "max_payload": 262144,
             "connected": True,
+            "console_available": True,
             "demo": True,
         }
 
@@ -492,6 +494,16 @@ class DemoHub:
         data = (b"ESP-IRIS-DEMO-COREDUMP\0" * 100)[:2048]
         return len(data), data[offset : offset + maximum]
 
+    async def console_write(self, device_id: str, line: str) -> dict[str, Any]:
+        device = self.get(device_id)
+        wire = encode_console_line(line)
+        output = ("iris status  - device identity and health\n" if line.strip() in {"help", "iris help", "iris"}
+                  else f"demo console: {line}\n")
+        await self._emit({"kind": "log", "device_id": device_id, "text": output,
+                          "host_receive_wall_ns": time.time_ns(), "demo": True})
+        return {"sent": True, "bytes_written": len(wire), "endpoint": device["endpoint"],
+                "completion": "unconfirmed"}
+
     async def rpc(
         self,
         device_id: str,
@@ -503,34 +515,6 @@ class DemoHub:
     ) -> bytes:
         self.get(device_id)
         await asyncio.sleep(min(deadline_ms / 1000, 0.08))
-        if service_id == 0x1002 and method_id == 1:
-            job_id = max(self._jobs[device_id], default=0) + 1
-            self._jobs[device_id][job_id] = {
-                "job_id": job_id,
-                "kind": 0x102,
-                "state": "succeeded",
-                "progress": 1.0,
-            }
-            line = payload.decode("utf-8", errors="replace")
-            await self._emit(
-                {
-                    "kind": "log",
-                    "device_id": device_id,
-                    "text": f"[console:{job_id}]$ {line}\n",
-                    "host_receive_wall_ns": time.time_ns(),
-                    "demo": True,
-                }
-            )
-            await self._emit(
-                {
-                    "kind": "log",
-                    "device_id": device_id,
-                    "text": f"[console:{job_id}] result=0\n",
-                    "host_receive_wall_ns": time.time_ns(),
-                    "demo": True,
-                }
-            )
-            return struct.pack("<I", job_id)
         return (
             f'{{"ok":true,"service_id":{service_id},"method_id":{method_id},'
             f'"request_bytes":{len(payload)},"demo":true}}'

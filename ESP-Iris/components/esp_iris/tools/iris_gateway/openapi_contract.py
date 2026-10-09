@@ -174,6 +174,17 @@ def build_openapi(auth_required: bool) -> dict[str, Any]:
             }
         },
     }
+    paths["/v2/devices/{device_id}/console"]["post"].update({
+        "description": "Write one UTF-8 line plus LF to the live console control link, serialized with Iris records. "
+                       "No RPC handler is required. sent=true confirms host transport write, not firmware execution. "
+                       "No automatic replay after errors or reconnect. Gateway discovery/protocol records are reserved.",
+        "requestBody": {"required": True, "content": {"application/json": {"schema": {
+            "type": "object", "required": ["line"], "properties": {
+                "line": {"type": "string", "description": "1–255 printable UTF-8 bytes; no CR, LF or control characters"},
+            },
+        }}}},
+        "responses": {"200": {"description": "Text written (or existing operation reused); execution remains unconfirmed"}},
+    })
     paths["/v2/devices/{device_id}/factory-recovery"]["post"]["requestBody"] = {
         "required": False,
         "content": {"application/json": {"schema": {
@@ -224,6 +235,7 @@ def build_openapi(auth_required: bool) -> dict[str, Any]:
                     "device_id": {"type": "string"},
                     "state": {"type": "string", "enum": list(DEVICE_STATES)},
                     "firmware_mode": {"type": "string", "enum": ["normal", "recovery", "rom", "unknown"]},
+                    "console_available": {"type": "boolean", "description": "Live text control link available"},
                     "owner_session_id": {"type": ["string", "null"]},
                     "busy_reasons": {"type": "array", "items": {"type": "object"}},
                 },

@@ -314,3 +314,7 @@ td small, td code { margin-top: 4px; color: var(--faint); font-size: 10px; }
 .connection-toolbar button, .project-endpoint button, .manual-connection button { padding: 7px 12px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--cyan); cursor: pointer; }
 .connection-toolbar button:hover, .project-endpoint button:hover, .manual-connection button:hover { background: var(--cyan-soft); }
 .manual-connection input, .project-endpoint input { padding: 7px; border: 1px solid var(--line-strong); border-radius: 3px; }
+.console-input { border: 1px solid var(--line); border-top: 0; background: var(--surface); }
+.console-input .console-form { padding: 10px 14px; }
+.console-input .console-note { margin: 0; padding: 0 14px 10px; overflow-wrap: anywhere; }
+.console-input .console-form small { white-space: nowrap; color: var(--faint); }

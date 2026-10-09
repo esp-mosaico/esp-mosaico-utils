@@ -16,7 +16,7 @@ from iris_gateway.store import GatewayStore
      {"json": {"service_id": 1, "method_id": 1, "payload_text": "BBB"}}),
     ("rpc/system.echo", "rpc", {"json": {"params": {"value": "AAA"}}},
      {"json": {"params": {"value": "BBB"}}}),
-    ("console", "rpc", {"json": {"line": "set AAA"}}, {"json": {"line": "set BBB"}}),
+    ("console", "console_write", {"json": {"line": "set AAA"}}, {"json": {"line": "set BBB"}}),
     ("input", "input_event", {"json": {"moves": [{"x": 1, "y": 2}]}},
      {"json": {"moves": [{"x": 2, "y": 1}]}}),
     ("mirror/start", "mirror_start", {"json": {"description": {"width": 100}}},

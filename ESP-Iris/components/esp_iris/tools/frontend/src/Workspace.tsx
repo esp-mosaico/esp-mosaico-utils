@@ -1,6 +1,5 @@
 import { deviceStateLabel } from "./deviceState";
 import {
-  FormEvent,
   PointerEvent as ReactPointerEvent,
   useEffect,
   useRef,
@@ -8,6 +7,7 @@ import {
 } from "react";
 import { api, formatBootId, formatBytes, formatTime } from "./api";
 import LogsPanel from "./LogsPanel";
+import ConsoleInput from "./ConsoleInput";
 import AudioControls from "./AudioControls";
 import { firmwareModeLabel } from "./Shell";
 import type { Device, DeviceStatus, GatewayEvent, Operation } from "./types";
@@ -75,7 +75,7 @@ export default function Workspace({
   const [systemUpdateBundle, setSystemUpdateBundle] = useState<File | null>(
     null,
   );
-  const [consoleOpen, setConsoleOpen] = useState(false);
+  const logsDisclosure = useRef<HTMLDetailsElement>(null);
   const advancedActions = useRef<HTMLDetailsElement>(null);
 
   function openAdvancedDialog(next: Exclude<Dialog, null>) {
@@ -378,8 +378,11 @@ export default function Workspace({
           <button disabled={disabled} onClick={() => setDialog("rpc")}>
             调用 RPC…
           </button>
-          <button disabled={disabled} onClick={() => setConsoleOpen(true)}>
-            逐行 Console
+          <button disabled={disabled || !(device.console_available ?? (device.control_link || device.demo))} onClick={() => {
+            if (logsDisclosure.current) logsDisclosure.current.open = true;
+            document.getElementById(`console-input-${device.device_id}`)?.focus();
+          }}>
+            输入命令
           </button>
           <span className="queue-info">
             队列 {status?.queue?.queued.length ?? 0} · 运行{" "}
@@ -459,7 +462,7 @@ export default function Workspace({
           operations={deviceOperations}
           onOpenRecords={onOpenRecords}
         />
-        <details className="logs-disclosure" open>
+        <details className="logs-disclosure" ref={logsDisclosure} open>
           <summary>
             设备日志{" "}
             <span>
@@ -474,15 +477,11 @@ export default function Workspace({
             </span>
           </summary>
           <LogsPanel events={events} deviceId={device.device_id} compact />
+          <ConsoleInput deviceId={device.device_id} disabledReason={mode === "observe" ? "观察模式不能发送命令"
+            : !device.connected ? "设备未连接，不能发送命令"
+            : !(device.console_available ?? (device.control_link || device.demo)) ? "控制链路未连接，不能发送文本命令" : ""} />
         </details>
       </section>
-      {consoleOpen && (
-        <ConsoleDialog
-          deviceId={device.device_id}
-          events={events}
-          onClose={() => setConsoleOpen(false)}
-        />
-      )}
       {dialog && (
         <ActionDialog
           dialog={dialog}
@@ -1246,151 +1245,10 @@ function ActionDialog(props: ActionProps) {
   );
 }
 
-function ConsoleDialog({
-  deviceId,
-  events,
-  onClose,
-}: {
-  deviceId: string;
-  events: GatewayEvent[];
-  onClose: () => void;
-}) {
-  const [line, setLine] = useState("help");
-  const [submittedLine, setSubmittedLine] = useState("");
-  const [eventFloor, setEventFloor] = useState(0);
-  const [submittedAtNs, setSubmittedAtNs] = useState(0);
-  const [jobId, setJobId] = useState<number | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [history, setHistory] = useState<string[]>([]);
-  const [historyIndex, setHistoryIndex] = useState(-1);
-  const output = events.filter(
-    (item) =>
-      item.category === "log" &&
-      item.device_id === deviceId &&
-      (item.event_id ?? 0) >= eventFloor &&
-      (item.host_receive_ns ?? item.host_receive_wall_ns ?? 0) >= submittedAtNs,
-  );
-  const outputBody = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (outputBody.current)
-      outputBody.current.scrollTop = outputBody.current.scrollHeight;
-  }, [output.length]);
-
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    const command = line.trim();
-    if (!command || busy) return;
-    const latestEvent = events.reduce(
-      (value, item) => Math.max(value, item.event_id ?? 0),
-      0,
-    );
-    setBusy(true);
-    setError("");
-    setSubmittedLine(command);
-    setEventFloor(latestEvent + 1);
-    setSubmittedAtNs(Date.now() * 1e6);
-    setJobId(null);
-    try {
-      const response = await api<{
-        console: { job_id: number; accepted: boolean };
-      }>(`/v2/devices/${encodeURIComponent(deviceId)}/console`, {
-        method: "POST",
-        body: JSON.stringify({ line: command }),
-        headers: { "Content-Type": "application/json" },
-      });
-      setJobId(response.console.job_id);
-      setHistory((current) =>
-        [command, ...current.filter((item) => item !== command)].slice(0, 32),
-      );
-      setHistoryIndex(-1);
-      setLine("");
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function navigateHistory(direction: number) {
-    if (!history.length) return;
-    const next = Math.max(
-      -1,
-      Math.min(history.length - 1, historyIndex + direction),
-    );
-    setHistoryIndex(next);
-    setLine(next < 0 ? "" : history[next]);
-  }
-
-  return (
-    <div className="dialog-backdrop" role="presentation" onMouseDown={onClose}>
-      <section
-        className="action-dialog console-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-label="逐行 Console"
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <div className="dialog-heading">
-          <div>
-            <p className="eyebrow">ESP CONSOLE / LINE MODE</p>
-            <h2>逐行 Console</h2>
-          </div>
-          <button onClick={onClose}>×</button>
-        </div>
-        <div className="console-output" ref={outputBody}>
-          {!submittedLine && (
-            <span>
-              输入 <code>help</code> 查看可用命令。
-            </span>
-          )}
-          {submittedLine && (
-            <strong>
-              &gt; {submittedLine}
-              {jobId != null ? `  [job ${jobId}]` : ""}
-            </strong>
-          )}
-          {output.map((item, index) => (
-            <code key={`${item.event_id ?? index}-${index}`}>{item.text}</code>
-          ))}
-          {error && <em>{error}</em>}
-        </div>
-        <form className="console-form" onSubmit={submit}>
-          <span>&gt;</span>
-          <input
-            aria-label="Console 命令"
-            autoFocus
-            maxLength={255}
-            value={line}
-            onChange={(event) => setLine(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "ArrowUp") {
-                event.preventDefault();
-                navigateHistory(1);
-              }
-              if (event.key === "ArrowDown") {
-                event.preventDefault();
-                navigateHistory(-1);
-              }
-            }}
-          />
-          <button className="primary-button" disabled={busy || !line.trim()}>
-            {busy ? "发送中…" : "发送"}
-          </button>
-        </form>
-        <p className="console-note">
-          命令串行执行；输出通过设备日志通道返回。请勿输入口令或其他敏感信息。
-        </p>
-      </section>
-    </div>
-  );
-}
-
 export function actionLabel(action: string) {
   const labels: Record<string, string> = {
     "rpc.raw": "原始 RPC",
-    "console.execute": "逐行 Console",
+    "console.execute": "发送 Console 命令",
     "device.restart": "设备重启",
     "recovery.enter_factory": "Factory Recovery",
     "firmware.ota": "OTA 更新",

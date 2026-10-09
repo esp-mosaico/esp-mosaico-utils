@@ -3,6 +3,14 @@ import { useLayoutEffect } from "react";
 export type UiLanguage = "zh" | "en";
 
 const translations: Record<string, string> = {
+  "输入命令": "Enter command",
+  "发送 Console 命令": "Send console command",
+  "输入设备命令，例如 iris help 或 iris status": "Device command, e.g. iris help or iris status",
+  "观察模式不能发送命令": "Commands are disabled in Observe mode",
+  "设备未连接，不能发送命令": "Connect the device to send commands",
+  "控制链路未连接，不能发送文本命令": "A console control link is required to send text commands",
+  "Enter 发送，↑↓ 查看历史。发送成功仅表示文本已写入；执行结果见设备日志。": "Enter to send, ↑↓ for history. Sent confirms the text was written; check device logs for execution results.",
+  "命令超过 255 个 UTF-8 字节": "Command exceeds 255 UTF-8 bytes",
   "连接设备": "Connect devices",
   "本项目已连接": "Connected to this project",
   "数据接口": "Data interface",

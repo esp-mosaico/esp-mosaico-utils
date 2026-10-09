@@ -18,6 +18,7 @@ export type Device = {
   control_link?: { endpoint: string; session_id: number } | null;
   data_link?: { endpoint: string; session_id: number } | null;
   data_available?: boolean;
+  console_available?: boolean;
   boot_id?: number;
   boot_id_text?: string;
   capability_names?: string[];
