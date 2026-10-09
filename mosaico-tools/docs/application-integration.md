@@ -25,7 +25,8 @@ for the engine location; it is only required for games.
 The blank game provides shared C state/update/rendering with separate device and
 Host adapters, generated project identity and the retained Vibe Mode layout. It
 uses the Engine shared native launcher and selected Board for display, input,
-Iris startup and first-frame health acceptance. It contains no game assets,
+hardware access. The Iris wrapper explicitly selects `esp_mosaico_raylib_iris`
+for USB startup, screenshot/pointer registration and first-frame health acceptance. It contains no game assets,
 GSP canvas placeholder or external resource partition. Host and native use the
 same `raylib_lite_game_module_v1()` implementation.
 
@@ -90,7 +91,7 @@ different paths. Native and Iris builds therefore do not share sdkconfig.
 
 The wrapper supplies the Engine Board and common native launcher, then invokes
 existing Recovery-first packaging. It consumes user `sdkconfig.defaults` and
-`sdkconfig.application.defaults`; Iris-specific defaults enable the Board hooks
+`sdkconfig.application.defaults`; Iris-specific defaults enable required application services
 and select USB management. The product partition table comes from the shared
 `blank_game` template. A project's own partition CSV and top-level CMake build
 logic are not used by this wrapper; declare game resources and custom component

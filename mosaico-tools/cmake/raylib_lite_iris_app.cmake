@@ -21,10 +21,10 @@ set(_raylib_iris_product "${_raylib_iris_tools}/templates/blank_game")
 if(NOT RAYLIB_LITE_ENGINE_ROOT AND DEFINED ENV{RAYLIB_LITE_ENGINE_ROOT})
     set(RAYLIB_LITE_ENGINE_ROOT "$ENV{RAYLIB_LITE_ENGINE_ROOT}")
 endif()
-if(NOT EXISTS "${RAYLIB_LITE_ENGINE_ROOT}/include/raylib_lite/raylib_lite_native_hooks.h")
+if(NOT EXISTS "${RAYLIB_LITE_ENGINE_ROOT}/include/raylib_lite/raylib_lite_native_services.h")
     message(FATAL_ERROR
         "RAYLIB_LITE_ENGINE_ROOT must name a Raylib Lite Engine checkout with "
-        "native lifecycle hooks: '${RAYLIB_LITE_ENGINE_ROOT}'")
+        "native application services: '${RAYLIB_LITE_ENGINE_ROOT}'")
 endif()
 get_filename_component(RAYLIB_LITE_ENGINE_ROOT "${RAYLIB_LITE_ENGINE_ROOT}" ABSOLUTE)
 
@@ -43,7 +43,7 @@ if(NOT SDKCONFIG)
     set(SDKCONFIG "${CMAKE_BINARY_DIR}/sdkconfig")
 endif()
 # Reuse the Engine's application-side Board and common native launcher.
-# The Board owns Iris hooks already; do not link the legacy hook component.
+# The product owns required Iris services; the Board supplies hardware only.
 set(SDKCONFIG_DEFAULTS
     "${_raylib_iris_product}/sdkconfig.defaults")
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/sdkconfig.game.defaults")
@@ -59,11 +59,15 @@ list(APPEND SDKCONFIG_DEFAULTS
     "${_raylib_iris_product}/sdkconfig.application.defaults"
     "${_raylib_iris_template}/sdkconfig.application.defaults")
 # Keep Recovery and Iris on the consuming workspace's revision.
-set(RAYLIB_LITE_UTILS_DIR "${_raylib_iris_utils}")
+set(ESP_IRIS_BUILD_PROFILE "usb" CACHE STRING "Iris game USB profile" FORCE)
+set(RAYLIB_LITE_NATIVE_SERVICE_COMPONENT esp_mosaico_raylib_iris)
+list(APPEND EXTRA_COMPONENT_DIRS
+    "${_raylib_iris_tools}/components/esp_mosaico_raylib_iris"
+    "${_raylib_iris_utils}/ESP-Iris/components/esp_iris"
+    "${_raylib_iris_utils}/esp-mosaico-recovery/components/esp_mosaico_app_recovery")
 if(NOT RAYLIB_LITE_BSP_DIR AND DEFINED ENV{MOSAICO_BSP_ROOT})
     set(RAYLIB_LITE_BSP_DIR "$ENV{MOSAICO_BSP_ROOT}")
 endif()
-set(FETCHCONTENT_SOURCE_DIR_RAYLIB_LITE_MOSAICO_UTILS "${_raylib_iris_utils}")
 include("${RAYLIB_LITE_ENGINE_ROOT}/examples/common_components/examples_common/project.cmake")
 list(APPEND EXTRA_COMPONENT_DIRS "${_raylib_iris_game}/main")
 if(EXISTS "${_raylib_iris_game}/components")
@@ -71,7 +75,7 @@ if(EXISTS "${_raylib_iris_game}/components")
 endif()
 set(MOSAICO_ESP_IRIS_ROOT "${_raylib_iris_utils}/ESP-Iris")
 set(MOSAICO_SYSTEM_UPDATE_CMAKE "${_raylib_iris_tools}/cmake/system_update.cmake")
-include($ENV{IDF_PATH}/tools/cmake/project.cmake)
+include("${_raylib_iris_utils}/esp-mosaico-recovery/cmake/mosaico_idf_project.cmake")
 
 # An external Game main component does not receive IDF's local-main implicit
 # dependencies. Preserve the explicit selected-Board link for its audio calls.
