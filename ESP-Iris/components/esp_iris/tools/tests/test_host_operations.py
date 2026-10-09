@@ -201,12 +201,12 @@ def test_private_request_is_consumed_once_and_rejects_symlinks(tmp_path):
     (True, "normal", False, "idle"),
     (True, "recovery", False, "idle"),
     (False, "absent", False, "offline"),
-    (False, "normal", False, "connecting"),
+    (False, "normal", False, "discovered"),
     (False, "rom", False, "needs_recovery"),
     (False, "rom", True, "busy"),
     (False, "absent", True, "busy"),
 ])
-def test_five_states_use_live_evidence_and_busy_survives_reenumeration(tmp_path, connected, transport, operation, expected):
+def test_states_use_live_evidence_and_busy_survives_reenumeration(tmp_path, connected, transport, operation, expected):
     store = GatewayStore(tmp_path)
     service = GatewayService(store, instance_id="state-test")
     hub = HostHub()

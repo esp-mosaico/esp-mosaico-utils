@@ -94,10 +94,10 @@ export function DeviceRail({ devices, selectedId, onSelect, onRemove, language }
             <button className="device-select" onClick={() => onSelect(device.device_id)}>
               <span className={`device-icon ${device.firmware_mode || "unknown"}`}>{device.firmware_mode === "recovery" ? "R" : device.firmware_mode === "normal" ? "N" : "?"}</span>
               <span className="device-copy">
-                <strong>{device.alias || device.suggested_alias || device.device_id.slice(0, 12)}</strong>
-                <small>{device.device_id.slice(0, 12)}</small>
+                <strong>{device.alias || device.suggested_alias || device.hardware_mac || device.device_id.slice(-12)}</strong>
+                <small>{device.hardware_mac || device.device_id.slice(-12)}</small>
                 {device.hardware_mac && <small>{device.hardware_mac}</small>}
-                <span><i className={`status-dot ${device.state}`} />{deviceStateLabel(device.state, language)} · {firmwareModeLabel(device.firmware_mode)}</span>
+                <span><i className={`status-dot ${device.state}`} />{deviceStateLabel(device.state, language)} · {device.cached ? "历史记录" : firmwareModeLabel(device.firmware_mode)}</span>
                 <small>{device.transport_name || device.endpoint || "传输未知"}</small>
               </span>
               <em>{device.app_version || "—"}</em>

@@ -46,7 +46,7 @@ test("desktop workbench keeps the device workflow focused", async ({ page }) => 
   // Camera Bench intentionally disconnects on the demo's periodic schedule.
   // Exercise the online workflow against the stable device explicitly rather
   // than whichever recent device the inventory initially selects.
-  await page.getByRole("button", { name: /Iris Alpha demo-a1b2c3d/ }).click();
+  await page.locator(".device-select").filter({ hasText: "Iris Alpha" }).click();
   await expect(page.getByRole("heading", { name: "Iris Alpha" })).toBeVisible();
   await page.locator(".device-details summary").click();
   await expect(page.locator(".device-details dd").filter({ hasText: /^12238782771570883527$/ })).toBeVisible();

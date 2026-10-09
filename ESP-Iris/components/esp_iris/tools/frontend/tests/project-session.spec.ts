@@ -46,16 +46,16 @@ for (const force of [false, true]) {
     expect(actions).toEqual([]);
     await page.screenshot({ path: `/tmp/esp-iris-takeover-${force}.png`, fullPage: true });
     await page.getByRole("button", { name: force ? "强制接管" : "接管到本项目", exact: true }).click();
-    await expect(page.getByRole("button", { name: "释放设备" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "断开连接" })).toBeVisible();
     expect(actions[0].action).toBe("takeovers");
     expect(actions[0].body.device_id).toBe("00112233445566778899aabbccddeeff");
     expect(actions[0].body.takeover_id).toMatch(/^[0-9a-f-]{36}$/);
     expect(actions[0].body.force).toBe(force || undefined);
     await expect(page.getByRole("button", { name: "接管到本项目" })).toHaveCount(0);
-    await page.getByRole("button", { name: "释放设备" }).click();
+    await page.getByRole("button", { name: "断开连接" }).click();
     await expect(page.getByRole("button", { name: "连接到本项目" })).toBeVisible();
     await page.getByRole("button", { name: "连接到本项目" }).click();
-    await expect(page.getByRole("button", { name: "释放设备" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "断开连接" })).toBeVisible();
     expect(actions[2]).toEqual({ action: "acquire", body: { endpoint: "usb:location=test" } });
   });
 }

@@ -1,4 +1,4 @@
-export type DeviceState = "offline" | "connecting" | "idle" | "busy" | "needs_recovery";
+export type DeviceState = "offline" | "discovered" | "connecting" | "idle" | "busy" | "needs_recovery";
 
 export type Device = {
   state: DeviceState;

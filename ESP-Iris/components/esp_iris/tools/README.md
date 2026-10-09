@@ -155,13 +155,28 @@ local ROM operation executor.
 
 ### Device state and local ROM operations
 
-Device and endpoint inventories expose one `state`: `offline`, `connecting`,
+Device and endpoint inventories expose one `state`: `offline`, `discovered`, `connecting`,
 `idle`, `busy`, or `needs_recovery`. `owner_session_id` and `firmware_mode`
 (`normal`, `recovery`, `rom`, `unknown`) are independent fields. `busy_reasons`
 identifies active operations, jobs and mirrors. Log viewers and client leases
 alone do not make a device busy. An active operation remains busy across its
 expected USB disconnect/re-enumeration; only live ROM descriptors justify a
 `needs_recovery` diagnosis, not an HTTP timeout or a failed operation record.
+
+`discovered` means the port is present but has no live Iris session. Only an
+active handshake/connection attempt is `connecting`; cached control/data link
+fields are cleared on disconnection. Historical firmware and metrics remain
+marked as cached, never as evidence of a live connection.
+
+The device page's **Connect devices** picker passively lists High-Speed USB,
+USB Serial/JTAG and USB UART adapters. Select **Connect to this project**, with
+the firmware's console baud rate for UART (default 115200; custom rates such as
+74880 are supported). Manual serial paths and `tcp:host:port` with an optional
+pairing token are also supported. USB console/data roles remain explicit;
+data interfaces are independently verified and grouped by live identity.
+**Disconnect selected device** releases all of that device's links and stops
+its reconnect supervisors, preserving history. Busy devices must finish or stop
+their active operation before release. Discovery alone never acquires a port.
 
 Host-side ROM probes and Recovery installation use the ordinary operation
 queue/history (`host.probe`, `host.recovery`). The local CLI publishes a private,

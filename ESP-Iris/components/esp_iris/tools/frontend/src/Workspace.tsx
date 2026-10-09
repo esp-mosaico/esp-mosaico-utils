@@ -274,7 +274,7 @@ export default function Workspace({
             <h1>
               {device.alias ||
                 device.suggested_alias ||
-                device.device_id.slice(0, 12)}
+                device.device_id.slice(-12)}
             </h1>
             <span className="mono-id">{device.device_id}</span>
             {device.hardware_mac && (
@@ -297,8 +297,8 @@ export default function Workspace({
               {device.transport_name || device.endpoint || "传输未知"}
             </span>
             <span>{firmwareModeLabel(device.firmware_mode)}</span>
-            <span>控制：{device.control_link || device.demo ? "已连接" : "未连接"}</span>
-            <span>数据：{device.data_available || device.demo ? "已连接" : "未连接"}</span>
+            <span>控制：{device.connected && (device.control_link || device.demo) ? "已连接" : "未连接"}</span>
+            <span>数据：{device.connected && (device.data_available || device.demo) ? "已连接" : "未连接"}</span>
           </div>
         </div>
         {mode === "observe" && (
@@ -309,7 +309,7 @@ export default function Workspace({
             </span>
           </div>
         )}
-        {status?.stale && (
+        {(device.cached || status?.stale) && (
           <div className="stale-flag">缓存状态 · 数据可能已过期</div>
         )}
         <div className="metric-strip">

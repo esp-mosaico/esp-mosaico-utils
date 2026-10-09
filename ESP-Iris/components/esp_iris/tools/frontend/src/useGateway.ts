@@ -20,6 +20,9 @@ export function useGateway() {
   const [error, setError] = useState<string>("");
   const [connectionError, setConnectionError] = useState<string>("");
   const cursor = useRef(0);
+  const refreshGeneration = useRef(0);
+  const statusGeneration = useRef(0);
+  const modePending = useRef(false);
 
   const refreshAuth = useCallback(async () => {
     const value = await api<AuthState>("/v2/auth/state");
@@ -28,6 +31,7 @@ export function useGateway() {
   }, []);
 
   const refresh = useCallback(async () => {
+    const generation = ++refreshGeneration.current;
     try {
       const [modeData, deviceData, operationData, auditData, healthData] = await Promise.all([
         api<ModeState>("/v2/mode"),
@@ -36,7 +40,8 @@ export function useGateway() {
         api<{ audits: Audit[] }>("/v2/system-audit"),
         api<GatewayHealth>("/v2/health"),
       ]);
-      setModeState(modeData);
+      if (generation !== refreshGeneration.current) return;
+      setModeState({ ...modeData, transitioning: modePending.current || modeData.transitioning });
       setDevices(deviceData.devices);
       setDemo(deviceData.demo);
       setOperations(operationData.operations);
@@ -46,11 +51,12 @@ export function useGateway() {
         ? current : (deviceData.devices.find((device) => device.connected !== false) || deviceData.devices[0])?.device_id || "");
       setError("");
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      if (generation === refreshGeneration.current) setError(reason instanceof Error ? reason.message : String(reason));
     }
   }, []);
 
   const refreshStatus = useCallback(async () => {
+    const generation = ++statusGeneration.current;
     if (!selectedId) {
       setStatus(null);
       return;
@@ -61,8 +67,10 @@ export function useGateway() {
       return;
     }
     try {
-      setStatus(await api<DeviceStatus>(`/v2/devices/${encodeURIComponent(selectedId)}`));
+      const result = await api<DeviceStatus>(`/v2/devices/${encodeURIComponent(selectedId)}`);
+      if (generation === statusGeneration.current) setStatus(result);
     } catch (reason) {
+      if (generation !== statusGeneration.current) return;
       setStatus(null);
       setError(reason instanceof Error ? reason.message : String(reason));
     }
@@ -83,7 +91,7 @@ export function useGateway() {
     if (!auth?.authenticated || !selectedId) return;
     refreshStatus();
     const timer = window.setInterval(refreshStatus, 2500);
-    return () => window.clearInterval(timer);
+    return () => { ++statusGeneration.current; window.clearInterval(timer); };
   }, [auth?.authenticated, refreshStatus, selectedId]);
 
   useEffect(() => {
@@ -127,16 +135,28 @@ export function useGateway() {
   }, [auth?.authenticated, refresh]);
 
   const setMode = useCallback(async (value: "develop" | "observe") => {
+    modePending.current = true;
     setModeState((current) => ({ ...current, transitioning: true }));
-    const result = await api<ModeState>("/v2/mode", { method: "PUT", body: JSON.stringify({ mode: value }), headers: { "Content-Type": "application/json" } });
-    setModeState(result);
-    await refresh();
+    try {
+      const result = await api<ModeState>("/v2/mode", { method: "PUT", body: JSON.stringify({ mode: value }), headers: { "Content-Type": "application/json" } });
+      setModeState({ ...result, transitioning: true });
+      await refresh();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    } finally {
+      modePending.current = false;
+      setModeState((current) => ({ ...current, transitioning: false }));
+    }
   }, [refresh]);
 
   const removeDevice = useCallback(async (deviceId: string) => {
     await api<{ removed: boolean }>(`/v2/devices/${encodeURIComponent(deviceId)}`, { method: "DELETE" });
     await refresh();
   }, [refresh]);
+
+  const selected = devices.find((device) => device.device_id === selectedId);
+  const visibleStatus = selected?.connected === false ? { ...selected, stale: true, mode: mode.mode }
+    : status?.device_id === selectedId ? status : null;
 
   return {
     auth,
@@ -147,7 +167,7 @@ export function useGateway() {
     devices,
     selectedId,
     setSelectedId,
-    status,
+    status: visibleStatus,
     operations,
     audits,
     events,

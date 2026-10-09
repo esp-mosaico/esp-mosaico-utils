@@ -318,7 +318,8 @@ class GatewayService:
             cached[device_id] = item
         for device_id, item in cached.items():
             if device_id not in connected:
-                item["connected"] = False
+                item.update(connected=False, online=False, cached=True, stale=True, control_link=None,
+                            data_link=None, data_available=False)
         result = sorted(
             cached.values(), key=lambda item: str(item.get("alias") or item["device_id"])
         )
@@ -330,13 +331,23 @@ class GatewayService:
     def list_endpoints(self) -> list[dict[str, Any]]:
         endpoints = {item["endpoint"]: dict(item) for item in self.device_hub.list_endpoints()}
         if not self.demo:
-            for port in discover_iris_usb_devices(include_rom=True):
+            # Listing is passive, including unclaimed USB Serial/JTAG and UART.
+            # Keep auto-admission restricted to Iris descriptors in ProjectGateway.
+            for item in endpoints.values():
+                if item["endpoint"].startswith("usb:"):
+                    item["present"] = False
+            for port in discover_iris_usb_devices(
+                include_rom=True, include_usb_serial_jtag=True, include_uart=True
+            ):
+                metadata = {"path": port.path, "device_path": port.device, "vid": port.vid,
+                            "pid": port.pid, "serial_number": port.serial_number, "location": port.location,
+                            "product": port.product, "interface": port.interface, "link_role": port.link_role,
+                            "transport_name": port.transport, "uart": port.transport == "uart"}
+                endpoint = usb_endpoint(metadata)
+                endpoints[endpoint] = {**endpoints.get(endpoint, {}), **metadata,
+                                       "endpoint": endpoint, "present": True}
                 if port.vid == 0x303A and port.pid == 0x0020:
-                    metadata = {"path": port.path, "device": port.device, "vid": port.vid,
-                                "pid": port.pid, "serial_number": port.serial_number, "location": port.location}
-                    endpoint = usb_endpoint(metadata)
-                    endpoints[endpoint] = {**endpoints.get(endpoint, {}), **metadata,
-                                           "endpoint": endpoint, "firmware_mode": "rom", "present": True}
+                    endpoints[endpoint]["firmware_mode"] = "rom"
         workers = active_workers()
         result = []
         for item in endpoints.values():
@@ -358,7 +369,7 @@ class GatewayService:
             if not cached:
                 raise LookupError("no cached device status is available")
             snapshot = next((item for item in self.list_devices() if item["device_id"] == device_id), {})
-            return boot_id_text({**cached, **describe_device(self, snapshot, workers=active_workers()),
+            return boot_id_text({**cached, **snapshot, **describe_device(self, snapshot, workers=active_workers()),
                                  "stale": True, "mode": "observe"})
         result = boot_id_text(await self.device_hub.status(device_id))
         result.update(stale=False, mode="develop", queue=self.operations.queue_state(device_id))
