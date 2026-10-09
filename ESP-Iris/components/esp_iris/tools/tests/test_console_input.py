@@ -15,7 +15,8 @@ from iris_gateway.state_machine import SessionState
 
 
 @pytest.mark.parametrize("line", ["", " ", "x\ny", "x\ry", "x\x00y", "x\x1by", "x\x7fy", "字" * 86,
-                                 "x" * 256, "iris @AAAA", "iris hello", " iris   @AAAA"])
+                                 "x" * 256, "iris @AAAA", "iris hello", " iris   @AAAA",
+                                 'iris "hello"', "iris '@AAAA'", '"iris" hello'])
 def test_console_rejects_control_bytes_and_machine_records(line):
     with pytest.raises(ValueError):
         encode_console_line(line)

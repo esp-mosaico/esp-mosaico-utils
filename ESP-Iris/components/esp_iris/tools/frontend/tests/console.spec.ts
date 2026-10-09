@@ -15,6 +15,11 @@ test("log input sends text, displays returned logs and preserves history drafts"
   await page.getByRole("button", { name: "输入命令", exact: true }).click();
   const input = page.getByLabel("Console 命令");
   await expect(input).toBeFocused();
+  const inputBox = await input.boundingBox();
+  const sendBox = await page.getByRole("button", { name: "发送", exact: true }).boundingBox();
+  expect(inputBox && sendBox).toBeTruthy();
+  expect(Math.abs(inputBox!.y - sendBox!.y)).toBeLessThan(5);
+  expect(sendBox!.width).toBeGreaterThan(40);
   await input.fill("iris help");
   await input.press("Enter");
   await expect(page.locator(".console-input [role=status]")).toHaveText("已发送：iris help");
