@@ -7,6 +7,8 @@
 #include "esp_ipc.h"
 #include "freertos/FreeRTOS.h"
 
+/* IDF builds the VFS adapter only with VFS I/O and its native USJ console.
+ * The Iris transport can also own a driver without that stdio adapter. */
 #define IRIS_USB_SERIAL_JTAG_WRITE_CHUNK 256U
 
 typedef struct {
@@ -44,7 +46,7 @@ static esp_err_t usb_serial_jtag_start(iris_runtime_t *runtime,
     }
 #if CONFIG_ESP_IRIS_CONSOLE_EXTERNAL_INPUT
     iris_console_input_enable(true);
-#else
+#elif CONFIG_VFS_SUPPORT_IO && CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED
     usb_serial_jtag_vfs_use_driver();
 #endif
 
@@ -71,11 +73,15 @@ static void usb_serial_jtag_stop(iris_runtime_t *runtime,
     if (!state->driver_owned) {
         result.result = ESP_OK;
     } else if (xPortGetCoreID() == state->usb_serial_jtag_install_core) {
+#if CONFIG_VFS_SUPPORT_IO && CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED
         usb_serial_jtag_vfs_use_nonblocking();
+#endif
         uninstall_driver(&result);
     } else {
 #if CONFIG_ESP_IPC_ENABLE
+#if CONFIG_VFS_SUPPORT_IO && CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG_ENABLED
         usb_serial_jtag_vfs_use_nonblocking();
+#endif
         esp_err_t ipc_err = esp_ipc_call_blocking(
             state->usb_serial_jtag_install_core,
             uninstall_driver, &result);

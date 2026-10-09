@@ -58,7 +58,7 @@ def test_native_cmake_and_host_gate_require_retained_flash_mode(tmp_path, qio):
     for key, value in config.items():
         value = ("ON" if value else "OFF") if isinstance(value, bool) else value
         lines.append(f'set(CONFIG_{key} "{value}")')
-    lines.append(f'include("{component}")')
+    lines.append(f'include("{component.as_posix()}")')
     script.write_text("\n".join(lines) + "\n")
     result = subprocess.run(["cmake", "-P", str(script)], capture_output=True, text=True)
     if qio:
