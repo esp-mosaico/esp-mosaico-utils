@@ -236,3 +236,37 @@ Mosaico/Recovery 主机全套 483 项复测通过。
 
 三个设备的原始 Flash 和旧 0.1.4 基础包均已备份，未全片擦除。Wi-Fi 密码未写入
 跟踪文件。测试结束释放设备并关闭本任务 Gateway，普通应用继续运行。
+
+## Workbench 连接与状态修复（2026-10-09）
+
+实现提交 `6382d6a`、`23cc2f7`、`4c1ede5`；只修改主机与网页，未重刷设备。
+设备页新增连接选择器、断开当前设备、UART 波特率和手动串口/TCP 地址、配对令牌。
+被动枚举包含 USB Serial/JTAG、UART；默认自动选择仍仅限 Iris 设备。
+`discovered` 明确表示「端口存在但未连接」；断开清除缓存中的控制/数据可用标志。
+修复切换设备的过期状态响应、画面/弹窗串入、镜像与录音清理、离线截图/输入按钮，
+以及模式切换失败后按钮卡住。USB 控制与数据接口明确标注，断开按 Device ID 释放全部接口。
+
+- Iris Python/C host：**584 passed**；最后的拔出缓存状态修正另跑相关 **6 passed**。
+- Workbench：**7** 个单元测试、生产构建通过；Playwright **13 passed**，
+  默认跳过 **3** 个显式硬件用例，随后独立执行下述实机用例。
+- mypy **56** 个文件、Python 3.8 目标 Ruff、差异检查通过；
+  **22** 个源文件预算和 Workbench 目录体积预算通过，未放宽限制。
+- 同一 Gateway 内，S31 高速 USB、H2 USB Serial/JTAG、C2 UART **74880 baud**
+  全部通过网页「连接 → 断开 → 再连接」。断开后等待至少一个列表刷新周期，
+  确认不自动抢回端口、无残余设备归属、缓存链路为空；S31 数据 CDC 自动重新绑定。
+  重连前后 Boot ID 均相同，未触发硬件复位：
+  S31 `12057626572984767234`、H2 `10763306005646118801`、C2 `11035779942514683312`。
+- H2、C2 分别通过网页实时身份、只读 RPC、PNG 控制链路截图及操作记录测试，
+  没有数据链路时镜像按钮禁用；浏览器未出现未捕获异常。CLI 另行核对三台实时身份。
+- S31 当前 `iris_acceptance` 固件没有注册截图/镜像 provider；本轮对它验证连接与 RPC，
+  不将预期的 provider 缺失算作截图成功，也未为此替换固件。
+  连续镜像和录音的设备切换清理由浏览器模拟后端回归覆盖；本轮不新增实机连续媒体结论。
+
+混合连接测试可通过 `ESP_IRIS_TEST_URL` 和 `ESP_IRIS_CONNECTION_TARGETS`（明确
+`endpoint`、`deviceId`，UART 加 `baudrate`，双 CDC 加 `data: true`）运行
+`frontend/tests/hardware-connections.spec.ts`。测试保留 `connection-evidence.json`
+和截图；本地完整证据位于消费工作区 `.codex-runs/iris-02/web-connections/`。
+运行中的 Gateway 后端为 `6382d6a`，静态页面更新到 `4c1ede5`；后两次提交未修改后端。
+
+[设备页截图](../../ESP-Iris/docs/images/workbench-devices-0.2.png) ·
+[连接选择器截图](../../ESP-Iris/docs/images/workbench-connections-0.2.png)
