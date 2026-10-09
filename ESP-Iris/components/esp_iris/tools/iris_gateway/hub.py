@@ -1108,9 +1108,33 @@ class IrisHub:
         if not isinstance(moves, list) or len(moves) > 2048:
             raise ValueError("gesture moves must contain at most 2048 points")
         sequence = int(time.monotonic_ns() & 0xFFFFFFFF)
+        # SCREEN OPEN and an active mirror are mutually exclusive on device.
+        # Reuse the live negotiated geometry, protecting it against a concurrent
+        # mirror stop/start while this gesture is in flight.
+        key = (device_id, SCREEN_CHANNEL)
+        async with self._media_locks[key]:
+            mirror = self._mirror_states.get(key)
+            if mirror is None:
+                screen = await self.get(device_id).screen_description()
+            else:
+                screen = dict(mirror.get("description") or {})
+                if int(screen.get("x", 0)) or int(screen.get("y", 0)):
+                    raise ValueError("pointer input requires a full-screen mirror")
+            return await self._input_pointer_points(
+                device_id, begin, moves, end, screen, sequence
+            )
+
+    async def _input_pointer_points(
+        self,
+        device_id: str,
+        begin: dict[str, Any],
+        moves: list[dict[str, Any]],
+        end: dict[str, Any],
+        screen: dict[str, int],
+        sequence: int,
+    ) -> dict[str, Any]:
         from .service_profiles import POINTER_METHOD_ID, POINTER_SERVICE_ID
 
-        screen = await self.get(device_id).screen_description()
         width, height = int(screen["width"]), int(screen["height"])
         if not (1 <= width <= 32768 and 1 <= height <= 32768):
             raise ValueError("device screen geometry exceeds the pointer/v1 coordinate range")

@@ -252,12 +252,16 @@ def test_detach_for_host_without_hello_identity_releases_physical_link() -> None
 
 
 @pytest.mark.parametrize("width,height", [(480, 480), (320, 240), (800, 480)])
-def test_input_gesture_is_one_gateway_operation_with_fixed_pointer_rpc_frames(width, height) -> None:
+@pytest.mark.parametrize("mirror_active", [False, True])
+def test_input_gesture_is_one_gateway_operation_with_fixed_pointer_rpc_frames(
+    width, height, mirror_active
+) -> None:
     class PointerSession:
         def __init__(self) -> None:
             self.requests: list[tuple[int, int, bytes]] = []
 
         async def screen_description(self):
+            assert not mirror_active, "SCREEN OPEN must not interrupt an active mirror"
             return {"width": width, "height": height}
 
         async def rpc(
@@ -276,6 +280,11 @@ def test_input_gesture_is_one_gateway_operation_with_fixed_pointer_rpc_frames(wi
         hub = IrisHub("test")
         session = PointerSession()
         hub._devices["device-a"] = session  # type: ignore[assignment]
+        if mirror_active:
+            hub._mirror_states[("device-a", int(Channel.SCREEN))] = {
+                "stream_id": 7,
+                "description": {"width": width, "height": height, "x": 0, "y": 0},
+            }
         result = await hub.input_event(
             "device-a",
             {
@@ -295,6 +304,72 @@ def test_input_gesture_is_one_gateway_operation_with_fixed_pointer_rpc_frames(wi
         assert [(item[2], item[3]) for item in decoded] == [(0, 0), (round((width - 1) / 2), round((height - 1) / 2)), (width - 1, height - 1)]
 
     asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("x,y", [(1, 0), (0, 1)])
+def test_input_gesture_rejects_offset_mirror_before_sending_rpc(x, y) -> None:
+    async def scenario() -> None:
+        hub = IrisHub("test")
+        # No session is installed: neither SCREEN OPEN nor RPC may be invoked.
+        hub._mirror_states[("device-a", int(Channel.SCREEN))] = {
+            "description": {"width": 320, "height": 240, "x": x, "y": y},
+        }
+        with pytest.raises(ValueError, match="full-screen mirror"):
+            await hub.input_event(
+                "device-a", {"begin": {"x": 0, "y": 0}, "end": {"x": 0, "y": 0}}
+            )
+
+    asyncio.run(scenario())
+
+
+def test_input_gesture_holds_mirror_lock_until_all_pointer_samples_finish() -> None:
+    async def scenario() -> None:
+        entered = asyncio.Event()
+        proceed = asyncio.Event()
+
+        class PointerSession:
+            def __init__(self) -> None:
+                self.phases = []
+                self.stop_calls = 0
+
+            async def screen_description(self):
+                raise AssertionError("must reuse the active mirror description")
+
+            async def rpc(self, service_id, method_id, payload, *, deadline_ms):
+                self.phases.append(payload[0])
+                if payload[0] == 0:
+                    entered.set()
+                    await proceed.wait()
+                return payload
+
+            async def mirror_stop(self, channel):
+                assert self.phases == [0, 1, 2]
+                self.stop_calls += 1
+
+        hub = IrisHub("test")
+        session = PointerSession()
+        hub._devices["device-a"] = session  # type: ignore[assignment]
+        key = ("device-a", int(Channel.SCREEN))
+        mirror = {"description": {"width": 480, "height": 480}}
+        hub._mirror_states[key] = mirror
+        gesture = asyncio.create_task(hub.input_event("device-a", {
+            "begin": {"x": 0, "y": 0},
+            "moves": [{"x": 5000, "y": 5000}],
+            "end": {"x": 10000, "y": 10000},
+        }))
+        await entered.wait()
+        stopping = asyncio.create_task(hub.mirror_stop("device-a", int(Channel.SCREEN)))
+        await asyncio.sleep(0)  # Let the concurrent stop attempt acquire the lock.
+        assert not stopping.done()
+        assert session.stop_calls == 0
+        assert hub._mirror_states[key] is mirror
+        proceed.set()
+        result, _ = await asyncio.gather(gesture, stopping)
+        assert result["accepted"] is True
+        assert session.stop_calls == 1
+        assert key not in hub._mirror_states
+
+    asyncio.run(asyncio.wait_for(scenario(), timeout=2))
 
 
 class MirrorSession:
