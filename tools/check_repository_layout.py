@@ -22,6 +22,7 @@ def main() -> int:
     required = (
         IRIS / "components" / "esp_iris" / "idf_component.yml",
         IRIS / "components" / "esp_iris" / "tools" / "system_update_bundle.py",
+        ROOT / "mosaico-tools" / "mosaico.py",
         ROOT / "mosaico-tools" / "tools" / "mosaico_cli" / "__init__.py",
         RECOVERY / "firmware" / "recovery" / "prebuilt" / "recovery" / "manifest.json",
     )
@@ -44,8 +45,8 @@ def main() -> int:
     iris_manifest = (IRIS / "components" / "esp_iris" / "idf_component.yml").read_text(
         encoding="utf-8"
     )
-    if not re.search(r'^version:\s*"0\.1\.0"\s*$', iris_manifest, re.MULTILINE):
-        fail("ESP-Iris release version is not 0.1.0")
+    if not re.search(r'^version:\s*"0\.2\.0"\s*$', iris_manifest, re.MULTILINE):
+        fail("ESP-Iris release version is not 0.2.0")
         errors += 1
     if "path: ESP-Iris/components/esp_iris" not in iris_manifest:
         fail("ESP-Iris repository_info.path is not monorepo-relative")
@@ -54,27 +55,27 @@ def main() -> int:
     gateway_version = (
         IRIS / "components" / "esp_iris" / "tools" / "iris_gateway" / "__init__.py"
     ).read_text(encoding="utf-8")
-    if '__version__ = "0.1.0"' not in gateway_version:
-        fail("ESP-Iris Gateway release version is not 0.1.0")
+    if '__version__ = "0.2.0"' not in gateway_version:
+        fail("ESP-Iris Gateway release version is not 0.2.0")
         errors += 1
 
     frontend_root = IRIS / "components" / "esp_iris" / "tools" / "frontend"
     for name in ("package.json", "package-lock.json"):
         package = json.loads((frontend_root / name).read_text(encoding="utf-8"))
-        if package.get("version") != "0.1.0":
-            fail(f"ESP-Iris Workbench release version in {name} is not 0.1.0")
+        if package.get("version") != "0.2.0":
+            fail(f"ESP-Iris Workbench release version in {name} is not 0.2.0")
             errors += 1
         if name == "package-lock.json" and package.get("packages", {}).get("", {}).get(
             "version"
-        ) != "0.1.0":
-            fail("ESP-Iris Workbench root lock-package version is not 0.1.0")
+        ) != "0.2.0":
+            fail("ESP-Iris Workbench root lock-package version is not 0.2.0")
             errors += 1
 
     tools_version = (ROOT / "mosaico-tools" / "tools" / "mosaico_cli" / "__init__.py").read_text(
         encoding="utf-8"
     )
-    if '__version__ = "0.1.0"' not in tools_version:
-        fail("ESP-Mosaico Tools release version is not 0.1.0")
+    if '__version__ = "0.2.0"' not in tools_version:
+        fail("ESP-Mosaico Tools release version is not 0.2.0")
         errors += 1
 
     retired = (
@@ -115,7 +116,7 @@ def main() -> int:
 
     if errors:
         return 1
-    print("repository layout and 0.1.0 release sources are consistent")
+    print("repository layout and 0.2.0 release sources are consistent")
     return 0
 
 
