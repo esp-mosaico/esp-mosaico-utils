@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { writeFile } from "node:fs/promises";
 
 // Opt in with explicit identities: never pick an arbitrary attached board.
 const targets: { endpoint: string; deviceId: string; baudrate?: number; data?: boolean }[] =
@@ -45,9 +46,12 @@ test("mixed real transports connect and disconnect through the workbench", async
     expect(after.boot_id_text).toBe(before.boot_id_text); // Attach/release must not reset hardware.
     evidence.push({ target, before, released, after });
   }
+  await dialog.evaluate((element) => { element.scrollTop = 0; });
   await page.screenshot({ path: testInfo.outputPath("connections.png"), fullPage: true });
   await dialog.getByRole("button", { name: "关闭", exact: true }).click();
   await page.screenshot({ path: testInfo.outputPath("devices.png"), fullPage: true });
-  await testInfo.attach("connection-evidence", { body: JSON.stringify(evidence, null, 2), contentType: "application/json" });
+  const evidencePath = testInfo.outputPath("connection-evidence.json");
+  await writeFile(evidencePath, JSON.stringify(evidence, null, 2));
+  await testInfo.attach("connection-evidence", { path: evidencePath, contentType: "application/json" });
   expect(errors).toEqual([]);
 });

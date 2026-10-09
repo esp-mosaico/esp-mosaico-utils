@@ -8,6 +8,7 @@ import {
 } from "react";
 import { api, formatBootId, formatBytes, formatTime } from "./api";
 import LogsPanel from "./LogsPanel";
+import AudioControls from "./AudioControls";
 import { firmwareModeLabel } from "./Shell";
 import type { Device, DeviceStatus, GatewayEvent, Operation } from "./types";
 
@@ -591,7 +592,20 @@ function DeviceScreen({
   mode: "develop" | "observe";
   events: GatewayEvent[];
 }) {
+  const disabled = mode === "observe" || !device.connected;
+  const alive = useRef(true);
+  const ownsMirror = useRef(false);
   const [image, setImage] = useState<string>("");
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+      if (ownsMirror.current) void api(`/v2/devices/${encodeURIComponent(device.device_id)}/mirror/stop`, {
+        method: "POST", body: JSON.stringify({ channel: "screen" }),
+      }).catch(() => undefined);
+    };
+  }, [device.device_id]);
+  useEffect(() => () => { if (image.startsWith("blob:")) URL.revokeObjectURL(image); }, [image]);
   const [mirroring, setMirroring] = useState(false);
   const [streamKind, setStreamKind] = useState<"none" | "raw" | "encoded">(
     "none",
@@ -611,7 +625,7 @@ function DeviceScreen({
     .reverse()
     .find(
       (item) =>
-        item.operation?.actor_type === "agent" &&
+        item.device_id === device.device_id && item.operation?.actor_type === "agent" &&
         item.operation.action === "input.gesture",
     );
 
@@ -669,6 +683,13 @@ function DeviceScreen({
           headers: { "Content-Type": "application/json" },
         },
       );
+      ownsMirror.current = next;
+      if (!alive.current) {
+        if (next) await api(`/v2/devices/${encodeURIComponent(device.device_id)}/mirror/stop`, {
+          method: "POST", body: JSON.stringify({ channel: "screen" }),
+        });
+        return;
+      }
       setFrameDescription(next ? (result.mirror?.description ?? null) : null);
       setStreamKind("none");
       setMirroring(next);
@@ -700,7 +721,9 @@ function DeviceScreen({
         response.headers.get("X-ESP-Iris-Media") || "{}",
       ) as MediaDescription;
       const reusedMirror = Boolean(metadata.mirror_reused);
-      const nextUrl = URL.createObjectURL(await response.blob());
+      const blob = await response.blob();
+      if (!alive.current) return;
+      const nextUrl = URL.createObjectURL(blob);
       setImage((previous) => {
         if (previous.startsWith("blob:")) URL.revokeObjectURL(previous);
         return nextUrl;
@@ -752,7 +775,7 @@ function DeviceScreen({
   }
 
   async function pointerUp(event: ReactPointerEvent<HTMLDivElement>) {
-    if (!gesture.current) return;
+    if (disabled || !gesture.current) return;
     const end = point(event, true);
     const current = gesture.current;
     gesture.current = null;
@@ -767,7 +790,7 @@ function DeviceScreen({
       method: "POST",
       body: JSON.stringify(value),
       headers: { "Content-Type": "application/json" },
-    });
+    }).catch((error) => setScreenNotice(String(error)));
   }
 
   return (
@@ -779,20 +802,20 @@ function DeviceScreen({
         </small>
         <div>
           <button
-            disabled={mode === "observe" || screenBusy}
+            disabled={disabled || screenBusy}
             onClick={captureScreenshot}
           >
             截图
           </button>
           <button
-            disabled={mode === "observe" || screenBusy || (!device.data_available && !device.demo)}
+            disabled={disabled || screenBusy || (!device.data_available && !device.demo)}
             title={!device.data_available && !device.demo ? "连续画面需要数据链路；仍可按需截图" : undefined}
             onClick={toggleMirror}
           >
             {mirroring ? "停止镜像" : "启动镜像"}
           </button>
           <button
-            disabled={mode === "observe"}
+            disabled={disabled}
             className={inputEnabled ? "active-control" : ""}
             onClick={() => setInputEnabled((value) => !value)}
           >
@@ -805,7 +828,7 @@ function DeviceScreen({
       <div
         className={`screen-surface ${inputEnabled ? "input-enabled" : ""}`}
         onPointerDown={(event) => {
-          if (inputEnabled) {
+          if (inputEnabled && !disabled) {
             const begin = point(event);
             if (begin) {
               event.currentTarget.setPointerCapture(event.pointerId);
@@ -850,7 +873,7 @@ function DeviceScreen({
         )}
       </div>
       {device.capability_names?.includes("audio") && (device.data_available || device.demo) && (
-        <AudioControls deviceId={device.device_id} mode={mode} />
+        <AudioControls deviceId={device.device_id} mode={disabled ? "observe" : "develop"} />
       )}
     </section>
   );
@@ -962,156 +985,6 @@ function drawRawTile(
     }
   }
   context.putImageData(pixels, tile.x ?? 0, tile.y ?? 0);
-}
-
-function AudioControls({
-  deviceId,
-  mode,
-}: {
-  deviceId: string;
-  mode: "develop" | "observe";
-}) {
-  const [recording, setRecording] = useState(false);
-  const [wav, setWav] = useState<string>("");
-  const [seconds, setSeconds] = useState(0);
-  const chunks = useRef<Uint8Array[]>([]);
-  const socket = useRef<WebSocket | null>(null);
-  const timer = useRef<number | null>(null);
-
-  async function stop() {
-    socket.current?.close();
-    socket.current = null;
-    if (timer.current) window.clearInterval(timer.current);
-    timer.current = null;
-    await api(`/v2/devices/${encodeURIComponent(deviceId)}/mirror/stop`, {
-      method: "POST",
-      body: JSON.stringify({ channel: "audio" }),
-      headers: { "Content-Type": "application/json" },
-    }).catch(() => undefined);
-    setRecording(false);
-    const pcm = concatenate(chunks.current);
-    if (pcm.length) {
-      if (wav) URL.revokeObjectURL(wav);
-      setWav(
-        URL.createObjectURL(
-          new Blob([waveFile(pcm, 16000, 1)], { type: "audio/wav" }),
-        ),
-      );
-    }
-  }
-
-  async function start() {
-    chunks.current = [];
-    setSeconds(0);
-    await api(`/v2/devices/${encodeURIComponent(deviceId)}/mirror/start`, {
-      method: "POST",
-      body: JSON.stringify({
-        channel: "audio",
-        fps: 5,
-        description: { sample_rate: 16000, channels: 1, format: 1 },
-      }),
-      headers: { "Content-Type": "application/json" },
-    });
-    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(
-      `${protocol}//${location.host}/v2/devices/${encodeURIComponent(deviceId)}/streams/audio`,
-    );
-    ws.binaryType = "arraybuffer";
-    ws.onmessage = (message) => {
-      const bytes = new Uint8Array(message.data as ArrayBuffer);
-      const metadataLength = new DataView(bytes.buffer).getUint32(0, true);
-      chunks.current.push(bytes.slice(4 + metadataLength));
-    };
-    socket.current = ws;
-    setRecording(true);
-    timer.current = window.setInterval(
-      () =>
-        setSeconds((value) => {
-          if (value >= 59) {
-            void stop();
-            return 60;
-          }
-          return value + 1;
-        }),
-      1000,
-    );
-  }
-
-  async function upload(file?: File) {
-    if (!file) return;
-    const response = await fetch(
-      `/v2/devices/${encodeURIComponent(deviceId)}/audio`,
-      {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": file.type || "audio/wav" },
-        body: file,
-      },
-    );
-    if (!response.ok) throw new Error("音频上传失败");
-  }
-
-  return (
-    <div className="audio-controls">
-      <span>音频</span>
-      <button disabled={mode === "observe"} onClick={recording ? stop : start}>
-        {recording ? `停止录音 ${seconds}s` : "录音（最长 60s）"}
-      </button>
-      <label className={mode === "observe" ? "disabled" : ""}>
-        上传 WAV/PCM
-        <input
-          type="file"
-          accept="audio/wav,.wav,.pcm"
-          disabled={mode === "observe"}
-          onChange={(event) => void upload(event.target.files?.[0])}
-        />
-      </label>
-      {wav && (
-        <>
-          <audio controls src={wav} />
-          <a href={wav} download={`esp-iris-${deviceId}.wav`}>
-            下载 WAV
-          </a>
-        </>
-      )}
-      <small>实时流默认不落盘 · 上传/保存上限 16 MiB</small>
-    </div>
-  );
-}
-
-function concatenate(values: Uint8Array[]) {
-  const length = values.reduce((sum, value) => sum + value.length, 0);
-  const output = new Uint8Array(length);
-  let offset = 0;
-  for (const value of values) {
-    output.set(value, offset);
-    offset += value.length;
-  }
-  return output;
-}
-
-function waveFile(pcm: Uint8Array, sampleRate: number, channels: number) {
-  const buffer = new ArrayBuffer(44 + pcm.length);
-  const view = new DataView(buffer);
-  const write = (offset: number, text: string) =>
-    [...text].forEach((character, index) =>
-      view.setUint8(offset + index, character.charCodeAt(0)),
-    );
-  write(0, "RIFF");
-  view.setUint32(4, 36 + pcm.length, true);
-  write(8, "WAVE");
-  write(12, "fmt ");
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, channels, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * channels * 2, true);
-  view.setUint16(32, channels * 2, true);
-  view.setUint16(34, 16, true);
-  write(36, "data");
-  view.setUint32(40, pcm.length, true);
-  new Uint8Array(buffer, 44).set(pcm);
-  return buffer;
 }
 
 type ActionProps = {

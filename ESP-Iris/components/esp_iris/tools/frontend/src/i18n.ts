@@ -4,6 +4,8 @@ export type UiLanguage = "zh" | "en";
 
 const translations: Record<string, string> = {
   "连接设备": "Connect devices",
+  "本项目已连接": "Connected to this project",
+  "数据接口": "Data interface",
   "断开连接": "Disconnect",
   "断开当前设备": "Disconnect selected device",
   "正在断开…": "Disconnecting…",

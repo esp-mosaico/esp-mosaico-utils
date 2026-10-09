@@ -51,6 +51,8 @@ test("device page discovers UART, retries errors and releases a whole device", a
   await expect(page.locator(".heading-status")).toContainText("控制：未连接");
   await expect(page.locator(".heading-status")).toContainText("数据：未连接");
   await expect(page.locator(".stale-flag")).toBeVisible();
+  await expect(page.getByRole("button", { name: "截图", exact: true })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "交互输入", exact: true })).toBeDisabled();
   await page.getByRole("button", { name: "连接设备", exact: true }).click();
   const dialog = page.getByRole("dialog", { name: "连接设备" });
   const uart = dialog.locator('[data-endpoint="usb:location=uart"]');

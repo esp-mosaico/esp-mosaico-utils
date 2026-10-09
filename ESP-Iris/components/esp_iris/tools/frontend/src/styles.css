@@ -311,3 +311,6 @@ td small, td code { margin-top: 4px; color: var(--faint); font-size: 10px; }
 .manual-connection label { display: grid; gap: 6px; }
 .project-endpoint input { width: 115px; margin: 0 8px; }
 .status-dot.discovered { background: var(--faint); }
+.connection-toolbar button, .project-endpoint button, .manual-connection button { padding: 7px 12px; border: 1px solid var(--line-strong); background: var(--surface); color: var(--cyan); cursor: pointer; }
+.connection-toolbar button:hover, .project-endpoint button:hover, .manual-connection button:hover { background: var(--cyan-soft); }
+.manual-connection input, .project-endpoint input { padding: 7px; border: 1px solid var(--line-strong); border-radius: 3px; }

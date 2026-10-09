@@ -61,10 +61,10 @@ export default function ProjectSession({ compact = false, onChanged }: { compact
       const takeover = snapshot.takeovers.find((value) => value.takeover_id === claim?.transfer_id);
       const canTakeover = claim && claim.owner !== self && claim.owner_alive && claim.state === "owned" && claim.device_id;
       return <div className="project-endpoint" data-endpoint={item.endpoint} key={item.endpoint}>
-        <strong>{item.product || item.endpoint}</strong>
+        <strong>{item.product || item.endpoint}{item.link_role === "data" ? " · 数据接口" : ""}</strong>
         <p>{item.device_path || item.path || item.endpoint} · {item.transport_name || item.endpoint}</p>
         <EndpointConnection item={item} pending={pending || snapshot.closing} owned={owned} act={act} />
-        <p>{claim ? `${owner?.project_path || claim.owner} · ${claim.owner_alive ? claim.state : "归属待核对"}` : "未分配"}</p>
+        <p>{compact && owned ? "本项目已连接" : claim ? `${owner?.project_path || claim.owner} · ${claim.owner_alive ? claim.state : "归属待核对"}` : "未分配"}</p>
         {claim?.device_id && <p>Device ID: {claim.device_id}</p>}
         {claim?.transfer_id && <p>接管 ID: {claim.transfer_id}</p>}
         <div className="settings-actions">
