@@ -1201,8 +1201,7 @@ def create_app(service: GatewayService) -> web.Application:
         mode = str(body.get("mode", "run"))
         if not endpoint or mode not in {"run", "rom", "attach"}:
             raise web.HTTPBadRequest(text="endpoint and valid reset mode are required")
-        active = service.device_hub._endpoint_sessions.get(endpoint)
-        resource = active.info.device_id if active is not None and active.info else endpoint
+        resource = service.device_hub.device_for_endpoint(endpoint) or endpoint
         operation, result, _ = await service.operations.execute(
             resource, _actor(request), "console.hardware_reset",
             {"endpoint": endpoint, "mode": mode},

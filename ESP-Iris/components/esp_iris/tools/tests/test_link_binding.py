@@ -96,3 +96,27 @@ def test_data_first_binding_and_control_disconnect_preserve_data():
         assert hub._devices[data.info.device_id] is data
         data.link.close.assert_not_called()
     asyncio.run(scenario())
+
+
+def test_discovered_tcp_data_link_receives_the_control_pairing_token():
+    async def scenario():
+        hub = IrisHub()
+        hub.add_tcp = AsyncMock()
+        token = bytes(range(32))
+        link = SimpleNamespace(console=True, endpoint="tcp:192.0.2.1:19772",
+                               write=AsyncMock(), close=AsyncMock())
+        session = DeviceSession(link, AsyncMock(), AsyncMock(), pairing_token=token)
+        await session._handle_hello(hello())
+        session.data_available = True
+        session.data_tcp_port = 19773
+        hub._endpoint_states[link.endpoint] = {"attempt": 1}
+        try:
+            await hub._on_ready(session)
+            hub.add_tcp.assert_awaited_once_with(
+                "192.0.2.1", 19773, pairing_token=token.hex(), data_link=True,
+                metadata={"advertised_device_id": session.info.device_id},
+            )
+        finally:
+            await session.close()
+
+    asyncio.run(scenario())

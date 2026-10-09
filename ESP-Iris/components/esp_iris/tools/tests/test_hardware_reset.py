@@ -90,3 +90,17 @@ def test_console_only_device_can_reset_without_iris_identity():
         assert result["reader_started_before_reset"] is True
         assert result["capture_id"] == "raw-boot" and result["device_id"] is None
     asyncio.run(scenario())
+
+
+def test_reset_identity_uses_only_the_current_session():
+    hub = IrisHub()
+    endpoint = "usb:console"
+    hub._endpoint_states[endpoint] = {"device_id": "remembered-device"}
+    assert hub.device_for_endpoint(endpoint) is None
+    session = SimpleNamespace(info=None)
+    hub._endpoint_sessions[endpoint] = session
+    assert hub.device_for_endpoint(endpoint) is None
+    session.info = SimpleNamespace(device_id="live-device")
+    assert hub.device_for_endpoint(endpoint) == "live-device"
+    del hub._endpoint_sessions[endpoint]
+    assert hub.device_for_endpoint(endpoint) is None

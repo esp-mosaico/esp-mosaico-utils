@@ -6,7 +6,7 @@ import json
 import struct
 import uuid
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from aiohttp import FormData
@@ -1242,6 +1242,40 @@ def test_file_api_lists_and_streams_demo_volume(tmp_path) -> None:
                 "/v2/devices/demo-a1b2c3d4/files/volumes"
             )
             assert blocked.status == 423
+        finally:
+            await client.close()
+            await hub.close()
+            store.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("bound", [False, True])
+def test_console_reset_uses_adapter_identity_and_deduplicates(tmp_path, bound):
+    async def scenario():
+        store = GatewayStore(tmp_path)
+        service = GatewayService(store, instance_id="test", demo=True)
+        hub = DemoHub(service.on_device_event)
+        service.attach_hub(hub)
+        await hub.start()
+        device = hub.list_devices()[0]
+        endpoint = device["endpoint"] if bound else "usb:unbound"
+        hub.hardware_reset = AsyncMock(return_value={"state": "sequence_completed"})
+        client = TestClient(TestServer(create_app(service)))
+        await client.start_server()
+        try:
+            headers = {"X-Operation-ID": str(uuid.uuid4())}
+            for _ in range(2):
+                response = await client.post(
+                    "/v2/consoles/reset", headers=headers,
+                    json={"endpoint": endpoint, "mode": "run"},
+                )
+                assert response.status == 200
+                body = await response.json()
+                assert body["operation"]["device_id"] == (
+                    device["device_id"] if bound else endpoint
+                )
+            hub.hardware_reset.assert_awaited_once_with(endpoint, "run")
         finally:
             await client.close()
             await hub.close()

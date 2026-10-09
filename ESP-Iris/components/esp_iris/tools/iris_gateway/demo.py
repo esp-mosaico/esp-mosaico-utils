@@ -174,6 +174,13 @@ class DemoHub:
             for device in self._devices.values()
         ]
 
+    def device_for_endpoint(self, endpoint: str) -> str | None:
+        return next((str(device["device_id"]) for device in self._devices.values()
+                     if device["endpoint"] == endpoint and device["connected"]), None)
+
+    async def hardware_reset(self, endpoint: str, mode: str = "run") -> dict[str, Any]:
+        raise RuntimeError("hardware reset is disabled in demo mode")
+
     def get(self, device_id: str) -> dict[str, Any]:
         try:
             device = self._devices[device_id]

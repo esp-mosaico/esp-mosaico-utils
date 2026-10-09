@@ -7,9 +7,16 @@ not call this module. Sequence values are pySerial assertion booleans.
 from __future__ import annotations
 
 import time
-from typing import Callable, Iterable, Tuple
+from typing import Callable, Iterable, Protocol, Tuple
 
 Step = Tuple[str, float]
+
+
+class SerialControlLines(Protocol):
+    """Writable pySerial control lines; CTS is intentionally not a reset output."""
+
+    dtr: bool
+    rts: bool
 
 
 def reset_steps(mode: str, circuit: str, *, chip: str = "esp32s31") -> tuple[Step, ...]:
@@ -30,7 +37,7 @@ def reset_steps(mode: str, circuit: str, *, chip: str = "esp32s31") -> tuple[Ste
             ("W", release), ("D", 0))
 
 
-def execute_reset(serial_port: object, steps: Iterable[Step], *,
+def execute_reset(serial_port: SerialControlLines, steps: Iterable[Step], *,
                   sleep: Callable[[float], None] = time.sleep) -> None:
     # Validate before touching either output; no evaluated configuration code.
     sequence = tuple(steps)

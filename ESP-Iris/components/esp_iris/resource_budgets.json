@@ -19,7 +19,10 @@
     "components/esp_iris/tools/iris_gateway/device_info.py": 100,
     "components/esp_iris/src/esp_iris_media_control.inc": 260,
     "components/esp_iris/src/esp_iris_executor_ota.inc": 70,
-    "components/esp_iris/tools/iris_gateway/ota_validation.py": 80
+    "components/esp_iris/tools/iris_gateway/ota_validation.py": 80,
+    "components/esp_iris/src/esp_iris_control_frames.inc": 500,
+    "components/esp_iris/src/esp_iris_snapshot_control.inc": 200,
+    "components/esp_iris/tools/iris_gateway/ota_transport.py": 300
   },
   "artifacts_bytes": {
     "build-ci-services-usb/esp_iris_services_usb_test.bin": 471859,

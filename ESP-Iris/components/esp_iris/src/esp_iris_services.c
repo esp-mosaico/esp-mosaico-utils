@@ -1450,6 +1450,7 @@ static bool handle_restart(iris_runtime_t *runtime,
     return true;
 }
 
+#include "esp_iris_snapshot_control.inc"
 #include "esp_iris_media_control.inc"
 
 #include "esp_iris_ota_service.inc"

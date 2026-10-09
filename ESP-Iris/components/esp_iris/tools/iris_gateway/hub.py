@@ -743,6 +743,11 @@ class IrisHub:
                 endpoint, "stopped", attempt=attempt, error=None
             )
 
+    def device_for_endpoint(self, endpoint: str) -> str | None:
+        """Return only the live session identity, never a remembered binding."""
+        session = self._endpoint_sessions.get(endpoint)
+        return session.info.device_id if session is not None and session.info is not None else None
+
     async def hardware_reset(self, endpoint: str, mode: str = "run") -> dict[str, Any]:
         if self.ownership is not None:
             self.ownership._require(endpoint)
@@ -822,7 +827,8 @@ class IrisHub:
         for peer in links.values():
             if peer is session:
                 continue
-            if peer.info.boot_id != info.boot_id or peer.owner_id != session.owner_id:
+            if (peer.info is None or peer.info.boot_id != info.boot_id
+                    or peer.owner_id != session.owner_id):
                 await session.close()
                 raise ProtocolError("control/data boot or authenticated owner binding differs")
         if info.hardware_mac:
@@ -847,7 +853,7 @@ class IrisHub:
         data = links.get("data")
         if control is not None:
             control.data_session = data
-        self._devices[info.device_id] = control or data
+        self._devices[info.device_id] = control or session
         self._set_endpoint_state(
             session.link.endpoint,
             "ready",
@@ -879,7 +885,8 @@ class IrisHub:
         if session._console and session.data_available and session.data_tcp_port and session.link.endpoint.startswith("tcp:"):
             host = session.link.endpoint[4:].rsplit(":", 1)[0]
             await self.add_tcp(host, session.data_tcp_port,
-                pairing_token=session._pairing_token, data_link=True,
+                pairing_token=session._pairing_token.hex() if session._pairing_token is not None else None,
+                data_link=True,
                 metadata={"advertised_device_id": info.device_id})
 
     async def _on_event(self, event: dict[str, Any]) -> None:
@@ -919,8 +926,11 @@ class IrisHub:
                 continue
             item = session.info.as_dict()
             links = self._links.get(session.info.device_id, {})
-            item["control_link"] = links["control"].info.as_dict() if "control" in links else None
-            item["data_link"] = links["data"].info.as_dict() if "data" in links else None
+            for role in ("control", "data"):
+                peer = links.get(role)
+                item[f"{role}_link"] = (
+                    peer.info.as_dict() if peer is not None and peer.info is not None else None
+                )
             item["data_available"] = "data" in links
             state = self._endpoint_states.get(session.link.endpoint, {})
             item["firmware_mode"] = state.get("firmware_mode", "unknown")
@@ -1120,9 +1130,8 @@ class IrisHub:
             if key not in self._mirror_states:
                 try:
                     actual, data = await snapshot_session.screenshot(requested)
-                    actual["mirror_reused"] = 0
-                    actual["transfer_path"] = "control" if snapshot_session._console else "data"
-                    return actual, data
+                    return {**actual, "mirror_reused": 0,
+                            "transfer_path": "control" if snapshot_session._console else "data"}, data
                 except DeviceError as error:
                     # Push-only screen providers retain their data-link path.
                     # A weak-link screenshot never starts a continuous stream.
@@ -1149,9 +1158,8 @@ class IrisHub:
                         else None
                     ),
                 )
-                actual["mirror_reused"] = int(reuse_existing)
-                actual["transfer_path"] = "data"
-                return actual, data
+                return {**actual, "mirror_reused": int(reuse_existing),
+                        "transfer_path": "data"}, data
             finally:
                 self.unsubscribe_media(device_id, SCREEN_CHANNEL, queue)
                 if started_temporary:

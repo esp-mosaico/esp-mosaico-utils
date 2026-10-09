@@ -201,8 +201,8 @@ class ProjectGateway:
         owned = self.owned_target()
         if owned is not None:
             return owned, None
-        candidates = {}
-        blocked = []
+        candidates: dict[str, dict[str, Any]] = {}
+        blocked: list[str] = []
         usb_groups: dict[str, list[dict[str, Any]]] = collections.defaultdict(list)
         for device in await to_thread(discover_iris_usb_devices):
             metadata = {
