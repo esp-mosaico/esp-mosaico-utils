@@ -173,7 +173,12 @@ Failed/partial writes are never automatically replayed onto a new session.
 Lines are limited to 255 UTF-8 bytes and exclude control characters and line
 separators. Machine records (`iris @…`) and `iris hello` remain owned by Gateway
 so manual input cannot replace its protocol/session negotiation. No extra RPC
-handler, firmware update or second serial reader is needed. This is line input,
+handler or second serial reader is needed. Products using an external ESP-IDF
+REPL should use the current `esp_iris_console_register_commands()` callback:
+it yields for up to one second when the single-line queue is occupied, instead
+of rejecting a command racing a status poll. The custom
+`esp_iris_console_submit()` API remains nonblocking; its input owner must handle
+`ESP_ERR_TIMEOUT`. This is line input,
 not a terminal emulator or a channel for Ctrl-C/debugger control sequences.
 
 ### Device state and local ROM operations

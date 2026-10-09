@@ -21,6 +21,24 @@ static esp_err_t esp_console_cmd_register(const esp_console_cmd_t *cmd) {registe
     source.write_text('''
 #include <assert.h>
 #include "esp_iris_console.c"
+static unsigned ticks, delay_count;
+static int on_delay;
+unsigned xTaskGetTickCount(void) { return ticks; }
+void vTaskDelay(unsigned delay) {
+    ticks += delay;
+    ++delay_count;
+    uint8_t out[ESP_IRIS_CONSOLE_LINE_BYTES];
+    if (on_delay == 1) {
+        assert(iris_console_input_read(out, sizeof(out)) == 12);
+        assert(memcmp(out, "iris status\\n", 12) == 0);
+    } else if (on_delay == 2) {
+        iris_console_input_enable(false);
+    } else if (on_delay == 3) {
+        iris_console_input_enable(false);
+        iris_console_input_enable(true);
+    }
+    on_delay = 0;
+}
 int main(void) {
     uint8_t out[ESP_IRIS_CONSOLE_LINE_BYTES];
     assert(esp_iris_console_submit("iris status", 11) == ESP_ERR_INVALID_STATE);
@@ -46,6 +64,26 @@ int main(void) {
     assert(registered.func(2, args) == ESP_ERR_INVALID_STATE);
     iris_console_input_enable(true);
     assert(!iris_console_input_available());
+    /* A REPL burst waits for admission instead of dropping the new command. */
+    assert(esp_iris_console_submit("iris status", 11) == ESP_OK);
+    on_delay = 1;
+    assert(registered.func(2, args) == ESP_OK);
+    assert(delay_count == 1);
+    assert(iris_console_input_read(out, sizeof(out)) == 11 && memcmp(out, "iris hello\\n", 11) == 0);
+    /* A stalled worker remains bounded and retains the original input. */
+    assert(esp_iris_console_submit("iris status", 11) == ESP_OK);
+    ticks = UINT32_MAX - 10U;
+    delay_count = 0;
+    assert(registered.func(1, args) == ESP_ERR_TIMEOUT);
+    assert(delay_count == pdMS_TO_TICKS(IRIS_REPL_ADMISSION_TIMEOUT_MS));
+    assert(iris_console_input_read(out, sizeof(out)) == 12 && memcmp(out, "iris status\\n", 12) == 0);
+    for (int action = 2; action <= 3; ++action) {
+        iris_console_input_enable(true);
+        assert(esp_iris_console_submit("iris status", 11) == ESP_OK);
+        on_delay = action;
+        assert(registered.func(2, args) == ESP_ERR_INVALID_STATE);
+        assert(!iris_console_input_available());
+    }
     return 0;
 }
 ''')

@@ -15,6 +15,8 @@ extern "C" {
  * and owns the driver/REPL lifetime. Iris must stop before that driver stops.
  * Size the product RX driver queue to at least two complete line buffers;
  * small interactive driver defaults can drop a machine record burst.
+ * The registered callback waits at most one second for queue admission, yielding
+ * to the worker so bursts of API records and human commands do not lose lines.
  * This only registers the "iris" namespace; existing commands remain intact. */
 esp_err_t esp_iris_console_register_commands(void);
 

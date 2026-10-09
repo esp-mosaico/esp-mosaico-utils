@@ -15,11 +15,17 @@ static char s_input[ESP_IRIS_CONSOLE_LINE_BYTES];
 static size_t s_length;
 static size_t s_offset;
 static bool s_accepting;
+static uint32_t s_generation;
+
+/* The REPL is the sole driver reader. Yield to the Iris worker when its
+ * one-line queue is occupied, without allocating another record buffer. */
+#define IRIS_REPL_ADMISSION_TIMEOUT_MS 1000U
 
 void iris_console_input_enable(bool enabled)
 {
     taskENTER_CRITICAL(&s_input_lock);
     s_accepting = enabled;
+    ++s_generation;
     s_length = 0;
     s_offset = 0;
     taskEXIT_CRITICAL(&s_input_lock);
@@ -71,27 +77,38 @@ esp_err_t esp_iris_console_submit(const char *line, size_t length)
 static int iris_command(int argc, char **argv)
 {
     /* Copy directly into the bounded queue, avoiding a large REPL stack. */
-    if (argc == 1) return esp_iris_console_submit("iris help", 9);
-    if (argc != 2) return ESP_ERR_INVALID_ARG;
-    const size_t length = strlen(argv[1]);
+    if (argc != 1 && argc != 2) return ESP_ERR_INVALID_ARG;
+    const char *argument = argc == 1 ? "help" : argv[1];
+    const size_t length = strlen(argument);
     if (length + 6 > sizeof(s_input)) return ESP_ERR_INVALID_SIZE;
     for (size_t i = 0; i < length; ++i) {
-        if ((unsigned char)argv[1][i] < 32 || (unsigned char)argv[1][i] > 126)
+        if ((unsigned char)argument[i] < 32 || (unsigned char)argument[i] > 126)
             return ESP_ERR_INVALID_ARG;
     }
     taskENTER_CRITICAL(&s_input_lock);
-    esp_err_t result = ESP_OK;
-    if (!s_accepting) result = ESP_ERR_INVALID_STATE;
-    else if (s_length != 0) result = ESP_ERR_TIMEOUT;
-    else {
-        memcpy(s_input, "iris ", 5);
-        memcpy(s_input + 5, argv[1], length);
-        s_input[length + 5] = '\n';
-        s_length = length + 6;
-        s_offset = 0;
-    }
+    const uint32_t generation = s_generation;
     taskEXIT_CRITICAL(&s_input_lock);
-    return result;
+    const TickType_t started = xTaskGetTickCount();
+    const TickType_t timeout = pdMS_TO_TICKS(IRIS_REPL_ADMISSION_TIMEOUT_MS);
+    for (;;) {
+        taskENTER_CRITICAL(&s_input_lock);
+        esp_err_t result = ESP_OK;
+        if (!s_accepting || generation != s_generation) result = ESP_ERR_INVALID_STATE;
+        else if (s_length != 0) result = ESP_ERR_TIMEOUT;
+        else {
+            memcpy(s_input, "iris ", 5);
+            memcpy(s_input + 5, argument, length);
+            s_input[length + 5] = '\n';
+            s_length = length + 6;
+            s_offset = 0;
+        }
+        taskEXIT_CRITICAL(&s_input_lock);
+        if (result != ESP_ERR_TIMEOUT || (TickType_t)(xTaskGetTickCount() - started) >= timeout)
+            return result;
+        /* Never wait under the spinlock. The worker drains the existing line
+         * before this command is admitted once; execution is not retried. */
+        vTaskDelay(1);
+    }
 }
 
 esp_err_t esp_iris_console_register_commands(void)
