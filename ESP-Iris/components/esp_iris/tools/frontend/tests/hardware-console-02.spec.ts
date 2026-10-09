@@ -5,7 +5,7 @@ const deviceId = process.env.ESP_IRIS_E2E_DEVICE_ID;
 const service = process.env.ESP_IRIS_E2E_RPC_SERVICE;
 const method = process.env.ESP_IRIS_E2E_RPC_METHOD;
 
-test("installed 0.2 device: live identity, RPC, screenshot, mirror and records", async ({ page, request }, testInfo) => {
+test("installed 0.2 device: live identity, RPC, screenshot, available mirror and records", async ({ page, request }, testInfo) => {
   test.skip(!baseURL || !deviceId || !service || !method, "explicit managed hardware Gateway and read-only RPC required");
   test.setTimeout(90_000);
   const initialResponse = await request.get(`${baseURL}/v2/devices/${deviceId}`);
@@ -32,7 +32,9 @@ test("installed 0.2 device: live identity, RPC, screenshot, mirror and records",
   await page.getByLabel("原始载荷").fill("");
   const rpcDone = page.waitForResponse((response) => response.request().method() === "POST" && response.url().endsWith(`/devices/${deviceId}/rpc/raw`));
   await page.getByRole("button", { name: "确认执行" }).click();
-  const rpc = await (await rpcDone).json();
+  const rpcResponse = await rpcDone;
+  expect(rpcResponse.ok(), await rpcResponse.text()).toBeTruthy();
+  const rpc = await rpcResponse.json();
   expect(rpc.operation.status).toBe("succeeded");
   expect(rpc.response_bytes).toBeGreaterThan(0);
   await expect(page.getByText("原始 RPC 已完成", { exact: true })).toBeVisible();
@@ -57,17 +59,23 @@ test("installed 0.2 device: live identity, RPC, screenshot, mirror and records",
       socket.on("framereceived", ({ payload }) => { if (Buffer.isBuffer(payload)) frames++; });
     }
   });
-  await page.getByRole("button", { name: "启动镜像", exact: true }).click();
-  try {
-    await expect(page.getByText("镜像中", { exact: true })).toBeVisible();
-    await expect.poll(() => frames, { timeout: 15_000 }).toBeGreaterThan(2);
-    const mirroredShot = page.waitForResponse((response) => response.request().method() === "POST" && response.url().includes(`/devices/${deviceId}/screenshot`));
-    await page.getByRole("button", { name: "截图", exact: true }).click();
-    expect(JSON.parse((await mirroredShot).headers()["x-esp-iris-media"]).mirror_reused).toBe(1);
-    await expect(page.getByText("镜像中", { exact: true })).toBeVisible();
-  } finally {
-    const stop = page.getByRole("button", { name: "停止镜像", exact: true });
-    if (await stop.isVisible()) await stop.click();
+  const inventory = await (await request.get(`${baseURL}/v2/devices`)).json();
+  const hasData = inventory.devices.find((item: { device_id: string }) => item.device_id === deviceId)?.data_available;
+  if (hasData) {
+    await page.getByRole("button", { name: "启动镜像", exact: true }).click();
+    try {
+      await expect(page.getByText("镜像中", { exact: true })).toBeVisible();
+      await expect.poll(() => frames, { timeout: 15_000 }).toBeGreaterThan(2);
+      const mirroredShot = page.waitForResponse((response) => response.request().method() === "POST" && response.url().includes(`/devices/${deviceId}/screenshot`));
+      await page.getByRole("button", { name: "截图", exact: true }).click();
+      expect(JSON.parse((await mirroredShot).headers()["x-esp-iris-media"]).mirror_reused).toBe(1);
+      await expect(page.getByText("镜像中", { exact: true })).toBeVisible();
+    } finally {
+      const stop = page.getByRole("button", { name: "停止镜像", exact: true });
+      if (await stop.isVisible()) await stop.click();
+    }
+  } else {
+    await expect(page.getByRole("button", { name: "启动镜像", exact: true })).toBeDisabled();
   }
   await page.getByRole("button", { name: "记录", exact: true }).click();
   await expect(page.getByRole("tab", { name: "设备操作" })).toBeVisible();
