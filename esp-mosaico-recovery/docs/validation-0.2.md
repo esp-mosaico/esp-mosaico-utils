@@ -299,3 +299,14 @@ Enter 发送、上下键访问最近 32 条历史；离线、Observe 和只有�
 `ESP_IRIS_TEST_URL` / `ESP_IRIS_CONNECTION_TARGETS`，不会自动重刷设备。
 
 [日志命令输入截图](../../ESP-Iris/docs/images/workbench-console-0.2.png)
+
+### 空行显示跟进
+
+`fde04d1` 默认隐藏日志视图中的纯空白记录，提供「显示空行」恢复显示；原始采集和
+历史不删改，非空消息内部换行不变。原因是每条控制响应之前的 CR/LF 分隔符被展示为
+独立 `I raw` 行；`ACCEPTANCE_ALIVE` 则是验收固件每 5 秒的正常日志。
+相关 Console/日志浏览器回归 **6 passed**，生产构建和前端体积预算通过。
+实时网页验证保留的 **872** 条空白记录默认不可见、开启显示后恢复，**276** 条非空
+记录继续显示；同时核对发送按钮与输入框同行。未重启 Gateway 或设备、未更新固件。
+
+[空行显示修复截图](../../ESP-Iris/docs/images/workbench-log-filter-0.2.png)
