@@ -155,6 +155,12 @@ local ROM operation executor.
 
 ### Console commands from the Workbench
 
+The log view hides whitespace-only records by default. Console protocol responses
+start with CR/LF to separate their marker from unfinished application output;
+these separators are retained in capture/history but should not fill the view
+with empty `raw` rows. **Show blank lines** restores them in the view. Whitespace
+inside a nonempty message is unchanged.
+
 The device log panel includes a command input. Enter submits one text line;
 Up/Down recalls the last 32 commands in that device view. `iris help` and
 `iris status` work with the built-in 0.2 console; application commands depend

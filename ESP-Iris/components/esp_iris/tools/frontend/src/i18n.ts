@@ -280,6 +280,7 @@ const translations: Record<string, string> = {
   "继续": "Resume",
   "暂停": "Pause",
   "跟随": "Follow",
+  "显示空行": "Show blank lines",
   "下载": "Download",
   "历史缺口：部分日志已超出保留范围": "History gap: some logs are outside the retention window",
   "等待设备日志…": "Waiting for device logs…",
