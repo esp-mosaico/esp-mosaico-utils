@@ -16,16 +16,19 @@ Template schema v1 provides `workspace`, `template`, `utils`, `tools`, `bsp`,
 `esp_iris`, and `engine` path anchors. Paths are rendered relative to each
 output file. `workspace.init_template` remains configurable. `game create/new`
 defaults to the tools-owned `templates/blank_game/mosaico-template.json`.
-`--template shooter`, `sky-hop` or `tower-defense` selects a complete game from
-BSP `examples/<game>/mosaico-template.json`. All use the same exclusive writer,
-name validation, dry-run and rollback behavior. Configure `dependencies.raylib`
+`--template shooter`, `sky-hop` or `tower-defense` uses the Engine game creator
+to copy a maintained game with its private shared launcher/Board. The blank
+template uses the exclusive application writer; Engine copies also refuse to
+overwrite an existing project. Configure `dependencies.raylib`
 for the engine location; it is only required for games.
 
 The blank game provides shared C state/update/rendering with separate device and
 Host adapters, generated project identity and the retained Vibe Mode layout. It
-uses the engine's `mosaico_game_app` runtime for display, input, Iris startup and
-first-frame health acceptance. It contains no example assets or external resource
-partition; its GSP canvas placeholder is generated and embedded during the build.
+uses the Engine shared native launcher and selected Board for display, input,
+hardware access. The Iris wrapper explicitly selects `esp_mosaico_raylib_iris`
+for USB startup, screenshot/pointer registration and first-frame health acceptance. It contains no game assets,
+GSP canvas placeholder or external resource partition. Host and native use the
+same `raylib_lite_game_module_v1()` implementation.
 
 Normal apps include `esp-mosaico-recovery/cmake/mosaico_idf_project.cmake`
 before project(), supplying MOSAICO_BSP_ROOT for the board-owned splash handoff.
@@ -59,3 +62,42 @@ contract tests compare the product manifest, configuration and partition tables.
 Validation: `python -m pytest mosaico-tools/tests esp-mosaico-recovery/tests`.
 No consumer workspace source is needed. Old workspace paths have no forwarding
 layer; consumers migrate to these public entry points and rebuild.
+
+## User-owned Raylib Lite games
+
+Develop a game in its own repository, then build an Iris installation bundle:
+
+```sh
+python mosaico.py game build /path/to/my_game --target iris
+# A relative path or --project /path/to/my_game works too.
+python mosaico.py game build sky_hop --target iris
+```
+
+Configure `dependencies.raylib` with a current Engine source checkout. Named
+examples and explicit project paths use the same wrapper. Explicit projects
+need a top-level ESP-IDF `CMakeLists.txt` containing `project(...)` and a
+`main/CMakeLists.txt` component. They do not need registration in Engine examples.
+Use the Engine native game lifecycle and shared launcher, as demonstrated by its
+games. This wrapper supplies `app_main` through that launcher. Applications with
+their own `app_main` use the ordinary native build and application integration
+path described above.
+
+The wrapper references the original `main/` and optional `components/` directory,
+so component-relative resources and `idf_component.yml` dependencies stay with
+user source. Source files, manifests and existing build/sdkconfig files are not
+copied or edited. Generated projects and build output live under the configured
+workspace run directory, with separate directories for equal game names at
+different paths. Native and Iris builds therefore do not share sdkconfig.
+
+The wrapper supplies the Engine Board and common native launcher, then invokes
+existing Recovery-first packaging. It consumes user `sdkconfig.defaults` and
+`sdkconfig.application.defaults`; Iris-specific defaults enable required application services
+and select USB management. The product partition table comes from the shared
+`blank_game` template. A project's own partition CSV and top-level CMake build
+logic are not used by this wrapper; declare game resources and custom component
+logic in component CMake files. Use ordinary native builds for other layouts.
+
+An optional `version.txt` supplies the numeric CMake project/bundle version
+(default `1.0.0`). The generated app version default matches it; a game's explicit
+`CONFIG_APP_PROJECT_VER` still takes precedence. Installation is a separate
+operation through Vibe Mode; the build command does not flash a device.
