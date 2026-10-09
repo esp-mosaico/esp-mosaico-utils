@@ -43,7 +43,7 @@ def _engine_games(engine, target):
     games = json.loads(completed.stdout)["games"]
     return {game["name"]: Path(game["path"]) for game in games
             if not game["name"].endswith("_dev")
-            and (game.get("host", False) if target == "host" else game.get("boards", []))}
+            and (game.get("host", False) if target == "host" else "esp-mosaico" in game.get("boards", []))}
 
 
 def _cmake_literal(value):
@@ -76,8 +76,9 @@ def _iris_project(workspace, selected):
     if not re.fullmatch(r"[0-9]+(?:\.[0-9]+){0,3}", version):
         raise SelectionError(f"version.txt must contain a numeric CMake project version: {version_file}")
     template = workspace.tool_root / "templates" / "blank_game"
-    # Explicit projects with equal names must never reuse each other's build cache.
-    key = name + "-" + hashlib.sha256(str(source).encode()).hexdigest()[:12] if explicit else name
+    # Source paths, including named examples in another Engine checkout, must
+    # never reuse each other's component-manager lock or build cache.
+    key = name + "-" + hashlib.sha256(str(source).encode()).hexdigest()[:12]
     project = workspace.run_dir / "raylib-iris" / key / "project"
     project.mkdir(parents=True, exist_ok=True)
     (project / "CMakeLists.txt").write_text(IRIS_PROJECT_CMAKE.format(
@@ -101,10 +102,10 @@ def add_commands(commands, project_commands):
     preview.add_argument("--frames", type=int)
     preview.add_argument("--fps", type=int)
     preview.add_argument("--dump-ppm")
-    game = commands.add_parser("game", help="Create blank games or BSP examples and use the Raylib Host simulator")
+    game = commands.add_parser("game", help="Create blank games or Engine examples and use the Raylib Host simulator")
     actions = game.add_subparsers(dest="game_action", required=True)
     for name in ("create", "new"):
-        create = actions.add_parser(name, help="Create a blank game or a complete BSP example")
+        create = actions.add_parser(name, help="Create a blank game or a complete Engine example")
         create.set_defaults(command="game", public_command="game " + name)
         create.add_argument("name")
         create.add_argument("--template", choices=(DEFAULT_GAME_TEMPLATE, *GAME_TEMPLATES),
@@ -144,14 +145,29 @@ def run(arguments, workspace):
         return subprocess.call(command)
 
     if arguments.game_action in {"create", "new"}:
-        template = (tools_root / "templates/blank_game/mosaico-template.json"
-                    if arguments.template == DEFAULT_GAME_TEMPLATE else
-                    workspace.bsp_path / "examples" / GAME_TEMPLATES[arguments.template] / "mosaico-template.json")
+        if arguments.template != DEFAULT_GAME_TEMPLATE:
+            engine = _engine(workspace, "creating a game")
+            destination = workspace.projects_dir / arguments.name
+            if not arguments.name.isascii() or not arguments.name.replace("_", "").isalnum() or not arguments.name[0].isalpha():
+                raise SelectionError("Game names must start with an ASCII letter and contain letters, digits or underscores.")
+            command = [sys.executable, str(engine / "tools/game_cli.py"), "create", str(destination),
+                       "--template", arguments.template, "--json"]
+            if arguments.dry_run:
+                command.append("--dry-run")
+            completed = subprocess.run(command, capture_output=True, text=True)
+            if completed.returncode:
+                raise SelectionError(completed.stderr.strip() or "Engine game creation failed.")
+            result = json.loads(completed.stdout)
+            result["status"] = "dry_run" if arguments.dry_run else "created"
+            result["install_command"] = "python mosaico.py game build " + str(destination) + " --target iris"
+            print(json.dumps(result) if arguments.json else f"game: {result['status']}\nProject: {result['project']}\n{result['install_command']}")
+            return 0
+        template = tools_root / "templates/blank_game/mosaico-template.json"
         if not template.is_file():
             owner = "utils" if arguments.template == DEFAULT_GAME_TEMPLATE else "BSP"
             raise EnvironmentError(f"Initialize the {owner} submodule containing the selected game template: " + str(template))
         engine = workspace.raylib_path
-        if engine is None or not (engine / "cmake/mosaico_game_sdk.cmake").is_file():
+        if engine is None or not all((engine / name).is_file() for name in ("idf_component.yml", "CMakeLists.txt")):
             raise EnvironmentError("Initialize the configured Raylib Lite Engine dependency before creating a game.")
         result = initialize_project(replace(workspace, init_template=template), arguments.name, dry_run=arguments.dry_run)
         if arguments.json:
@@ -181,6 +197,8 @@ def run(arguments, workspace):
         os.environ["RAYLIB_LITE_ENGINE_ROOT"] = str(workspace.raylib_path)
         os.environ["MOSAICO_UTILS_ROOT"] = str(workspace.tool_root.parent)
         os.environ["MOSAICO_BSP_ROOT"] = str(workspace.bsp_path)
+        os.environ["RAYLIB_LITE_BSP_DIR"] = str(workspace.bsp_path)
+        os.environ["RAYLIB_LITE_UTILS_DIR"] = str(workspace.tool_root.parent)
         context = RunContext(workspace, "game-build", arguments.verbose, arguments.json)
         build_application(context, project)
         if iris:

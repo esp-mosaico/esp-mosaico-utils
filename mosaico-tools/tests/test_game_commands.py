@@ -31,6 +31,7 @@ class GameCommandTests(unittest.TestCase):
         result = SimpleNamespace(returncode=0, stdout=json.dumps({"games": [
             {"name": "native_game", "path": "/games/native_game", "host": True, "boards": ["esp-mosaico"]},
             {"name": "host_game", "path": "/games/host_game", "host": True, "boards": []},
+            {"name": "box3_game", "path": "/games/box3_game", "host": True, "boards": ["esp32-s3-box-3"]},
             {"name": "unfinished_dev", "path": "/games/unfinished_dev", "host": True, "boards": ["esp-mosaico"]},
         ]}), stderr="")
         with patch("mosaico_cli.app_commands.subprocess.run", return_value=result) as run:
@@ -54,10 +55,28 @@ class GameCommandTests(unittest.TestCase):
             with patch("mosaico_cli.app_commands._engine", return_value=root / "engine"), patch(
                     "mosaico_cli.app_commands._engine_games", return_value={"native_game": root / "engine/examples/native_game"}):
                 project = _iris_project(workspace, "native_game")
-            self.assertEqual(project, legacy / "project")
+            self.assertNotEqual(project, legacy / "project")
             self.assertEqual((legacy / "sdkconfig").read_text(), "legacy config\n")
             self.assertEqual((project / "partitions.csv").read_text(), "# product layout\n")
             self.assertIn("system_update", (project / "CMakeLists.txt").read_text().lower())
+
+    def test_named_games_in_different_checkouts_have_separate_caches(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            template = root / "tools/templates/blank_game"
+            template.mkdir(parents=True)
+            (template / "partitions.csv").write_text("# product layout\n")
+            workspace = SimpleNamespace(tool_root=root / "tools", run_dir=root / "runs")
+            projects = []
+            for checkout in ("sibling_engine", "submodule_engine"):
+                engine = root / checkout
+                source = engine / "examples/native_game"
+                (source / "main").mkdir(parents=True)
+                (source / "main/CMakeLists.txt").write_text("idf_component_register()")
+                with patch("mosaico_cli.app_commands._engine", return_value=engine), patch(
+                        "mosaico_cli.app_commands._engine_games", return_value={"native_game": source}):
+                    projects.append(_iris_project(workspace, "native_game"))
+            self.assertNotEqual(*projects)
 
     def test_external_games_do_not_require_example_registration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

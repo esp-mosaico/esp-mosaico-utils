@@ -58,7 +58,11 @@ endif()
 list(APPEND SDKCONFIG_DEFAULTS
     "${_raylib_iris_product}/sdkconfig.application.defaults"
     "${_raylib_iris_template}/sdkconfig.application.defaults")
-# Keep Recovery and the product tools on the consuming workspace's revision.
+# Keep Recovery and Iris on the consuming workspace's revision.
+set(RAYLIB_LITE_UTILS_DIR "${_raylib_iris_utils}")
+if(NOT RAYLIB_LITE_BSP_DIR AND DEFINED ENV{MOSAICO_BSP_ROOT})
+    set(RAYLIB_LITE_BSP_DIR "$ENV{MOSAICO_BSP_ROOT}")
+endif()
 set(FETCHCONTENT_SOURCE_DIR_RAYLIB_LITE_MOSAICO_UTILS "${_raylib_iris_utils}")
 include("${RAYLIB_LITE_ENGINE_ROOT}/examples/common_components/examples_common/project.cmake")
 list(APPEND EXTRA_COMPONENT_DIRS "${_raylib_iris_game}/main")

@@ -2,8 +2,8 @@
 
 A minimal Raylib Lite game: the first frame is an empty black canvas. No example
 gameplay, atlas, sounds, asset generation pipeline or game resource partition is
-included. The device runtime embeds a generated GSP canvas placeholder in the
-application binary; keep that display plumbing when adding your own drawing.
+included. The shared native launcher presents the RGB565 frame through the selected
+ESP-Mosaico Board and supplies touch, Iris and first-frame health handling.
 
 From the workspace root:
 
@@ -25,8 +25,7 @@ still requires device validation after Host checks.
   Add game logic to `game_update()` and Raylib Lite drawing to `game_render()`.
 - `main/game.h`: portable interface with an opaque instance owned by its loop.
 - `main/game_config.h`: project identity and display/tick constants.
-- `main/game_module.c`: Host lifecycle, controls and JSON state.
-- `main/main.c`: device callbacks for the shared engine application runtime.
+- `main/game_module.c`: shared Host/native lifecycle, controls and JSON state.
 - `game.sim.json`: sources compiled into the native Host module.
 
 Host state exposes `phase`, `tick`, `pointer_x`, `pointer_y`, `pointer_down` and
