@@ -99,7 +99,9 @@ class GameCommandTests(unittest.TestCase):
                     project = _iris_project(workspace, str(source))
                     self.assertEqual(_iris_project(workspace, str(source)), project)
                 cmake = (project / "CMakeLists.txt").read_text()
-                self.assertIn(source.as_posix(), cmake)
+                # Windows temporary paths may use an 8.3 alias; project selection
+                # canonicalizes the source before writing its CMake path.
+                self.assertIn(source.resolve().as_posix(), cmake)
                 self.assertIn("VERSION 0.2.3", cmake)
                 self.assertEqual(before, {p.relative_to(source): p.read_bytes() for p in source.rglob("*") if p.is_file()})
                 projects.append(project)
