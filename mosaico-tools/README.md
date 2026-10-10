@@ -355,3 +355,24 @@ Run upload-specific unit tests with:
 ```sh
 python3 -m unittest discover -s mosaico-tools/tests -v
 ```
+
+
+## Raylib games with Iris
+
+`mosaico.py game build sky_hop --target iris` builds an Engine example;
+an independent native game project path is accepted by the same command.
+The selected Engine checkout must provide the Mosaico Board Manager profile
+under `examples/boards/esp-mosaico/bmgr/esp_mosaico`.
+
+The CLI resolves the Board Manager IDF action in a tool-owned bootstrap project,
+then generates `components/gen_bmgr_codes` inside the Iris wrapper. Users do not
+need to install `esp-bmgr-assist` or run BMGR manually for an Iris game build.
+Generated hardware configuration in the original game project is excluded, so a
+native BOX-3 selection cannot replace the Iris wrapper's Mosaico hardware.
+Game source files are not modified. A separate wrapper cache is used for BMGR.
+
+The Engine Board initializes game hardware. Utils supplies Iris USB services,
+screenshot/input registration and health confirmation after the accepted first
+frame. The wrapper retains the product Recovery partition table and required
+Iris settings. Raylib game builds no longer inject the product BSP as a game
+Board. Ordinary Iris applications and retained Recovery keep their own builds.

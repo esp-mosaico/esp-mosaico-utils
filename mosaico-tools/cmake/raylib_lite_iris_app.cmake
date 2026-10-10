@@ -10,7 +10,7 @@
 #
 # The project directory must contain templates/blank_game/partitions.csv.
 # `mosaico.py game build --target iris <game>` generates such a project.
-# RAYLIB_LITE_ENGINE_ROOT and MOSAICO_BSP_ROOT are CMake or environment inputs.
+# RAYLIB_LITE_ENGINE_ROOT selects the hardware Board; Iris services live in utils.
 include_guard(GLOBAL)
 
 get_filename_component(_raylib_iris_tools "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
@@ -65,13 +65,21 @@ list(APPEND EXTRA_COMPONENT_DIRS
     "${_raylib_iris_tools}/components/esp_mosaico_raylib_iris"
     "${_raylib_iris_utils}/ESP-Iris/components/esp_iris"
     "${_raylib_iris_utils}/esp-mosaico-recovery/components/esp_mosaico_app_recovery")
-if(NOT RAYLIB_LITE_BSP_DIR AND DEFINED ENV{MOSAICO_BSP_ROOT})
-    set(RAYLIB_LITE_BSP_DIR "$ENV{MOSAICO_BSP_ROOT}")
+if(NOT EXISTS "${CMAKE_SOURCE_DIR}/components/gen_bmgr_codes/gen_board_metadata.yaml")
+    message(FATAL_ERROR "Generate the wrapper Board with mosaico.py game build --target iris")
 endif()
 include("${RAYLIB_LITE_ENGINE_ROOT}/examples/common_components/examples_common/project.cmake")
 list(APPEND EXTRA_COMPONENT_DIRS "${_raylib_iris_game}/main")
 if(EXISTS "${_raylib_iris_game}/components")
-    list(APPEND EXTRA_COMPONENT_DIRS "${_raylib_iris_game}/components")
+    # User components remain available, but native BMGR output belongs to
+    # that native project and must not override the wrapper's Mosaico profile.
+    file(GLOB _raylib_iris_components LIST_DIRECTORIES true "${_raylib_iris_game}/components/*")
+    foreach(_component IN LISTS _raylib_iris_components)
+        get_filename_component(_name "${_component}" NAME)
+        if(NOT _name STREQUAL "gen_bmgr_codes" AND EXISTS "${_component}/CMakeLists.txt")
+            list(APPEND EXTRA_COMPONENT_DIRS "${_component}")
+        endif()
+    endforeach()
 endif()
 set(MOSAICO_ESP_IRIS_ROOT "${_raylib_iris_utils}/ESP-Iris")
 set(MOSAICO_SYSTEM_UPDATE_CMAKE "${_raylib_iris_tools}/cmake/system_update.cmake")
