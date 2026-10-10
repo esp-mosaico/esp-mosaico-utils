@@ -159,6 +159,12 @@ esp_err_t esp_iris_platform_select_recovery_target(uint32_t *target_address)
     return ESP_OK;
 }
 
+esp_err_t esp_iris_platform_set_boot_target(uint32_t address)
+{
+    assert(address == s_recovery.address);
+    return esp_ota_set_boot_partition(&s_recovery);
+}
+
 static iris_runtime_t probe(esp_reset_reason_t reason)
 {
     iris_runtime_t runtime = {.boot_id = s_next_boot_id++};

@@ -29,6 +29,7 @@ class SerialPort(Protocol):
 
 class Link(abc.ABC):
     endpoint: str
+    console: bool = False
 
     @abc.abstractmethod
     async def read(self, size: int = 4096) -> bytes: ...
@@ -47,17 +48,20 @@ class TcpLink(Link):
         port: int,
         reader: asyncio.StreamReader,
         writer: asyncio.StreamWriter,
+        *,
+        console: bool = True,
     ) -> None:
         self.host = host
         self.port = port
         self.endpoint = f"tcp:{host}:{port}"
         self._reader = reader
         self._writer = writer
+        self.console = console
 
     @classmethod
-    async def open(cls, host: str, port: int) -> TcpLink:
+    async def open(cls, host: str, port: int, *, console: bool = True) -> TcpLink:
         reader, writer = await asyncio.open_connection(host, port)
-        return cls(host, port, reader, writer)
+        return cls(host, port, reader, writer, console=console)
 
     async def read(self, size: int = 4096) -> bytes:
         return await self._reader.read(size)
@@ -73,18 +77,22 @@ class TcpLink(Link):
 
 class SerialLink(Link):
     def __init__(
-        self, port: str, serial_port: SerialPort, *, endpoint: str | None = None
+        self, port: str, serial_port: SerialPort, *, endpoint: str | None = None,
+        console: bool = True,
     ) -> None:
         self.port = port
+        self.console = console
         # Discovery prefers a stable by-path identity. Keep that identity
         # instead of resolving it to a transient tty/COM endpoint so the same
         # supervisor survives firmware re-enumeration.
         self.endpoint = endpoint or f"usb:{port}"
         self._serial = serial_port
+        self.reader_started = asyncio.Event()
         self._read_lock = asyncio.Lock()
         self._write_lock = asyncio.Lock()
         self._close_lock = asyncio.Lock()
         self._closing = False
+        self._release_dtr = False
 
     @classmethod
     async def open(
@@ -93,18 +101,33 @@ class SerialLink(Link):
         *,
         hupcl: bool | None = None,
         endpoint: str | None = None,
+        console: bool = True,
+        assert_dtr: bool = False,
+        baudrate: int = 115200,
     ) -> SerialLink:
         import serial
 
         def open_port() -> SerialPort:
             serial_port = serial.Serial(
-                port=port,
-                baudrate=115200,
+                port=None,
+                baudrate=baudrate,
                 timeout=0.2,
                 write_timeout=2,
                 exclusive=True if os.name == "posix" else None,
             )
             try:
+                # Match IDF Monitor's no-reset attach sequence. Opening with
+                # deasserted outputs lets the OS's initial assertion create a
+                # reset edge as pySerial applies DTR before RTS. Assert both
+                # before open, then release RTS first and DTR second.
+                serial_port.dtr = True
+                serial_port.rts = True
+                serial_port.port = port
+                serial_port.open()
+                serial_port.rts = False
+                serial_port.dtr = False
+                if assert_dtr:
+                    serial_port.dtr = True
                 if hupcl is not None and sys.platform != "win32":
                     import termios
 
@@ -122,7 +145,9 @@ class SerialLink(Link):
             return serial_port
 
         serial_port = await to_thread(open_port)
-        return cls(port, serial_port, endpoint=endpoint)
+        link = cls(port, serial_port, endpoint=endpoint, console=console)
+        link._release_dtr = assert_dtr
+        return link
 
     def _read_batch(self, size: int) -> bytes:
         if size <= 0:
@@ -143,6 +168,7 @@ class SerialLink(Link):
                 read_task = asyncio.create_task(
                     to_thread(self._read_batch, size)
                 )
+                self.reader_started.set()
                 try:
                     data = await asyncio.shield(read_task)
                 except asyncio.CancelledError:
@@ -166,6 +192,20 @@ class SerialLink(Link):
         if written != len(data):
             raise OSError(f"short serial write: {written}/{len(data)}")
 
+    async def hardware_reset(self, mode: str, circuit: str, *, chip: str = "esp32s31") -> None:
+        from .hardware_reset import execute_reset, reset_steps
+        steps = reset_steps(mode, circuit, chip=chip)
+        await asyncio.wait_for(self.reader_started.wait(), 2.0)
+        async with self._write_lock:
+            if self._closing or not self._serial.is_open:
+                raise ConnectionError("serial endpoint closed before reset")
+            task = asyncio.create_task(to_thread(execute_reset, self._serial, steps))
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                await task
+                raise
+
     async def close(self) -> None:
         async with self._close_lock:
             if not self._serial.is_open:
@@ -177,7 +217,14 @@ class SerialLink(Link):
                     await to_thread(cancel_read)
             async with self._read_lock, self._write_lock:
                 if self._serial.is_open:
-                    await to_thread(self._serial.close)
+                    try:
+                        # Application CDC uses DTR as its session lifetime.
+                        # HUPCL is disabled to avoid native UART/USJ resets,
+                        # so release this opt-in CDC signal explicitly.
+                        if self._release_dtr:
+                            await to_thread(setattr, self._serial, "dtr", False)
+                    finally:
+                        await to_thread(self._serial.close)
 
 
 class EndpointLock:

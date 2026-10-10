@@ -264,12 +264,39 @@ static bool executor_abandon(iris_runtime_t *runtime, bool deinit)
 
 void iris_services_deinit(iris_runtime_t *runtime)
 {
+    taskENTER_CRITICAL(&s_services_lock);
+    s_restart_enabled = false;
+    s_restart_at_us = 0;
+    taskEXIT_CRITICAL(&s_services_lock);
     service_session_release(service_state(false));
     if (!executor_abandon(runtime, true)) services_deinit_now();
 }
 
 void iris_services_session_end(iris_runtime_t *runtime)
 {
+    const iris_runtime_t *peer = iris_peer_runtime(runtime);
+    if (peer != NULL && peer->hello_acked) {
+        iris_service_state_t *state = service_state(false);
+        if (valid_state(state) && state->streams != NULL &&
+            state->streams->capture.active &&
+            state->streams->capture.session_id == runtime->session_id) {
+            if (state->screen.end != NULL) state->screen.end(state->screen.user_ctx);
+            state->streams->capture.active = false;
+            maybe_release_streams(state);
+        }
+        if (runtime->data_link) {
+            iris_files_session_end(runtime->session_id);
+            s_data_cleanup_session = runtime->session_id;
+            if (executor_busy()) {
+                executor_request_ota_cancel();
+                iris_system_update_cancel_all();
+            } else {
+                services_data_end_now();
+                s_data_cleanup_session = 0;
+            }
+        }
+        return;
+    }
     service_session_release(service_state(false));
     if (!executor_abandon(runtime, false)) services_session_end_now();
 }

@@ -24,7 +24,7 @@ def main():
     tap.add_argument("y", type=int)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
-    base = args.gateway.rstrip("/") + "/v1/devices/" + args.device
+    base = args.gateway.rstrip("/") + "/v2/devices/" + args.device
 
     def request(suffix, body=None):
         req = urllib.request.Request(base + suffix)

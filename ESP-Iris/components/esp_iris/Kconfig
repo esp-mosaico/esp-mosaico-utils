@@ -108,43 +108,84 @@ endmenu
 menu "Device transports"
 
 config ESP_IRIS_TRANSPORT_USB
-    bool "USB CDC0 (ESP-Iris binary protocol only)"
+    bool "USB CDC console and independent Iris data interface"
     depends on IDF_TARGET_ESP32S31
     depends on !BSP_USB_CONSOLE
     select TINYUSB_CDC_ENABLED
     help
-        ESP-Iris owns TinyUSB and CDC0. stdout/stderr are carried inside the
-        binary LOG channel; CDC is not a text console and DTR/RTS never enters
-        ROM download mode.
+        The application USB console remains readable by standard terminals.
+        Iris control requests are printable commands; bulk content uses the
+        independently discovered data interface.
 
 config ESP_IRIS_TRANSPORT_USB_SERIAL_JTAG
-    bool "USB Serial/JTAG serial channel (ESP-Iris binary protocol only)"
+    bool "USB Serial/JTAG console commands"
     depends on SOC_USB_SERIAL_JTAG_SUPPORTED
-    depends on !ESP_CONSOLE_USB_SERIAL_JTAG
-    depends on !ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG
     select USJ_ENABLE_USB_SERIAL_JTAG
     help
-        ESP-Iris owns the fixed USB Serial/JTAG CDC serial channel. The JTAG
-        interface remains available, but the serial channel cannot also be an
-        ESP-IDF console or serial monitor. Flashing tools and ESP-Iris must not
-        open the serial endpoint concurrently.
+        Extend the standard USB Serial/JTAG console with Iris commands. The
+        native monitor, hardware reset/download and JTAG remain usable. Iris
+        shares an installed driver and never disables its DTR/RTS behavior.
+
+config ESP_IRIS_TRANSPORT_UART
+    bool "UART console commands"
+    help
+        Extend a UART console with printable Iris commands. Select external console input to extend an existing product REPL;
+        otherwise Iris is the sole reader of this UART.
+
+config ESP_IRIS_UART_NUM
+    int "UART port"
+    depends on ESP_IRIS_TRANSPORT_UART
+    range 0 2 if SOC_UART_NUM > 2
+    range 0 1 if SOC_UART_NUM <= 2
+    default 0
+
+config ESP_IRIS_UART_BAUDRATE
+    int "Dedicated UART baud rate" if !ESP_CONSOLE_UART || ESP_IRIS_UART_NUM != ESP_CONSOLE_UART_NUM
+    depends on ESP_IRIS_TRANSPORT_UART
+    range 9600 3000000
+    default ESP_CONSOLE_UART_BAUDRATE if ESP_CONSOLE_UART && ESP_IRIS_UART_NUM = ESP_CONSOLE_UART_NUM
+    default 115200
+    help
+        The primary IDF console always retains ESP_CONSOLE_UART_BAUDRATE so
+        bootloader, application and stock monitor use the same baud rate.
+        This setting controls only a UART that is not the primary console.
+
+config ESP_IRIS_UART_TX_GPIO
+    int "UART TX GPIO (-1 keeps the console pin)"
+    depends on ESP_IRIS_TRANSPORT_UART
+    default -1
+
+config ESP_IRIS_UART_RX_GPIO
+    int "UART RX GPIO (-1 keeps the console pin)"
+    depends on ESP_IRIS_TRANSPORT_UART
+    default -1
 
 config ESP_IRIS_TRANSPORT_TCP
-    bool "Raw TCP server"
-    default y if !ESP_IRIS_TRANSPORT_USB && !ESP_IRIS_TRANSPORT_USB_SERIAL_JTAG
+    bool "TCP console and independent data server"
+    default y if !ESP_IRIS_TRANSPORT_USB && !ESP_IRIS_TRANSPORT_USB_SERIAL_JTAG && !ESP_IRIS_TRANSPORT_UART
     help
         Listen on all device interfaces. ESP-Iris does not initialize Wi-Fi,
         provision credentials, or create a network interface.
 
-comment "Select one or more transports; the first active client owns the session"
+comment "Console transports share one control owner; data binds independently"
     help
-        Enabled transports wait concurrently. A physical connection is only a
-        provisional candidate. The first candidate to return a valid and, when
-        configured, authenticated HELLO_ACK owns the session. Other transports
-        are stopped after a winner is confirmed and restarted when that session
-        disconnects.
+        Enabled consoles remain available for standard output. A physical
+        connection does not authorize requests; machine clients negotiate 0.2
+        without changing the console mode. Data has its own authenticated session.
 
 endmenu
+
+config ESP_IRIS_CONSOLE_EXTERNAL_INPUT
+    bool "Use the product's existing console input dispatcher"
+    depends on (ESP_IRIS_TRANSPORT_UART && !ESP_IRIS_TRANSPORT_USB_SERIAL_JTAG) || (ESP_IRIS_TRANSPORT_USB_SERIAL_JTAG && !ESP_IRIS_TRANSPORT_UART)
+    depends on !ESP_IRIS_TRANSPORT_USB && !ESP_IRIS_TRANSPORT_TCP
+    default n
+    help
+        The product initializes and owns its UART or USB Serial/JTAG REPL before
+        starting Iris. Register the iris namespace using esp_iris_console.h,
+        or submit complete lines from a custom console dispatcher. Iris never
+        reads stdin or installs/uninstalls the product's driver in this mode.
+        Set the REPL maximum line size to ESP_IRIS_CONSOLE_LINE_BYTES.
 
 config ESP_IRIS_TRANSPORT_CLAIM_TIMEOUT_MS
     int "Provisional transport handshake timeout (ms)"
@@ -155,11 +196,37 @@ config ESP_IRIS_TRANSPORT_CLAIM_TIMEOUT_MS
         more than one transport is enabled. On timeout ESP-Iris releases that
         candidate and gives other connected transports a chance to negotiate.
 
+config ESP_IRIS_DATA_LINK
+    bool "Independent bulk data link"
+    depends on ESP_IRIS_TRANSPORT_USB || ESP_IRIS_TRANSPORT_TCP
+    default y
+    help
+        USB exposes CDC interface 1 for data; TCP uses a separate port.
+        UART and USB Serial/JTAG provide the printable control link only.
+
+config ESP_IRIS_TCP_DATA_PORT
+    int "TCP data port"
+    depends on ESP_IRIS_TRANSPORT_TCP
+    range 1 65535
+    default 19773
+
 config ESP_IRIS_TCP_PORT
     int "Raw TCP listen port"
     depends on ESP_IRIS_TRANSPORT_TCP
     range 1024 65535
     default 19772
+
+config ESP_IRIS_USB_FIFO_PSRAM
+    bool "Place USB CDC software FIFOs in PSRAM"
+    depends on ESP_IRIS_TRANSPORT_USB && ESP_IRIS_WIRE_BUFFERS_PSRAM
+    depends on SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY
+    default y
+    help
+        Keep FIFO capacities unchanged while moving only their byte storage
+        to external BSS. Endpoint DMA buffers, stream state and FreeRTOS mutexes
+        stay internal. Intended for normal, non-writer firmware with PSRAM XIP.
+        Uses a checked build-time adaptation of TinyUSB 0.21 CDC storage; managed
+        component files are never modified. Unsupported source fails the build.
 
 config ESP_IRIS_USB_TASK_STACK_SIZE
     int "TinyUSB device task stack size (bytes)"
@@ -191,16 +258,6 @@ config ESP_IRIS_USB_SERIAL_JTAG_TX_BUFFER_BYTES
     depends on ESP_IRIS_TRANSPORT_USB_SERIAL_JTAG
     range 512 8192
     default 2048
-
-config ESP_IRIS_USB_SERIAL_JTAG_DISABLE_AUTO_RESET
-    bool "Disable USB Serial/JTAG DTR/RTS reset while Iris is running"
-    depends on ESP_IRIS_TRANSPORT_USB_SERIAL_JTAG
-    default y
-    help
-        Prevent opening or closing the ESP-Iris serial endpoint from resetting
-        the chip through the USB Serial/JTAG peripheral. The previous hardware
-        setting is restored by esp_iris_stop(). Use a separate UART or manual
-        boot/reset sequence when flashing while ESP-Iris is running.
 
 config ESP_IRIS_SERVICE_STACK_SIZE
     int "Slow service executor stack bytes"
@@ -319,7 +376,8 @@ config ESP_IRIS_SERVICE_STATE_PSRAM
     default n
     help
         Allocate RPC/job/media control metadata in PSRAM without an internal
-        fallback. Synchronization locks and task stacks remain internal.
+        fallback. With external BSS enabled, also place the fixed file-volume
+        registry there; its capacity and lifetime are unchanged. Synchronization locks and task stacks remain internal.
         Like external wire buffers, this is for normal non-writer firmware.
 
 config ESP_IRIS_TASK_MEMORY_OBSERVATION

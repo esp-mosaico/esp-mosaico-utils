@@ -12,7 +12,7 @@ test("real Gateway drives the hardware workbench", async ({ page }) => {
   });
   page.on("response", async (response) => {
     const url = new URL(response.url());
-    if (!url.pathname.startsWith("/v1/")) return;
+    if (!url.pathname.startsWith("/v2/")) return;
     const contentType = response.headers()["content-type"] || "";
     if (!response.ok() || contentType.includes("text/html")) {
       apiErrors.push(`${response.status()} ${url.pathname} ${contentType}`);
@@ -27,7 +27,7 @@ test("real Gateway drives the hardware workbench", async ({ page }) => {
   }
 
   await expect(page.getByText(deviceId!.slice(0, 12)).first()).toBeVisible();
-  await expect(page.getByText("已连接", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("控制：已连接", { exact: true })).toBeVisible();
   await page.getByText("更多操作", { exact: true }).click();
   await page.getByRole("button", { name: "原始 RPC", exact: true }).click();
   await page.getByLabel("Service ID").fill("1");
@@ -69,7 +69,7 @@ test("real Gateway drives the hardware workbench", async ({ page }) => {
   await page.getByRole("button", { name: "设置", exact: true }).click();
   await expect(page.getByText("Agent Token", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "API 文档", exact: true }).click();
-  await expect(page.getByText("/v1/health", { exact: true })).toBeVisible();
+  await expect(page.getByText("/v2/health", { exact: true })).toBeVisible();
 
   const screenshot = process.env.ESP_IRIS_E2E_SCREENSHOT;
   if (screenshot) await page.screenshot({ path: screenshot, fullPage: true });

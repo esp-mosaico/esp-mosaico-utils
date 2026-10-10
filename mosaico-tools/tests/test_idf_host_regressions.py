@@ -25,6 +25,38 @@ runner = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(runner)
 
 
+@pytest.mark.parametrize("options", [
+    ["-B", "build-02", "build"], ["--build-dir", "build-02", "build"],
+    ["--build-dir=build-02", "build"], ["-Bbuild-02", "build"],
+])
+def test_runner_never_reports_old_default_artifact_for_selected_build(tmp_path, options):
+    for directory, binary in (("build", b"old reviewed image"),
+                              ("build-02", b"new candidate image")):
+        build = tmp_path / directory
+        build.mkdir()
+        (build / "factory.bin").write_bytes(binary)
+        (build / "project_description.json").write_text(json.dumps({
+            "app_bin": "factory.bin", "target": "esp32s31"}))
+    selected = runner.selected_build_dir(tmp_path, options)
+    assert runner.collect_artifacts(tmp_path, selected) == [{
+        "path": str(tmp_path / "build-02/factory.bin"),
+        "size_bytes": len(b"new candidate image"),
+    }]
+
+
+@pytest.mark.parametrize("declaration,expected", [
+    ('  idf: ">=5.5"\n', ">=5.5"),
+    ('  idf:\n    version: ">=5.5, <7.0"\n', ">=5.5, <7.0"),
+    ('  idf: # SDK\n    # supported SDK\n    version: ">=5.5"\n', ">=5.5"),
+    ('  idf:\n  other:\n    version: "1.0"\n', None),
+])
+def test_runner_reads_inline_and_nested_idf_constraints(tmp_path, declaration, expected):
+    main = tmp_path / "main"
+    main.mkdir()
+    (main / "idf_component.yml").write_text("dependencies:\n" + declaration)
+    assert runner.declared_idf_constraint(tmp_path) == expected
+
+
 def write_version(root, version="6.2.0"):
     path = root / "tools/cmake/version.cmake"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -190,7 +222,7 @@ def test_workspace_policy_reaches_both_build_entrypoints(tmp_path, policy):
 @pytest.mark.parametrize("policy", [True, "invalid", [], {}])
 def test_invalid_workspace_policy_has_actionable_error(tmp_path, policy):
     (tmp_path / ".mosaico.json").write_text(json.dumps({
-        "schema_version": 1, "workspace": {}, "dependencies": {},
+        "schema_version": 2, "workspace": {}, "dependencies": {},
         "build": {"configdep": policy}, "devices": [{}],
     }))
     with pytest.raises(EnvironmentError, match="build.configdep must be"):

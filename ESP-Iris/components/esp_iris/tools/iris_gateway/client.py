@@ -20,8 +20,8 @@ from .source_identity import source_identity
 
 __all__ = ["API_MAJOR", "LocalProject", "LocalStateError", "registry_snapshot", "source_identity"]
 
-API_MAJOR = 1
-REGISTRY_VERSION = 1
+API_MAJOR = 2
+REGISTRY_VERSION = 200
 
 
 class LocalStateError(RuntimeError):
@@ -46,10 +46,9 @@ def registry_snapshot(state_root: pathlib.Path) -> dict[str, Any]:
                     "SELECT session_id,project_id,project_path,instance_id,url,created_ns,persistent FROM sessions")]
                 claims = [dict(row) for row in db.execute(
                     "SELECT resource,owner,generation,state,device_id,metadata,transfer_id FROM claims")]
-                tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                 metadata = {row["session_id"]: dict(row) for row in db.execute(
                     "SELECT session_id,workspace_path,lifecycle_capability,source_revision FROM session_metadata"
-                )} if "session_metadata" in tables else {}
+                )}
         for session in sessions:
             session.update(metadata.get(session["session_id"], {}))
             session["alive"] = EndpointLock.held("session:" + session["session_id"], root / "locks")
@@ -111,7 +110,7 @@ class LocalProject:
         Returns None while the owner is live or evidence is unavailable. Unknown
         storage versions fail closed and are never migrated by a reader.
         """
-        from .migrations import MIGRATIONS
+        from .schema import SCHEMA_VERSION
         from .store import GatewayStore
 
         if record.get("project_id") != self.project_id or not record.get("created_ns"):
@@ -132,7 +131,7 @@ class LocalProject:
             database = self.directory / "state" / "gateway.sqlite3"
             with contextlib.closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as db:
                 db.row_factory = sqlite3.Row
-                if db.execute("PRAGMA user_version").fetchone()[0] != len(MIGRATIONS):
+                if db.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
                     return None
                 row = db.execute("SELECT * FROM operations WHERE operation_id=?", (operation_id,)).fetchone()
             if row is None or row["created_ns"] < record["created_ns"] or not row["finished_ns"]:

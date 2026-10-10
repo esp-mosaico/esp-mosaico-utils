@@ -5,7 +5,7 @@ from typing import Any
 
 from .discovery import resolve_usb_port
 
-DEVICE_STATES = ("offline", "connecting", "idle", "busy", "needs_recovery")
+DEVICE_STATES = ("offline", "discovered", "connecting", "idle", "busy", "needs_recovery")
 
 
 def describe(service: Any, item: dict, *, workers: list[dict]) -> dict:
@@ -31,25 +31,30 @@ def describe(service: Any, item: dict, *, workers: list[dict]) -> dict:
     mode = item.get("firmware_mode") or "unknown"
     endpoint_state: dict[str, Any] = next((value for value in (hub.list_endpoints() if hub else [])
                            if value.get("endpoint") == endpoint), {})
+    present = bool(item.get("present", endpoint_state.get("present", False)))
     if reasons:
         state = "busy"
     elif item.get("connected", endpoint_state.get("state") == "ready"):
-        state = "idle"
+        state, present = "idle", True
     else:
         state = "connecting" if endpoint_state.get("state") in {
             "connecting", "negotiating", "handshaking"
-        } else "offline"
+        } else "discovered" if present else "offline"
         # Only current descriptors justify a ROM diagnosis. A failed operation,
         # stale firmware cache or ordinary reconnect timeout never does.
         if endpoint.startswith("usb:"):
             try:
                 current = resolve_usb_port(endpoint)
             except OSError:
-                pass
+                present = False
+                if state == "discovered":
+                    state = "offline"
             else:
                 if current.get("vid") == 0x303A and current.get("pid") == 0x0020:
-                    mode, state = "rom", "needs_recovery"
+                    mode, state, present = "rom", "needs_recovery", True
                 else:
-                    state = "connecting"
-    return {"state": state, "busy_reasons": reasons, "owner_session_id": owner,
+                    present = True
+                    if state == "offline":
+                        state = "discovered"
+    return {"state": state, "present": present, "busy_reasons": reasons, "owner_session_id": owner,
             "firmware_mode": mode}

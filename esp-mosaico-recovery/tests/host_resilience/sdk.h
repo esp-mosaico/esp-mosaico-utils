@@ -74,6 +74,7 @@ void *esp_gsp_timer_create(esp_gsp_handle_t, unsigned, mock_gsp_callback_t, void
 #define WIFI_IF_STA 0
 #define WIFI_STORAGE_RAM 1
 #define WIFI_MODE_STA 1
+#define WIFI_PS_NONE 0
 #define ESP_MAC_WIFI_STA 1
 typedef int esp_event_base_t;
 typedef void *esp_event_handler_instance_t;
@@ -103,6 +104,7 @@ esp_err_t esp_wifi_stop(void);
 esp_err_t esp_wifi_deinit(void);
 esp_err_t esp_wifi_set_storage(int);
 esp_err_t esp_wifi_set_mode(int);
+esp_err_t esp_wifi_set_ps(int);
 esp_err_t esp_wifi_set_config(int, const wifi_config_t *);
 esp_err_t esp_wifi_connect(void);
 esp_err_t esp_wifi_disconnect(void);
@@ -140,6 +142,7 @@ typedef void *esp_partition_iterator_t;
 typedef int esp_ota_img_states_t;
 #define ESP_PARTITION_TYPE_APP 0
 #define ESP_PARTITION_SUBTYPE_APP_FACTORY 0
+#define ESP_PARTITION_SUBTYPE_APP_TEST 32
 #define ESP_PARTITION_SUBTYPE_APP_OTA_0 16
 #define ESP_PARTITION_SUBTYPE_APP_OTA_MAX 32
 #define ESP_PARTITION_SUBTYPE_ANY 255

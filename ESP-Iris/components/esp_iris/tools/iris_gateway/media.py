@@ -13,7 +13,7 @@ PNG = 4
 
 @dataclasses.dataclass(frozen=True)
 class EncodedImage:
-    description: dict[str, int]
+    description: dict[str, Any]
     data: bytes
     content_type: str
     extension: str
@@ -83,7 +83,10 @@ def _raw_rgb(description: dict[str, Any], data: bytes) -> tuple[int, int, bytes]
 def encode_media_image(description: dict[str, Any], data: bytes) -> EncodedImage:
     """Return browser-safe PNG/JPEG bytes for an ESP-Iris image payload."""
 
-    source = {key: int(value) for key, value in description.items()}
+    source = {
+        key: value if key == "transfer_path" else int(value)
+        for key, value in description.items()
+    }
     format_ = int(source.get("format", 0))
     if data.startswith(b"\x89PNG\r\n\x1a\n"):
         encoded = {**source, "format": PNG}

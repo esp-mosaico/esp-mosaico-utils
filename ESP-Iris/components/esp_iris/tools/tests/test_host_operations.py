@@ -132,7 +132,7 @@ def test_host_operation_has_one_record_and_always_finishes_after_writer(tmp_path
                                           "commands": [{"argv": ["test-writer"]}],
                                           "expected_version": "new", "timeout": 0.15})
             with patch("iris_gateway.host_operations.asyncio.create_subprocess_exec", AsyncMock(return_value=Process())):
-                response = await client.post("/v1/host-operations", json={"request_id": request_id})
+                response = await client.post("/v2/host-operations", json={"request_id": request_id})
                 assert response.status == 202, await response.text()
                 await asyncio.wait_for(writing.wait(), 1)
                 assert service.list_devices()[0]["state"] == "busy"
@@ -171,10 +171,10 @@ def test_browser_cannot_submit_executable_commands(tmp_path):
         client = TestClient(TestServer(create_app(service)))
         await client.start_server()
         try:
-            response = await client.post("/v1/host-operations", json={"commands": ["anything"]},
+            response = await client.post("/v2/host-operations", json={"commands": ["anything"]},
                                          headers={"Origin": "http://untrusted.invalid"})
             assert response.status == 403
-            for path in ("/v1/maintenance-endpoints/leases", "/v1/maintenance-leases/old/abort"):
+            for path in ("/v2/maintenance-endpoints/leases", "/v2/maintenance-leases/old/abort"):
                 assert (await client.post(path, json={})).status == 404
         finally:
             await client.close()
@@ -201,12 +201,12 @@ def test_private_request_is_consumed_once_and_rejects_symlinks(tmp_path):
     (True, "normal", False, "idle"),
     (True, "recovery", False, "idle"),
     (False, "absent", False, "offline"),
-    (False, "normal", False, "connecting"),
+    (False, "normal", False, "discovered"),
     (False, "rom", False, "needs_recovery"),
     (False, "rom", True, "busy"),
     (False, "absent", True, "busy"),
 ])
-def test_five_states_use_live_evidence_and_busy_survives_reenumeration(tmp_path, connected, transport, operation, expected):
+def test_states_use_live_evidence_and_busy_survives_reenumeration(tmp_path, connected, transport, operation, expected):
     store = GatewayStore(tmp_path)
     service = GatewayService(store, instance_id="state-test")
     hub = HostHub()

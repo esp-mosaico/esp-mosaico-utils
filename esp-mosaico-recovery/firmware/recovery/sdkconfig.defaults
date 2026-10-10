@@ -51,3 +51,12 @@ CONFIG_MBEDTLS_TLS_CLIENT_ONLY=y
 
 # Fixed GSPC assets need no runtime JPEG decoder. Use the GSP 1.4 link option.
 # CONFIG_ESP_GSP_ENABLE_JPEG is not set
+
+CONFIG_TINYUSB_CDC_COUNT=2
+
+# ABI 2 selector includes NVS intent handling within the fixed 24 KiB loader.
+CONFIG_BOOTLOADER_LOG_LEVEL_ERROR=y
+
+# Keep assertions active; Core Dump/ELF retain the failing location without
+# duplicating SDK assertion strings in the fixed maintenance image.
+CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y

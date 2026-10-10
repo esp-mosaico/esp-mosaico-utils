@@ -1,6 +1,6 @@
 # Bounded file service
 
-This USB CDC0 example mounts a wear-levelled FAT filesystem and exports it as
+This dual-CDC USB example mounts a wear-levelled FAT filesystem and exports it as
 the logical volume `fs`. It enables read, list, mtime, write/hash, mkdir,
 delete, and rename. It deliberately does not advertise atomic replacement,
 because the example does not assume that property from the FAT VFS.
@@ -17,8 +17,9 @@ idf.py -C components/esp_iris/examples/file_service \
   -B build-file-service -p /dev/serial/by-id/<programming-port> flash
 ```
 
-Application CDC0 is the Iris link. Use a separate UART or USB Serial/JTAG
-interface for flashing and monitoring, then start the Gateway.
+CDC0 carries text logs and Iris commands; CDC1 carries file data. Stock
+`idf.py monitor` can use CDC0 when Gateway releases it. Flash through the
+board's ROM download interface.
 
 ## Exercise the volume
 
@@ -26,7 +27,7 @@ The Workbench file browser exposes every operation below. The same API can be
 driven with `curl` after replacing `DEVICE_ID`:
 
 ```bash
-BASE=http://127.0.0.1:8443/v1/devices/DEVICE_ID
+BASE=http://127.0.0.1:8443/v2/devices/DEVICE_ID
 curl "$BASE/files/volumes"
 curl "$BASE/files?volume=fs&path="
 curl "$BASE/files/stat?volume=fs&path=README.txt"

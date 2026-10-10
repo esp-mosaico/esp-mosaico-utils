@@ -42,6 +42,12 @@ their 2 MiB flash profiles still rely on ESP-IDF's partition fit check. The
 frontend remains limited to 400 KiB. Missing build artifacts fail the selected
 gate; local source-only checks deliberately do not claim a firmware byte result.
 
+The USB services fixture uses the compiler's size optimization (`-Os`) with the
+same service configuration, buffers and task stacks. On the pinned ESP-IDF
+revision, the 0.2 image is 414,192 bytes, below its unchanged 471,859-byte limit;
+the previous performance-optimized image was 496,048 bytes. This is a build-size
+result for the fixture, not a new hardware throughput or peak-memory measurement.
+
 CI runs the host matrix and separate C ASan/UBSan job. macOS uses the explicit
 Intel runner label published in [GitHub's runner documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-where-workflows-run/choose-the-runner-for-a-job),
 so Python 3.8 does not depend on an ARM-only interpreter build. Configuring that

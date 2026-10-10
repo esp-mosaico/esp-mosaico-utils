@@ -1,6 +1,7 @@
 """Validate effective build config, including reuse of an old build."""
 import json
 import sys
+import subprocess
 from unittest.mock import Mock, patch
 from pathlib import Path
 
@@ -13,10 +14,10 @@ from mosaico_cli.product_contract import validate_application_config
 from mosaico_cli.gateway import run_system_update_bundle
 
 CONFIG = {"IDF_TARGET": "esp32s31", "ESP_IRIS_FIRMWARE_ROLE": 1,
-          "ESP_IRIS_PRODUCT_CONTRACT": "esp-mosaico/v1", "ESP_IRIS_BOARD_ID": "esp-mosaico",
-          "ESP_IRIS_LAYOUT_ID": "mosaico-retained-recovery-2m-v1", "ESP_IRIS_RECOVERY_ABI": 1,
+          "ESP_IRIS_PRODUCT_CONTRACT": "esp-mosaico/v2", "ESP_IRIS_BOARD_ID": "esp-mosaico",
+          "ESP_IRIS_LAYOUT_ID": "mosaico-retained-test-2m-v2", "ESP_IRIS_RECOVERY_ABI": 2,
           "ESP_IRIS_OTA": False, "ESP_IRIS_OTA_DEFAULT_VIA_RECOVERY": True,
-          "ESP_IRIS_SYSTEM_INVENTORY": True}
+          "ESP_IRIS_SYSTEM_INVENTORY": True, "ESPTOOLPY_FLASHMODE_QIO": True}
 
 
 @pytest.mark.parametrize("key", list(CONFIG))
@@ -43,6 +44,30 @@ def test_effective_config_accepts_normal_application(tmp_path):
     (tmp_path / "config").mkdir()
     (tmp_path / "config/sdkconfig.json").write_text(json.dumps(CONFIG))
     validate_application_config(tmp_path)
+
+
+@pytest.mark.parametrize("qio", [False, True])
+def test_native_cmake_and_host_gate_require_retained_flash_mode(tmp_path, qio):
+    config = {**CONFIG, "ESPTOOLPY_FLASHMODE_QIO": qio}
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config/sdkconfig.json").write_text(json.dumps(config))
+    component = Path(__file__).resolve().parents[1] / "components/esp_mosaico_app_recovery/CMakeLists.txt"
+    script = tmp_path / "contract.cmake"
+    lines = ["cmake_minimum_required(VERSION 3.16)",
+             "function(idf_component_register)", "endfunction()"]
+    for key, value in config.items():
+        value = ("ON" if value else "OFF") if isinstance(value, bool) else value
+        lines.append(f'set(CONFIG_{key} "{value}")')
+    lines.append(f'include("{component.as_posix()}")')
+    script.write_text("\n".join(lines) + "\n")
+    result = subprocess.run(["cmake", "-P", str(script)], capture_output=True, text=True)
+    if qio:
+        assert result.returncode == 0, result.stderr
+        validate_application_config(tmp_path)
+    else:
+        assert result.returncode != 0 and "FLASHMODE_QIO" in result.stderr
+        with pytest.raises(BuildError):
+            validate_application_config(tmp_path)
 
 
 def test_system_update_requires_contract_acceptance_before_submission():

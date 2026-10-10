@@ -25,13 +25,13 @@ def test_product_only_imports_the_public_iris_host_api():
 
 
 def test_default_api_compatibility_is_independent_of_git_revision():
-    health = {"gateway_api": {"major": 1}, "capabilities": [], "esp_iris_revision": "other-commit"}
+    health = {"gateway_api": {"major": 2}, "capabilities": [], "esp_iris_revision": "other-commit"}
     assert _require_compatible_gateway(health) is health
 
 
 def test_exact_policy_requires_algorithm_and_content_fingerprint():
     expected = {"algorithm": "sha256-runtime-v1", "fingerprint": "a" * 64}
-    health = {"gateway_api": {"major": 1}, "capabilities": [], "source": expected}
+    health = {"gateway_api": {"major": 2}, "capabilities": [], "source": expected}
     assert _require_compatible_gateway(health, expected_source=expected) is health
     for source in [None, {**expected, "fingerprint": "b" * 64}, {**expected, "algorithm": "unknown"}]:
         with pytest.raises(EnvironmentError, match="was not stopped"):

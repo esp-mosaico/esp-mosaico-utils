@@ -35,6 +35,7 @@ def validate_application_config(build_dir: Path) -> None:
         ESP_IRIS_OTA=False,
         ESP_IRIS_OTA_DEFAULT_VIA_RECOVERY=True,
         ESP_IRIS_SYSTEM_INVENTORY=True,
+        ESPTOOLPY_FLASHMODE_QIO=True,
         IDF_TARGET=COMPATIBILITY["chip_target"],
     )
     mismatches = {

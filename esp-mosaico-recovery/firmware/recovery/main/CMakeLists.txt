@@ -25,6 +25,7 @@ idf_component_register(
         esp_event
         esp_http_client
         esp_iris
+        esp_mosaico_boot
         iris_bridge
         esp-mosaico-bsp
         esp_netif

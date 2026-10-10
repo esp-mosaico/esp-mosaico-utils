@@ -71,12 +71,12 @@ def test_reconciliation_http_retains_disconnection_evidence(tmp_path):
         client = TestClient(TestServer(create_app(service)))
         await client.start_server()
         try:
-            response = await client.post("/v1/operations/op/reconcile")
+            response = await client.post("/v2/operations/op/reconcile")
             assert response.status == 201
             result = await response.json()
             assert result["outcome"] == "outcome_unknown"
             assert "ConnectionError" in result["reason"]
-            response = await client.get("/v1/operations/op/reconciliations")
+            response = await client.get("/v2/operations/op/reconciliations")
             assert (await response.json())["reconciliations"] == [result]
         finally:
             await client.close()

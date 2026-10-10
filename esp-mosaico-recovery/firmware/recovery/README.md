@@ -1,3 +1,50 @@
+# Vibe Mode 0.2
+
+当前源码使用 ESP-Iris 0.2、Recovery ABI 2 和 `mosaico-retained-test-2m-v2`
+布局。`vibe_mode` 为 `app/test`，`main_app` 为 `app/ota_0`；二进制产物名称
+仍是 `factory.bin`。`prebuilt/recovery` 已整体更新为经过实机验证的 0.2.0
+基础包，S31 产品统一使用 QIO。具体覆盖范围与未验证项目见
+[0.2 验证记录](../../docs/validation-0.2.md)，不以基础包更新代表全部平台验收。
+
+- [启动契约与迁移](../../docs/migration-0.2.md)：NVS 一次性维护意图、基础安装
+  otadata 标记、保护范围与从第三方固件恢复。
+- [应用集成](../../../mosaico-tools/docs/application-integration.md)：原生
+  `idf.py flash monitor` 与默认 Mosaico 更新流程。
+- [软件规格](../../docs/esp-mosaico-recovery-software-spec-zh.md)：完整功能和验收边界。
+
+保留 Wi-Fi、Download Ideas、HTTPS Bridge、NAND、文件、截图、输入及维护自更新。
+高速 USB 使用 console/data 双 CDC；TCP 使用独立端口；控制链支持按需截图。
+Bridge 必须使用 control protocol 2 的独立写入授权，产品 profile 变更为
+`iris-s31-test-layout-v2`；需要配套远程服务，不回退到旧授权路径。
+System Update 清单使用 `esp-iris-system-update/0.2`，基础包 manifest 使用 schema 3。
+
+Vibe Mode 关闭 Wi-Fi modem sleep，优先保证维护传输和控制响应；普通应用自行
+选择省电策略。固定 S31 SDK 曾在 `pm_process_tim` 路径发生看门狗复位，原始
+Core Dump 和采用此策略后的更新结果保存在实机验收证据中。
+
+bootloader 仅读取 `sysmeta` 中的启动意图，不修改 NVS。其专用读取器复用锁定
+SDK 的私有 NVS 页、条目和 CRC 校验接口，按运行时相同的页序号、条目顺序
+查找命名空间及 U32 值；支持运行时可加载的多 ACTIVE 页和重复命名空间记录。
+读失败、类型不符或无法确定的回收状态选择 Vibe Mode。升级 SDK 时须重新核对
+该私有接口和运行时查找规则，并运行 `tests/test_mosaico_boot.py` 及启动往返实测。
+
+S31 bootloader 在加载应用 RAM 前停止上一个固件遗留的高速 USB DMA，覆盖
+panic/watchdog 跳过正常 shutdown 的路径；Iris 在正常软件重启前也停止其 USB
+控制器。锁定 SDK 仅复位 CPU 时会保留旧 DMA 地址，旧应用的 SETUP 缓冲区
+可能与新应用代码重叠。Vibe Mode 的 panic 处理器放入内部 RAM，以保留
+Flash/cache 故障的诊断能力。USB Serial/JTAG 控制器不受此处理影响。
+
+构建仍使用锁定 ESP-IDF、GSP 1.4.0 与 GSPC 0.5.0。`recovery-current-bundle`
+仅生成未评审候选；完成设备身份、各启动入口、更新、回退及原生工具实测前，
+不得运行 `update-recovery-prebuilt` 发布候选。产品原生应用 flash 不写维护镜像；
+本维护工程自身的 flash 清单明确将 `factory.bin` 写入 `vibe_mode`。
+
+## 以下为 0.1 发布记录和历史操作资料
+
+以下内容保留旧版本的真实测试结果，不能用来证明 0.2 已验收。
+旧布局、manifest、ABI、版本号和旧命令入口均以各段原发布环境为准；
+新工程按上面的 0.2 文档迁移，不使用历史包与新工具混搭。
+
 # ESP-Mosaico Vibe Mode
 
 **Vibe Mode** 是 ESP-Mosaico 内置的应用安装与设备维护模式，运行 ESP-Iris，

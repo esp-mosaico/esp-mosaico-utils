@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import contextlib
+import secrets
 import struct
 import time
 from collections.abc import AsyncIterator
@@ -19,7 +20,7 @@ from .link import EndpointLock, Link, SerialLink, TcpLink
 from .mdns_discovery import IrisMdnsDevice, IrisMdnsDiscovery
 from .ownership import OwnershipRegistry
 from .protocol import ProtocolError, Transport
-from .session import DeviceSession
+from .session import DeviceError, DeviceSession
 from .system_update import SystemUpdateBundle
 from .usb_ownership import UsbEndpointBusy, usb_admission
 
@@ -116,6 +117,7 @@ class IrisHub:
         ownership: OwnershipRegistry | None = None,
     ) -> None:
         self.instance_id = instance_id
+        self._owner_id = secrets.token_bytes(16)
         self.ownership = ownership
         self._candidates: dict[str, dict[str, Any]] = {}
         self.hello_timeout_seconds = hello_timeout_seconds
@@ -123,6 +125,8 @@ class IrisHub:
         self.reconnect_max_seconds = reconnect_max_seconds
         self._event_sink = event_sink
         self._devices: dict[str, DeviceSession] = {}
+        self._endpoint_sessions: dict[str, DeviceSession] = {}
+        self._links: dict[str, dict[str, DeviceSession]] = {}
         self._last_boot_id: dict[str, int] = {}
         self._endpoint_tasks: dict[str, asyncio.Task[None]] = {}
         self._locks: dict[str, EndpointLock] = {}
@@ -134,6 +138,7 @@ class IrisHub:
         self._discovery_task: asyncio.Task[None] | None = None
         self._mdns_discovery: IrisMdnsDiscovery | None = None
         self._mdns_services: dict[str, str] = {}
+        self._mdns_data_services: dict[str, str] = {}
         self._mdns_devices: dict[str, str] = {}
         self._closing = False
         self._subscribers: dict[str, set[asyncio.Queue[dict[str, Any]]]] = (
@@ -157,11 +162,13 @@ class IrisHub:
         pairing_token: str | None = None,
         *,
         metadata: dict[str, Any] | None = None,
+        data_link: bool = False,
     ) -> None:
         endpoint = f"tcp:{host}:{port}"
+        metadata = {**(metadata or {}), "link_role": "data" if data_link else "control"}
 
         async def opener() -> Link:
-            return await TcpLink.open(host, port)
+            return await TcpLink.open(host, port, console=not data_link)
 
         self._add_supervisor(
             endpoint, opener, pairing_token=pairing_token, metadata=metadata
@@ -173,11 +180,15 @@ class IrisHub:
         firmware_mode: str | None = None,
         *,
         usb_serial_jtag: bool = False,
+        uart: bool = False,
+        baudrate: int = 115200,
         metadata: dict[str, Any] | None = None,
         discovered: bool = False,
     ) -> None:
         if self._closing:
             raise RuntimeError("ESP-Iris Hub is closing")
+        if not 9600 <= baudrate <= 3000000:
+            raise ValueError("UART baud rate must be between 9600 and 3000000")
         # Keep the selector stable even when a previously dangling symlink
         # starts resolving to a different tty path.
         pending = "usb:pending=" + port
@@ -188,6 +199,7 @@ class IrisHub:
             self._pending_usb[pending] = {
                 "port": port, "firmware_mode": firmware_mode,
                 "usb_serial_jtag": usb_serial_jtag or prior.get("usb_serial_jtag", False),
+                "uart": uart, "baudrate": baudrate,
                 "discovered": discovered and prior.get("discovered", True),
             }
             self._endpoint_states[pending] = {
@@ -201,6 +213,8 @@ class IrisHub:
         prior = self._pending_usb.pop(pending, {})
         discovered = discovered and prior.get("discovered", True)
         usb_serial_jtag = usb_serial_jtag or prior.get("usb_serial_jtag", False)
+        uart = uart or prior.get("uart", False)
+        baudrate = prior.get("baudrate", baudrate)
         self._endpoint_states.pop(pending, None)
         endpoint = usb_endpoint(resolved)
         # All aliases share the same physical lock and supervisor.
@@ -215,6 +229,8 @@ class IrisHub:
         resolved["allow_serial_jtag"] = (
             usb_serial_jtag or bool(previous.get("allow_serial_jtag"))
         )
+        resolved["uart"] = uart or bool(previous.get("uart"))
+        resolved["baudrate"] = baudrate
 
         async def opener() -> Link:
             return await self._open_usb(endpoint)
@@ -235,6 +251,7 @@ class IrisHub:
             "firmware_mode", firmware_mode or "unknown"
         )
         self._endpoint_states[endpoint]["transport_name"] = (
+            "UART" if resolved["uart"] else
             "USB Serial/JTAG" if resolved["pid"] == 0x1001 else "USB Highspeed"
         )
 
@@ -280,11 +297,15 @@ class IrisHub:
         self._claim_usb(endpoint, current)
         state.update(current)
         state["transport_name"] = (
+            "UART" if state.get("uart") or current.get("vid") != 0x303A else
             "USB Serial/JTAG" if current["pid"] == 0x1001 else "USB Highspeed"
         )
         return await SerialLink.open(
             current["path"], endpoint=endpoint,
-            hupcl=False if current.get("pid") == 0x1001 else None,
+            hupcl=False,
+            console=current.get("link_role") != "data",
+            assert_dtr=current.get("vid") == 0x303A and current.get("pid") != 0x1001,
+            baudrate=int(state.get("baudrate", 115200)),
         )
 
     def _add_supervisor(
@@ -434,6 +455,16 @@ class IrisHub:
         old_endpoint = self._mdns_services.get(device.service_name)
         if old_endpoint is not None and old_endpoint != endpoint:
             await self._remove_endpoint(old_endpoint, discovery="mdns")
+        # Discovery opens data independently, even before control answers HELLO.
+        if device.data_port is not None:
+            data_endpoint = f"tcp:{device.host}:{device.data_port}"
+            old_data = self._mdns_data_services.get(device.service_name)
+            if old_data and old_data != data_endpoint:
+                await self._remove_endpoint(old_data, discovery="mdns")
+            await self.add_tcp(device.host, device.data_port, pairing_token=pairing_token,
+                data_link=True, metadata={"discovery": "mdns",
+                    "advertised_device_id": device.device_id, "service_name": device.service_name})
+            self._mdns_data_services[device.service_name] = data_endpoint
         if endpoint not in self._endpoint_tasks:
             await self.add_tcp(
                 device.host,
@@ -462,6 +493,10 @@ class IrisHub:
         self._mdns_devices[device.device_id] = device.service_name
 
     async def _remove_mdns_service(self, service_name: str) -> None:
+        data_endpoint = self._mdns_data_services.pop(service_name, None)
+        if data_endpoint:
+            self._candidates.pop(data_endpoint, None)
+            await self._remove_endpoint(data_endpoint, discovery="mdns")
         endpoint = self._mdns_services.pop(service_name, None)
         if endpoint is None:
             return
@@ -655,7 +690,9 @@ class IrisHub:
                         self._on_event,
                         on_media=self._on_media,
                         pairing_token=pairing_token,
+                        owner_id=self._owner_id,
                     )
+                    self._endpoint_sessions[endpoint] = active_session
                     run_task = asyncio.create_task(active_session.run())
                     ready_task = asyncio.create_task(active_session.wait_ready(self.hello_timeout_seconds))
                     try:
@@ -663,10 +700,16 @@ class IrisHub:
                             (run_task, ready_task), return_when=asyncio.FIRST_COMPLETED
                         )
                         if ready_task in done:
-                            await ready_task
-                            # A successful handshake ends the failure streak.
-                            # Expected OTA reboots must not accumulate backoff.
-                            delay = self.reconnect_min_seconds
+                            try:
+                                await ready_task
+                            except asyncio.TimeoutError:
+                                if not active_session._console:
+                                    raise
+                                self._set_endpoint_state(endpoint, "console_only",
+                                    attempt=attempt, error="Iris 0.2 not ready; raw capture continues")
+                            else:
+                                # A successful handshake ends the failure streak.
+                                delay = self.reconnect_min_seconds
                         await run_task
                     finally:
                         for task in (ready_task, run_task):
@@ -681,29 +724,9 @@ class IrisHub:
                     if isinstance(exc, UsbEndpointBusy):
                         retry_state = "owned_elsewhere"
 
-                device_id = self._endpoint_states[endpoint].get("device_id")
-                if device_id:
-                    current = self._devices.get(device_id)
-                    if current is not None and current.link.endpoint == endpoint:
-                        await self._on_event(
-                            {
-                                "kind": "connection",
-                                "connection_state": "disconnected",
-                                "device_id": device_id,
-                                "boot_id": current.info.boot_id if current.info else None,
-                                "session_id": (
-                                    current.info.session_id if current.info else None
-                                ),
-                                "endpoint": endpoint,
-                                "host_receive_monotonic_ns": time.monotonic_ns(),
-                                "host_receive_wall_ns": time.time_ns(),
-                            }
-                        )
-                        del self._devices[device_id]
-                    for key in [
-                        key for key in self._mirror_states if key[0] == device_id
-                    ]:
-                        self._mirror_states.pop(key, None)
+                if active_session is not None:
+                    await self._drop_session(active_session)
+                self._endpoint_sessions.pop(endpoint, None)
                 active_session = None
                 self._endpoint_states[endpoint]["device_id"] = None
                 self._set_endpoint_state(
@@ -712,14 +735,74 @@ class IrisHub:
                 await asyncio.sleep(delay)
                 delay = min(self.reconnect_max_seconds, max(delay * 2, 0.001))
         finally:
-            if active_session is not None and active_session.info is not None:
-                current = self._devices.get(active_session.info.device_id)
-                if current is active_session:
-                    del self._devices[active_session.info.device_id]
+            self._endpoint_sessions.pop(endpoint, None)
+            if active_session is not None:
+                await self._drop_session(active_session)
             self._endpoint_states[endpoint]["device_id"] = None
             self._set_endpoint_state(
                 endpoint, "stopped", attempt=attempt, error=None
             )
+
+    def device_for_endpoint(self, endpoint: str) -> str | None:
+        """Return only the live session identity, never a remembered binding."""
+        session = self._endpoint_sessions.get(endpoint)
+        return session.info.device_id if session is not None and session.info is not None else None
+
+    async def hardware_reset(self, endpoint: str, mode: str = "run") -> dict[str, Any]:
+        if self.ownership is not None:
+            self.ownership._require(endpoint)
+        session = self._endpoint_sessions.get(endpoint)
+        if session is None or not isinstance(session.link, SerialLink) or not session._console:
+            raise RuntimeError("hardware reset requires an owned, open serial console endpoint")
+        state = self._endpoint_states[endpoint]
+        if state.get("vid") == 0x303A and state.get("pid") != 0x1001:
+            raise RuntimeError("application USB CDC does not provide a chip reset circuit")
+        circuit = "usb_serial_jtag" if state.get("pid") == 0x1001 else "uart"
+        event = {"kind": "hardware_reset", "endpoint": endpoint,
+                 "capture_id": session.capture_id, "mode": mode, "circuit": circuit,
+                 "device_id": session.info.device_id if session.info else None,
+                 "boot_id": None, "host_receive_wall_ns": time.time_ns()}
+        await self._on_event({**event, "state": "started"})
+        await session.link.hardware_reset(mode, circuit)
+        result = {**event, "state": "sequence_completed", "reader_started_before_reset": True}
+        await self._on_event(result)
+        return result
+
+    async def _drop_session(self, session: DeviceSession) -> None:
+        if session._console:
+            await self._on_event({"kind": "console_gap", "capture_id": session.capture_id,
+                "endpoint": session.link.endpoint, "device_id": session.info.device_id if session.info else None, "boot_id": None,
+                "reason": "console disconnected; bytes emitted while absent are unavailable",
+                "host_receive_wall_ns": time.time_ns()})
+        if session.info is None:
+            return
+        device_id = session.info.device_id
+        role = "control" if session._console else "data"
+        links = self._links.get(device_id, {})
+        if links.get(role) is not session:
+            return
+        del links[role]
+        control = links.get("control")
+        data = links.get("data")
+        if control is not None:
+            control.data_session = data
+        remaining = control or data
+        if remaining is None:
+            self._links.pop(device_id, None)
+            self._devices.pop(device_id, None)
+        else:
+            self._devices[device_id] = remaining
+        if role == "data":
+            for key in [key for key in self._mirror_states if key[0] == device_id]:
+                self._mirror_states.pop(key, None)
+        await self._on_event({
+            "kind": "connection", "connection_state": "disconnected",
+            "link_role": role, "device_id": device_id,
+            "boot_id": session.info.boot_id, "session_id": session.info.session_id,
+            "endpoint": session.link.endpoint,
+            "host_receive_monotonic_ns": time.monotonic_ns(),
+            "host_receive_wall_ns": time.time_ns(),
+        })
 
     async def _on_ready(self, session: DeviceSession) -> None:
         assert session.info is not None
@@ -735,12 +818,19 @@ class IrisHub:
                 "mDNS device_id does not match the ESP-Iris HELLO identity"
             )
         self._endpoint_states[session.link.endpoint]["firmware_mode"] = info.firmware_mode
-        existing = self._devices.get(info.device_id)
+        role = "control" if session._console else "data"
+        links = self._links.get(info.device_id, {})
+        existing = links.get(role)
         if existing is not None and existing is not session:
             await session.close()
-            raise RuntimeError(
-                f"device {info.device_id} already has a physical session"
-            )
+            raise RuntimeError(f"device {info.device_id} already has a {role} session")
+        for peer in links.values():
+            if peer is session:
+                continue
+            if (peer.info is None or peer.info.boot_id != info.boot_id
+                    or peer.owner_id != session.owner_id):
+                await session.close()
+                raise ProtocolError("control/data boot or authenticated owner binding differs")
         if info.hardware_mac:
             for other_id, other in self._devices.items():
                 if (other is not session and other.info is not None
@@ -757,7 +847,13 @@ class IrisHub:
             except RuntimeError:
                 await session.close()
                 raise
-        self._devices[info.device_id] = session
+        links = self._links.setdefault(info.device_id, {})
+        links[role] = session
+        control = links.get("control")
+        data = links.get("data")
+        if control is not None:
+            control.data_session = data
+        self._devices[info.device_id] = control or session
         self._set_endpoint_state(
             session.link.endpoint,
             "ready",
@@ -775,6 +871,7 @@ class IrisHub:
         await self._on_event(
             {
                 "kind": "connection",
+                "link_role": role,
                 "connection_state": connection_state,
                 "device_id": info.device_id,
                 "boot_id": info.boot_id,
@@ -785,9 +882,20 @@ class IrisHub:
             }
         )
 
+        if session._console and session.data_available and session.data_tcp_port and session.link.endpoint.startswith("tcp:"):
+            host = session.link.endpoint[4:].rsplit(":", 1)[0]
+            await self.add_tcp(host, session.data_tcp_port,
+                pairing_token=session._pairing_token.hex() if session._pairing_token is not None else None,
+                data_link=True,
+                metadata={"advertised_device_id": info.device_id})
+
     async def _on_event(self, event: dict[str, Any]) -> None:
         device_id = event.get("device_id")
         if not device_id:
+            # Boot bytes exist before any firmware can answer HELLO. Keep
+            # their capture identity instead of discarding unbound evidence.
+            if self._event_sink is not None:
+                await self._event_sink(event)
             return
         self._history[device_id].append(event)
         if self._event_sink is not None:
@@ -817,12 +925,21 @@ class IrisHub:
             if session.info is None:
                 continue
             item = session.info.as_dict()
+            links = self._links.get(session.info.device_id, {})
+            for role in ("control", "data"):
+                peer = links.get(role)
+                item[f"{role}_link"] = (
+                    peer.info.as_dict() if peer is not None and peer.info is not None else None
+                )
+            item["data_available"] = "data" in links
+            item["console_available"] = bool(getattr(links.get("control"), "console_available", False))
             state = self._endpoint_states.get(session.link.endpoint, {})
             item["firmware_mode"] = state.get("firmware_mode", "unknown")
             item["transport_name"] = {
                 Transport.USB: "USB Highspeed",
                 Transport.TCP: "TCP",
                 Transport.USB_SERIAL_JTAG: "USB Serial/JTAG",
+                Transport.UART: "UART",
             }.get(Transport(session.info.transport), "Unknown")
             result.append(item)
         return result
@@ -848,7 +965,13 @@ class IrisHub:
         self.ownership._require(endpoint)
         if endpoint.startswith("usb:"):
             selector = endpoint if endpoint.startswith("usb:location=") else metadata.get("path", endpoint)
-            await self.add_usb(str(selector))
+            await self.add_usb(
+                str(selector),
+                usb_serial_jtag=bool(metadata.get("allow_serial_jtag")),
+                uart=bool(metadata.get("uart")),
+                baudrate=int(metadata.get("baudrate", 115200)),
+                metadata=metadata,
+            )
         elif endpoint.startswith("tcp:"):
             host, port = endpoint[4:].rsplit(":", 1)
             await self.add_tcp(host, int(port), pairing_token=pairing_token, metadata=metadata)
@@ -868,6 +991,12 @@ class IrisHub:
             return self._devices[device_id]
         except KeyError as exc:
             raise KeyError(f"unknown ESP-Iris device: {device_id}") from exc
+
+    async def console_write(self, device_id: str, line: str) -> dict[str, Any]:
+        control = self._links.get(device_id, {}).get("control")
+        if control is None:
+            raise ConnectionError("console control link is disconnected; data links cannot accept text")
+        return await control.console_write(line)
 
     async def status(self, device_id: str) -> dict[str, Any]:
         session = self.get(device_id)
@@ -988,11 +1117,33 @@ class IrisHub:
         return await self.get(device_id).job(job_id, cancel=cancel)
 
     async def screenshot(
-        self, device_id: str, description: dict[str, int] | None = None
-    ) -> tuple[dict[str, int], bytes]:
+        self, device_id: str, description: dict[str, Any] | None = None
+    ) -> tuple[dict[str, Any], bytes]:
         key = (device_id, SCREEN_CHANNEL)
         async with self._media_locks[key]:
             session = self.get(device_id)
+            requested = dict(description or {})
+            path = requested.pop("path", "auto")
+            if path not in {"auto", "control", "data"}:
+                raise ValueError("screenshot path must be auto, control or data")
+            snapshot_session = session
+            if session._console and path != "control" and session.data_session is not None:
+                snapshot_session = session._require_data_link()
+            if (path == "control" and not snapshot_session._console) or (
+                path == "data" and snapshot_session._console):
+                raise RuntimeError("requested screenshot link is not connected")
+            if path == "control" and key in self._mirror_states:
+                raise RuntimeError("stop the active mirror before taking a control-link snapshot")
+            if key not in self._mirror_states:
+                try:
+                    actual, data = await snapshot_session.screenshot(requested)
+                    return {**actual, "mirror_reused": 0,
+                            "transfer_path": "control" if snapshot_session._console else "data"}, data
+                except DeviceError as error:
+                    # Push-only screen providers retain their data-link path.
+                    # A weak-link screenshot never starts a continuous stream.
+                    if error.code != 0x106 or path == "control" or (session._console and session.data_session is None):
+                        raise
             existing = self._mirror_states.get(key)
             reuse_existing = existing is not None
             started_temporary = False
@@ -1001,7 +1152,7 @@ class IrisHub:
                 state = existing
                 if state is None:
                     state = await session.mirror_start(
-                        SCREEN_CHANNEL, description, fps=5
+                        SCREEN_CHANNEL, requested, fps=5
                     )
                     self._mirror_states[key] = state
                     started_temporary = True
@@ -1014,8 +1165,8 @@ class IrisHub:
                         else None
                     ),
                 )
-                actual["mirror_reused"] = int(reuse_existing)
-                return actual, data
+                return {**actual, "mirror_reused": int(reuse_existing),
+                        "transfer_path": "data"}, data
             finally:
                 self.unsubscribe_media(device_id, SCREEN_CHANNEL, queue)
                 if started_temporary:

@@ -52,7 +52,7 @@ def _wait_status(api, device_id: str, predicate, timeout: float = 45) -> dict:
     deadline = time.monotonic() + timeout
     last = None
     while time.monotonic() < deadline:
-        status, value, _ = api.request("GET", f"/v1/devices/{device_id}")
+        status, value, _ = api.request("GET", f"/v2/devices/{device_id}")
         if status == 200:
             last = value
             if predicate(value):
@@ -100,7 +100,7 @@ def test_recovery_first_closes_recovery_a_recovery_b_loop(
         assert result["previous_boot_id"] != result["recovery_boot_id"]
         assert result["boot_id"] != result["recovery_boot_id"]
 
-        status, final, _ = api.request("GET", f"/v1/devices/{device_id}")
+        status, final, _ = api.request("GET", f"/v2/devices/{device_id}")
         assert status == 200
         assert final["device_id"] == device_id
         assert final["app_version"] == version_b
@@ -247,13 +247,13 @@ def test_pending_rollback_returns_to_last_good_until_explicitly_accepted(
         assert pending["app_version"] == expected
         status, rolled_back, _ = api.request(
             "POST",
-            f"/v1/devices/{device_id}/restart",
+            f"/v2/devices/{device_id}/restart",
             json_body={"delay_ms": 100},
             timeout=40,
         )
         assert status == 200
         assert rolled_back["restart"]["reconnected"] is True
-        status, last_good, _ = api.request("GET", f"/v1/devices/{device_id}")
+        status, last_good, _ = api.request("GET", f"/v2/devices/{device_id}")
         assert status == 200 and last_good["firmware_mode"] == "recovery"
 
         reinstalled = iris_cli.run(
@@ -282,19 +282,19 @@ def test_pending_rollback_returns_to_last_good_until_explicitly_accepted(
         assert pending["app_version"] == expected
         status, accepted, _ = api.request(
             "POST",
-            f"/v1/devices/{device_id}/rpc/raw",
+            f"/v2/devices/{device_id}/rpc/raw",
             json_body={"service_id": 0x1200, "method_id": 2, "payload_hex": ""},
         )
         assert status == 200 and accepted["response_bytes"] == 0
         status, restarted, _ = api.request(
             "POST",
-            f"/v1/devices/{device_id}/restart",
+            f"/v2/devices/{device_id}/restart",
             json_body={"delay_ms": 100},
             timeout=40,
         )
         assert status == 200
         assert restarted["restart"]["reconnected"] is True
-        status, final, _ = api.request("GET", f"/v1/devices/{device_id}")
+        status, final, _ = api.request("GET", f"/v2/devices/{device_id}")
         assert status == 200 and final["app_version"] == expected
 
 

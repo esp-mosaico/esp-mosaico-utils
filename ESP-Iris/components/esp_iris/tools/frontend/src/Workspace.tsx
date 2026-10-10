@@ -1,6 +1,5 @@
 import { deviceStateLabel } from "./deviceState";
 import {
-  FormEvent,
   PointerEvent as ReactPointerEvent,
   useEffect,
   useRef,
@@ -8,6 +7,8 @@ import {
 } from "react";
 import { api, formatBootId, formatBytes, formatTime } from "./api";
 import LogsPanel from "./LogsPanel";
+import ConsoleInput from "./ConsoleInput";
+import AudioControls from "./AudioControls";
 import { firmwareModeLabel } from "./Shell";
 import type { Device, DeviceStatus, GatewayEvent, Operation } from "./types";
 
@@ -74,7 +75,7 @@ export default function Workspace({
   const [systemUpdateBundle, setSystemUpdateBundle] = useState<File | null>(
     null,
   );
-  const [consoleOpen, setConsoleOpen] = useState(false);
+  const logsDisclosure = useRef<HTMLDetailsElement>(null);
   const advancedActions = useRef<HTMLDetailsElement>(null);
 
   function openAdvancedDialog(next: Exclude<Dialog, null>) {
@@ -90,7 +91,7 @@ export default function Workspace({
   );
 
   useEffect(() => {
-    api<{ methods?: RpcMethod[] }>("/v1/rpc-catalog")
+    api<{ methods?: RpcMethod[] }>("/v2/rpc-catalog")
       .then((value) => {
         const methods = value.methods || [];
         setRpcMethods(methods);
@@ -130,11 +131,11 @@ export default function Workspace({
       form.append("elf", otaFiles.elf);
       form.append("map", otaFiles.map);
       const archived = await api<{ artifact: { artifact_id: string } }>(
-        "/v1/firmware-artifacts",
+        "/v2/firmware-artifacts",
         { method: "POST", body: form },
       );
       const accepted = await api<{ operation: { operation_id: string } }>(
-        `/v1/devices/${deviceId}/ota`,
+        `/v2/devices/${deviceId}/ota`,
         {
           method: "POST",
           body: JSON.stringify({
@@ -163,7 +164,7 @@ export default function Workspace({
     setNotice("");
     try {
       const accepted = await api<{ operation: { operation_id: string } }>(
-        `/v1/devices/${deviceId}/system-update`,
+        `/v2/devices/${deviceId}/system-update`,
         {
           method: "POST",
           body: systemUpdateBundle,
@@ -196,7 +197,7 @@ export default function Workspace({
         return;
       }
       call(
-        `/v1/devices/${id}/rpc/${encodeURIComponent(rpcMethod)}`,
+        `/v2/devices/${id}/rpc/${encodeURIComponent(rpcMethod)}`,
         {
           method: "POST",
           body: JSON.stringify({ params }),
@@ -206,7 +207,7 @@ export default function Workspace({
       );
     } else if (dialog === "raw") {
       call(
-        `/v1/devices/${id}/rpc/raw`,
+        `/v2/devices/${id}/rpc/raw`,
         {
           method: "POST",
           body: JSON.stringify({
@@ -220,7 +221,7 @@ export default function Workspace({
       );
     } else if (dialog === "restart") {
       call(
-        `/v1/devices/${id}/restart`,
+        `/v2/devices/${id}/restart`,
         {
           method: "POST",
           body: JSON.stringify({ delay_ms: 250 }),
@@ -230,13 +231,13 @@ export default function Workspace({
       );
     } else if (dialog === "factory") {
       call(
-        `/v1/devices/${id}/factory-recovery`,
+        `/v2/devices/${id}/factory-recovery`,
         { method: "POST" },
         "设备已进入 factory recovery",
       );
     } else if (dialog === "job") {
       call(
-        `/v1/devices/${id}/jobs/${Number(jobId)}`,
+        `/v2/devices/${id}/jobs/${Number(jobId)}`,
         { method: "DELETE" },
         "Job 取消请求已发送",
       );
@@ -274,7 +275,7 @@ export default function Workspace({
             <h1>
               {device.alias ||
                 device.suggested_alias ||
-                device.device_id.slice(0, 12)}
+                device.device_id.slice(-12)}
             </h1>
             <span className="mono-id">{device.device_id}</span>
             {device.hardware_mac && (
@@ -297,6 +298,8 @@ export default function Workspace({
               {device.transport_name || device.endpoint || "传输未知"}
             </span>
             <span>{firmwareModeLabel(device.firmware_mode)}</span>
+            <span>控制：{device.connected && (device.control_link || device.demo) ? "已连接" : "未连接"}</span>
+            <span>数据：{device.connected && (device.data_available || device.demo) ? "已连接" : "未连接"}</span>
           </div>
         </div>
         {mode === "observe" && (
@@ -307,7 +310,7 @@ export default function Workspace({
             </span>
           </div>
         )}
-        {status?.stale && (
+        {(device.cached || status?.stale) && (
           <div className="stale-flag">缓存状态 · 数据可能已过期</div>
         )}
         <div className="metric-strip">
@@ -360,7 +363,7 @@ export default function Workspace({
             disabled={disabled || busy}
             onClick={() =>
               call(
-                `/v1/devices/${encodeURIComponent(device.device_id)}/rpc/system.info`,
+                `/v2/devices/${encodeURIComponent(device.device_id)}/rpc/system.info`,
                 {
                   method: "POST",
                   body: JSON.stringify({ params: {} }),
@@ -375,8 +378,11 @@ export default function Workspace({
           <button disabled={disabled} onClick={() => setDialog("rpc")}>
             调用 RPC…
           </button>
-          <button disabled={disabled} onClick={() => setConsoleOpen(true)}>
-            逐行 Console
+          <button disabled={disabled || !(device.console_available ?? (device.control_link || device.demo))} onClick={() => {
+            if (logsDisclosure.current) logsDisclosure.current.open = true;
+            document.getElementById(`console-input-${device.device_id}`)?.focus();
+          }}>
+            输入命令
           </button>
           <span className="queue-info">
             队列 {status?.queue?.queued.length ?? 0} · 运行{" "}
@@ -398,14 +404,15 @@ export default function Workspace({
                 取消 Job
               </button>
               <button
-                disabled={disabled}
+                disabled={disabled || (!device.data_available && !device.demo)}
+                title={!device.data_available && !device.demo ? "固件传输需要数据链路" : undefined}
                 onClick={() => openAdvancedDialog("ota")}
               >
                 OTA 更新
               </button>
               <button
                 className="danger-outline"
-                disabled={disabled || !systemUpdateReady}
+                disabled={disabled || !systemUpdateReady || (!device.data_available && !device.demo)}
                 title={
                   systemUpdateReady
                     ? systemUpdateTrustConfigured
@@ -455,7 +462,7 @@ export default function Workspace({
           operations={deviceOperations}
           onOpenRecords={onOpenRecords}
         />
-        <details className="logs-disclosure" open>
+        <details className="logs-disclosure" ref={logsDisclosure} open>
           <summary>
             设备日志{" "}
             <span>
@@ -470,15 +477,11 @@ export default function Workspace({
             </span>
           </summary>
           <LogsPanel events={events} deviceId={device.device_id} compact />
+          <ConsoleInput deviceId={device.device_id} disabledReason={mode === "observe" ? "观察模式不能发送命令"
+            : !device.connected ? "设备未连接，不能发送命令"
+            : !(device.console_available ?? (device.control_link || device.demo)) ? "控制链路未连接，不能发送文本命令" : ""} />
         </details>
       </section>
-      {consoleOpen && (
-        <ConsoleDialog
-          deviceId={device.device_id}
-          events={events}
-          onClose={() => setConsoleOpen(false)}
-        />
-      )}
       {dialog && (
         <ActionDialog
           dialog={dialog}
@@ -588,7 +591,20 @@ function DeviceScreen({
   mode: "develop" | "observe";
   events: GatewayEvent[];
 }) {
+  const disabled = mode === "observe" || !device.connected;
+  const alive = useRef(true);
+  const ownsMirror = useRef(false);
   const [image, setImage] = useState<string>("");
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+      if (ownsMirror.current) void api(`/v2/devices/${encodeURIComponent(device.device_id)}/mirror/stop`, {
+        method: "POST", body: JSON.stringify({ channel: "screen" }),
+      }).catch(() => undefined);
+    };
+  }, [device.device_id]);
+  useEffect(() => () => { if (image.startsWith("blob:")) URL.revokeObjectURL(image); }, [image]);
   const [mirroring, setMirroring] = useState(false);
   const [streamKind, setStreamKind] = useState<"none" | "raw" | "encoded">(
     "none",
@@ -608,7 +624,7 @@ function DeviceScreen({
     .reverse()
     .find(
       (item) =>
-        item.operation?.actor_type === "agent" &&
+        item.device_id === device.device_id && item.operation?.actor_type === "agent" &&
         item.operation.action === "input.gesture",
     );
 
@@ -617,7 +633,7 @@ function DeviceScreen({
     let currentUrl = "";
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
     const socket = new WebSocket(
-      `${protocol}//${location.host}/v1/devices/${encodeURIComponent(device.device_id)}/streams/screen`,
+      `${protocol}//${location.host}/v2/devices/${encodeURIComponent(device.device_id)}/streams/screen`,
     );
     socket.binaryType = "arraybuffer";
     socket.onmessage = (message) => {
@@ -659,13 +675,20 @@ function DeviceScreen({
     setScreenNotice(next ? "正在启动镜像…" : "正在停止镜像…");
     try {
       const result = await api<{ mirror?: { description?: MediaDescription } }>(
-        `/v1/devices/${encodeURIComponent(device.device_id)}/mirror/${next ? "start" : "stop"}`,
+        `/v2/devices/${encodeURIComponent(device.device_id)}/mirror/${next ? "start" : "stop"}`,
         {
           method: "POST",
           body: JSON.stringify({ channel: "screen", fps: 5, description: {} }),
           headers: { "Content-Type": "application/json" },
         },
       );
+      ownsMirror.current = next;
+      if (!alive.current) {
+        if (next) await api(`/v2/devices/${encodeURIComponent(device.device_id)}/mirror/stop`, {
+          method: "POST", body: JSON.stringify({ channel: "screen" }),
+        });
+        return;
+      }
       setFrameDescription(next ? (result.mirror?.description ?? null) : null);
       setStreamKind("none");
       setMirroring(next);
@@ -684,7 +707,7 @@ function DeviceScreen({
     setScreenNotice("正在读取并转换截图，请稍候…");
     try {
       const response = await fetch(
-        `/v1/devices/${encodeURIComponent(device.device_id)}/screenshot?save=true`,
+        `/v2/devices/${encodeURIComponent(device.device_id)}/screenshot?save=true`,
         {
           method: "POST",
           credentials: "same-origin",
@@ -697,7 +720,9 @@ function DeviceScreen({
         response.headers.get("X-ESP-Iris-Media") || "{}",
       ) as MediaDescription;
       const reusedMirror = Boolean(metadata.mirror_reused);
-      const nextUrl = URL.createObjectURL(await response.blob());
+      const blob = await response.blob();
+      if (!alive.current) return;
+      const nextUrl = URL.createObjectURL(blob);
       setImage((previous) => {
         if (previous.startsWith("blob:")) URL.revokeObjectURL(previous);
         return nextUrl;
@@ -749,7 +774,7 @@ function DeviceScreen({
   }
 
   async function pointerUp(event: ReactPointerEvent<HTMLDivElement>) {
-    if (!gesture.current) return;
+    if (disabled || !gesture.current) return;
     const end = point(event, true);
     const current = gesture.current;
     gesture.current = null;
@@ -760,11 +785,11 @@ function DeviceScreen({
       moves: current.moves,
       end,
     };
-    await api(`/v1/devices/${encodeURIComponent(device.device_id)}/input`, {
+    await api(`/v2/devices/${encodeURIComponent(device.device_id)}/input`, {
       method: "POST",
       body: JSON.stringify(value),
       headers: { "Content-Type": "application/json" },
-    });
+    }).catch((error) => setScreenNotice(String(error)));
   }
 
   return (
@@ -776,19 +801,20 @@ function DeviceScreen({
         </small>
         <div>
           <button
-            disabled={mode === "observe" || screenBusy}
+            disabled={disabled || screenBusy}
             onClick={captureScreenshot}
           >
             截图
           </button>
           <button
-            disabled={mode === "observe" || screenBusy}
+            disabled={disabled || screenBusy || (!device.data_available && !device.demo)}
+            title={!device.data_available && !device.demo ? "连续画面需要数据链路；仍可按需截图" : undefined}
             onClick={toggleMirror}
           >
             {mirroring ? "停止镜像" : "启动镜像"}
           </button>
           <button
-            disabled={mode === "observe"}
+            disabled={disabled}
             className={inputEnabled ? "active-control" : ""}
             onClick={() => setInputEnabled((value) => !value)}
           >
@@ -796,11 +822,12 @@ function DeviceScreen({
           </button>
         </div>
       </div>
+      {!device.data_available && !device.demo && <div className="inline-notice">仅控制链路：支持按需截图和输入；连续画面、音频及文件传输需要数据链路。</div>}
       {screenNotice && <div className="inline-notice">{screenNotice}</div>}
       <div
         className={`screen-surface ${inputEnabled ? "input-enabled" : ""}`}
         onPointerDown={(event) => {
-          if (inputEnabled) {
+          if (inputEnabled && !disabled) {
             const begin = point(event);
             if (begin) {
               event.currentTarget.setPointerCapture(event.pointerId);
@@ -844,8 +871,8 @@ function DeviceScreen({
           <div className="input-overlay-label">INPUT CAPTURE</div>
         )}
       </div>
-      {device.capability_names?.includes("audio") && (
-        <AudioControls deviceId={device.device_id} mode={mode} />
+      {device.capability_names?.includes("audio") && (device.data_available || device.demo) && (
+        <AudioControls deviceId={device.device_id} mode={disabled ? "observe" : "develop"} />
       )}
     </section>
   );
@@ -957,156 +984,6 @@ function drawRawTile(
     }
   }
   context.putImageData(pixels, tile.x ?? 0, tile.y ?? 0);
-}
-
-function AudioControls({
-  deviceId,
-  mode,
-}: {
-  deviceId: string;
-  mode: "develop" | "observe";
-}) {
-  const [recording, setRecording] = useState(false);
-  const [wav, setWav] = useState<string>("");
-  const [seconds, setSeconds] = useState(0);
-  const chunks = useRef<Uint8Array[]>([]);
-  const socket = useRef<WebSocket | null>(null);
-  const timer = useRef<number | null>(null);
-
-  async function stop() {
-    socket.current?.close();
-    socket.current = null;
-    if (timer.current) window.clearInterval(timer.current);
-    timer.current = null;
-    await api(`/v1/devices/${encodeURIComponent(deviceId)}/mirror/stop`, {
-      method: "POST",
-      body: JSON.stringify({ channel: "audio" }),
-      headers: { "Content-Type": "application/json" },
-    }).catch(() => undefined);
-    setRecording(false);
-    const pcm = concatenate(chunks.current);
-    if (pcm.length) {
-      if (wav) URL.revokeObjectURL(wav);
-      setWav(
-        URL.createObjectURL(
-          new Blob([waveFile(pcm, 16000, 1)], { type: "audio/wav" }),
-        ),
-      );
-    }
-  }
-
-  async function start() {
-    chunks.current = [];
-    setSeconds(0);
-    await api(`/v1/devices/${encodeURIComponent(deviceId)}/mirror/start`, {
-      method: "POST",
-      body: JSON.stringify({
-        channel: "audio",
-        fps: 5,
-        description: { sample_rate: 16000, channels: 1, format: 1 },
-      }),
-      headers: { "Content-Type": "application/json" },
-    });
-    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-    const ws = new WebSocket(
-      `${protocol}//${location.host}/v1/devices/${encodeURIComponent(deviceId)}/streams/audio`,
-    );
-    ws.binaryType = "arraybuffer";
-    ws.onmessage = (message) => {
-      const bytes = new Uint8Array(message.data as ArrayBuffer);
-      const metadataLength = new DataView(bytes.buffer).getUint32(0, true);
-      chunks.current.push(bytes.slice(4 + metadataLength));
-    };
-    socket.current = ws;
-    setRecording(true);
-    timer.current = window.setInterval(
-      () =>
-        setSeconds((value) => {
-          if (value >= 59) {
-            void stop();
-            return 60;
-          }
-          return value + 1;
-        }),
-      1000,
-    );
-  }
-
-  async function upload(file?: File) {
-    if (!file) return;
-    const response = await fetch(
-      `/v1/devices/${encodeURIComponent(deviceId)}/audio`,
-      {
-        method: "POST",
-        credentials: "same-origin",
-        headers: { "Content-Type": file.type || "audio/wav" },
-        body: file,
-      },
-    );
-    if (!response.ok) throw new Error("音频上传失败");
-  }
-
-  return (
-    <div className="audio-controls">
-      <span>音频</span>
-      <button disabled={mode === "observe"} onClick={recording ? stop : start}>
-        {recording ? `停止录音 ${seconds}s` : "录音（最长 60s）"}
-      </button>
-      <label className={mode === "observe" ? "disabled" : ""}>
-        上传 WAV/PCM
-        <input
-          type="file"
-          accept="audio/wav,.wav,.pcm"
-          disabled={mode === "observe"}
-          onChange={(event) => void upload(event.target.files?.[0])}
-        />
-      </label>
-      {wav && (
-        <>
-          <audio controls src={wav} />
-          <a href={wav} download={`esp-iris-${deviceId}.wav`}>
-            下载 WAV
-          </a>
-        </>
-      )}
-      <small>实时流默认不落盘 · 上传/保存上限 16 MiB</small>
-    </div>
-  );
-}
-
-function concatenate(values: Uint8Array[]) {
-  const length = values.reduce((sum, value) => sum + value.length, 0);
-  const output = new Uint8Array(length);
-  let offset = 0;
-  for (const value of values) {
-    output.set(value, offset);
-    offset += value.length;
-  }
-  return output;
-}
-
-function waveFile(pcm: Uint8Array, sampleRate: number, channels: number) {
-  const buffer = new ArrayBuffer(44 + pcm.length);
-  const view = new DataView(buffer);
-  const write = (offset: number, text: string) =>
-    [...text].forEach((character, index) =>
-      view.setUint8(offset + index, character.charCodeAt(0)),
-    );
-  write(0, "RIFF");
-  view.setUint32(4, 36 + pcm.length, true);
-  write(8, "WAVE");
-  write(12, "fmt ");
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, channels, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * channels * 2, true);
-  view.setUint16(32, channels * 2, true);
-  view.setUint16(34, 16, true);
-  write(36, "data");
-  view.setUint32(40, pcm.length, true);
-  new Uint8Array(buffer, 44).set(pcm);
-  return buffer;
 }
 
 type ActionProps = {
@@ -1368,151 +1245,10 @@ function ActionDialog(props: ActionProps) {
   );
 }
 
-function ConsoleDialog({
-  deviceId,
-  events,
-  onClose,
-}: {
-  deviceId: string;
-  events: GatewayEvent[];
-  onClose: () => void;
-}) {
-  const [line, setLine] = useState("help");
-  const [submittedLine, setSubmittedLine] = useState("");
-  const [eventFloor, setEventFloor] = useState(0);
-  const [submittedAtNs, setSubmittedAtNs] = useState(0);
-  const [jobId, setJobId] = useState<number | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  const [history, setHistory] = useState<string[]>([]);
-  const [historyIndex, setHistoryIndex] = useState(-1);
-  const output = events.filter(
-    (item) =>
-      item.category === "log" &&
-      item.device_id === deviceId &&
-      (item.event_id ?? 0) >= eventFloor &&
-      (item.host_receive_ns ?? item.host_receive_wall_ns ?? 0) >= submittedAtNs,
-  );
-  const outputBody = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (outputBody.current)
-      outputBody.current.scrollTop = outputBody.current.scrollHeight;
-  }, [output.length]);
-
-  async function submit(event: FormEvent) {
-    event.preventDefault();
-    const command = line.trim();
-    if (!command || busy) return;
-    const latestEvent = events.reduce(
-      (value, item) => Math.max(value, item.event_id ?? 0),
-      0,
-    );
-    setBusy(true);
-    setError("");
-    setSubmittedLine(command);
-    setEventFloor(latestEvent + 1);
-    setSubmittedAtNs(Date.now() * 1e6);
-    setJobId(null);
-    try {
-      const response = await api<{
-        console: { job_id: number; accepted: boolean };
-      }>(`/v1/devices/${encodeURIComponent(deviceId)}/console`, {
-        method: "POST",
-        body: JSON.stringify({ line: command }),
-        headers: { "Content-Type": "application/json" },
-      });
-      setJobId(response.console.job_id);
-      setHistory((current) =>
-        [command, ...current.filter((item) => item !== command)].slice(0, 32),
-      );
-      setHistoryIndex(-1);
-      setLine("");
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function navigateHistory(direction: number) {
-    if (!history.length) return;
-    const next = Math.max(
-      -1,
-      Math.min(history.length - 1, historyIndex + direction),
-    );
-    setHistoryIndex(next);
-    setLine(next < 0 ? "" : history[next]);
-  }
-
-  return (
-    <div className="dialog-backdrop" role="presentation" onMouseDown={onClose}>
-      <section
-        className="action-dialog console-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-label="逐行 Console"
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <div className="dialog-heading">
-          <div>
-            <p className="eyebrow">ESP CONSOLE / LINE MODE</p>
-            <h2>逐行 Console</h2>
-          </div>
-          <button onClick={onClose}>×</button>
-        </div>
-        <div className="console-output" ref={outputBody}>
-          {!submittedLine && (
-            <span>
-              输入 <code>help</code> 查看可用命令。
-            </span>
-          )}
-          {submittedLine && (
-            <strong>
-              &gt; {submittedLine}
-              {jobId != null ? `  [job ${jobId}]` : ""}
-            </strong>
-          )}
-          {output.map((item, index) => (
-            <code key={`${item.event_id ?? index}-${index}`}>{item.text}</code>
-          ))}
-          {error && <em>{error}</em>}
-        </div>
-        <form className="console-form" onSubmit={submit}>
-          <span>&gt;</span>
-          <input
-            aria-label="Console 命令"
-            autoFocus
-            maxLength={255}
-            value={line}
-            onChange={(event) => setLine(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "ArrowUp") {
-                event.preventDefault();
-                navigateHistory(1);
-              }
-              if (event.key === "ArrowDown") {
-                event.preventDefault();
-                navigateHistory(-1);
-              }
-            }}
-          />
-          <button className="primary-button" disabled={busy || !line.trim()}>
-            {busy ? "发送中…" : "发送"}
-          </button>
-        </form>
-        <p className="console-note">
-          命令串行执行；输出通过设备日志通道返回。请勿输入口令或其他敏感信息。
-        </p>
-      </section>
-    </div>
-  );
-}
-
 export function actionLabel(action: string) {
   const labels: Record<string, string> = {
     "rpc.raw": "原始 RPC",
-    "console.execute": "逐行 Console",
+    "console.execute": "发送 Console 命令",
     "device.restart": "设备重启",
     "recovery.enter_factory": "Factory Recovery",
     "firmware.ota": "OTA 更新",

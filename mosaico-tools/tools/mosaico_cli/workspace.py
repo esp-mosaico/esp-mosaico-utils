@@ -14,7 +14,7 @@ from .host import CONFIGDEP_POLICIES
 
 
 CONFIG_NAME = ".mosaico.json"
-SUPPORTED_SCHEMA_VERSION = 1
+SUPPORTED_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -43,8 +43,7 @@ class WorkspaceConfig:
     @property
     def recovery_project(self) -> Path:
         """Return the Recovery firmware source bundled with this tool version."""
-        recovery_root = (self.tool_root.parent / "esp-mosaico-recovery"
-                         if self.tool_root.name == "mosaico-tools" else self.tool_root)
+        recovery_root = self.tool_root.parent / "esp-mosaico-recovery"
         return recovery_root / "firmware" / "recovery"
 
     @property
@@ -130,7 +129,8 @@ def load_workspace(
         raise EnvironmentError("Workspace configuration must contain a JSON object.")
     if value.get("schema_version") != SUPPORTED_SCHEMA_VERSION:
         raise EnvironmentError(
-            "Unsupported workspace configuration schema; expected schema_version 1."
+            "Unsupported workspace configuration schema; expected schema_version 2. "
+            "Recreate the configuration using the 0.2 migration guide."
         )
 
     workspace = _object(value.get("workspace"), "workspace")

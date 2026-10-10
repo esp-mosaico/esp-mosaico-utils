@@ -219,11 +219,12 @@ def test_bundle_rejects_obsolete_source_layout_authorization(tmp_path) -> None:
         build_system_update_bundle(tmp_path / "v1.irisfw", manifest, tmp_path)
 
 
-def test_bundle_rejects_obsolete_v2_schema_name(tmp_path) -> None:
+@pytest.mark.parametrize("obsolete", ["esp-iris-system-update/v1", "esp-iris-system-update/v2"])
+def test_bundle_rejects_obsolete_schema_names(tmp_path, obsolete) -> None:
     (tmp_path / "partition-table.bin").write_bytes(b"partition")
     (tmp_path / "ota_0.bin").write_bytes(_application_image())
     manifest = _manifest("00" * 32)
-    manifest["schema"] = "esp-iris-system-update/v2"
+    manifest["schema"] = obsolete
     manifest.pop("signature")
     with pytest.raises(ValueError, match="unsupported system-update manifest schema"):
         build_system_update_bundle(tmp_path / "v2.irisfw", manifest, tmp_path)
@@ -479,6 +480,7 @@ def _bundle_for_session() -> SystemUpdateBundle:
 def test_session_system_update_encodes_bounded_component_sequence() -> None:
     async def scenario() -> None:
         session = object.__new__(DeviceSession)
+        session._console = False
         session.info = type(
             "Info", (), {"capabilities": int(Capability.SYSTEM_UPDATE)}
         )()
@@ -566,6 +568,7 @@ def test_session_system_update_encodes_bounded_component_sequence() -> None:
 def test_system_update_inventory_decodes_actual_flash_hashes() -> None:
     async def scenario() -> None:
         session = object.__new__(DeviceSession)
+        session._console = False
         session.info = type(
             "Info", (), {"capabilities": int(Capability.SYSTEM_INVENTORY)}
         )()

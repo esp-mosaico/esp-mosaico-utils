@@ -54,6 +54,7 @@ def test_firmware_runtime(tmp_path: Path, multi_transport: bool, service_profile
                "-I", str(HOST), "-I", str(COMPONENT / "include"),
                "-I", str(COMPONENT / "src"), str(HOST / "runtime_test.c"),
                str(COMPONENT / "src" / "esp_iris_codec.c"),
+               str(COMPONENT / "src" / "esp_iris_console_codec.c"),
                str(COMPONENT / "src" / "esp_iris_state.c"), "-o", str(output)]
     build = subprocess.run(command, capture_output=True, text=True, timeout=60, check=False)
     assert build.returncode == 0, build.stdout + build.stderr

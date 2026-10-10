@@ -54,7 +54,10 @@ def _frames(output: str) -> list[dict[str, Any]]:
             "index": int(match.group("index")),
             "function": match.group("function"),
         }
-        source = _SOURCE_RE.search(line)
+        # Panic arguments can contain "abort() was called at PC ...".
+        # GDB appends the actual source location after the final " at ".
+        source_at = line.rfind(" at ")
+        source = _SOURCE_RE.match(line, source_at) if source_at >= 0 else None
         if source is not None:
             item.update(
                 file=source.group("file"), line=int(source.group("line"))

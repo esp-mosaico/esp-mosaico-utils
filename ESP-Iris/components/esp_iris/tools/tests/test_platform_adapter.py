@@ -33,6 +33,8 @@ def test_default_platform_adapter_is_safe_and_never_marks_healthy(tmp_path) -> N
         '    return esp_iris_platform_mark_healthy();\n}\n'
         'esp_err_t iris_test_select(uint32_t current, uint32_t *target) {\n'
         '    return esp_iris_platform_select_ota_target(current, target);\n}\n'
+        'esp_err_t iris_test_prepare(void) {\n'
+        '    return esp_iris_platform_prepare_ota(0x210000, 0xb00000);\n}\n'
     )
     subprocess.run(
         [
@@ -59,6 +61,7 @@ def test_default_platform_adapter_is_safe_and_never_marks_healthy(tmp_path) -> N
     )
     library = ctypes.CDLL(str(output))
     assert library.iris_test_mark_healthy() == 0x106
+    assert library.iris_test_prepare() == 0
     target = ctypes.c_uint32()
     select = library.iris_test_select
     select.argtypes = [ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32)]

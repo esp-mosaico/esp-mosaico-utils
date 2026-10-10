@@ -67,7 +67,6 @@ def test_usb_handshake_status_ping_and_invalid_frames(
 
             status_before = await raw.session.status()
             assert status_before["lifecycle_state"] == 2
-            assert status_before["invalid_frames"] == 0
 
             with pytest.raises(RuntimeError, match="device error"):
                 await raw.request(Channel.CONTROL, 0x6E)
@@ -104,7 +103,7 @@ def test_usb_handshake_status_ping_and_invalid_frames(
             await raw.send_wire(bytes(corrupt))
             await asyncio.sleep(0.1)
             status_after = await raw.session.status()
-            assert status_after["invalid_frames"] >= 2
+            assert status_after["invalid_frames"] >= status_before["invalid_frames"] + 2
         finally:
             await raw.close()
 
@@ -162,6 +161,9 @@ def test_rpc_jobs_log_overflow_and_resource_boundaries(
             )
             assert all(error != 0 for error in errors)
 
+            before = FixtureState.decode(
+                await raw.session.rpc(TEST_SERVICE_ID, STATE_METHOD)
+            )
             await raw.session.rpc(
                 TEST_SERVICE_ID,
                 LOG_BURST_METHOD,
@@ -171,10 +173,10 @@ def test_rpc_jobs_log_overflow_and_resource_boundaries(
             state = FixtureState.decode(
                 await raw.session.rpc(TEST_SERVICE_ID, STATE_METHOD)
             )
-            assert state.stdout_records == 32
-            assert state.stderr_records == 32
-            assert state.log_bytes == 64 * 256
-            assert state.log_dropped_bytes > 0
+            assert state.stdout_records == before.stdout_records + 32
+            assert state.stderr_records == before.stderr_records + 32
+            assert state.log_bytes == before.log_bytes + 64 * 256
+            assert state.log_dropped_bytes > before.log_dropped_bytes
             assert await raw.session.rpc(1, 1, b"after-overflow") == b"after-overflow"
         finally:
             await raw.close()
@@ -193,6 +195,9 @@ def test_lifecycle_reconnect_preserves_identity_and_releases_resources(
         device_id = first.session.info.device_id
         boot_id = first.session.info.boot_id
         before = await first.session.status()
+        state_before = FixtureState.decode(
+            await first.session.rpc(TEST_SERVICE_ID, STATE_METHOD)
+        )
         await first.session.rpc(TEST_SERVICE_ID, LIFECYCLE_CYCLE_METHOD)
         await asyncio.sleep(1)
         await first.close()
@@ -213,8 +218,10 @@ def test_lifecycle_reconnect_preserves_identity_and_releases_resources(
                 await second.session.rpc(TEST_SERVICE_ID, STATE_METHOD)
             )
             after = await second.session.status()
-            assert state.start_count == 2 and state.stop_count == 1
-            assert state.register_count == 2 and state.unregister_count == 1
+            assert state.start_count == state_before.start_count + 1
+            assert state.stop_count == state_before.stop_count + 1
+            assert state.register_count == state_before.register_count + 1
+            assert state.unregister_count == state_before.unregister_count + 1
             assert state.last_error == 0
             assert after["task_stack_free_min_bytes"] >= 512
             assert (
@@ -237,13 +244,13 @@ def test_real_gateway_usb_smoke(iris_board, iris_artifacts, firmware_profile) ->
         device = api.wait_device()
         device_id = device["device_id"]
         status, body, _ = api.request(
-            "GET", f"/v1/devices/{device_id}", evidence_name="usb-status"
+            "GET", f"/v2/devices/{device_id}", evidence_name="usb-status"
         )
         assert status == 200
         assert body["transport"] == Transport.USB
         status, rpc, _ = api.request(
             "POST",
-            f"/v1/devices/{device_id}/rpc/raw",
+            f"/v2/devices/{device_id}/rpc/raw",
             json_body={
                 "service_id": 1,
                 "method_id": 1,

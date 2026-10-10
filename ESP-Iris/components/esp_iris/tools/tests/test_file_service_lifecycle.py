@@ -13,7 +13,8 @@ COMPONENT = Path(__file__).resolve().parents[2]
 HOST = Path(__file__).parent / "runtime_host"
 
 
-def test_file_service_lifecycle(tmp_path: Path) -> None:
+@pytest.mark.parametrize("external_registry", [False, True])
+def test_file_service_lifecycle(tmp_path: Path, external_registry: bool) -> None:
     compiler = shutil.which("cc")
     if compiler is None:
         if os.environ.get("IRIS_REQUIRE_HOST_CC") == "1":
@@ -26,6 +27,12 @@ def test_file_service_lifecycle(tmp_path: Path) -> None:
     ]
     if os.environ.get("IRIS_HOST_SANITIZERS") == "1":
         flags += ["-fsanitize=address,undefined", "-fno-omit-frame-pointer", "-g"]
+    if external_registry:
+        # Host has no PSRAM address space; compile and exercise the external
+        # storage branch. The S31 ELF/map verifies physical placement separately.
+        (tmp_path / "esp_attr.h").write_text("#define EXT_RAM_BSS_ATTR\n")
+        flags += ["-DCONFIG_ESP_IRIS_SERVICE_STATE_PSRAM=1",
+                  "-DCONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=1", "-I", str(tmp_path)]
     command = [
         compiler,
         *flags,

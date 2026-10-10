@@ -1,7 +1,7 @@
 # ESP-Iris services HIL fixture contract
 
 This contract is private to `test_apps/services_usb`. It does not extend the
-public Iris v1 protocol. All integers are little-endian and all RPCs use
+public Iris 0.2 protocol. All integers are little-endian and all RPCs use
 service `0x7ffe` unless stated otherwise.
 
 | Method | Name | Request | Response |
@@ -12,6 +12,7 @@ service `0x7ffe` unless stated otherwise.
 | `4` | `MEDIA_CONFIGURE` | `<BHB4x>` channel, format, period in ms | empty |
 | `5` | `STOP_FOR_FLASH` | empty | empty; Iris stops after the response drains |
 | `6` | `EXERCISE_BOUNDARY` | empty | `<8i>` invalid RPC, duplicate RPC, RPC table full, invalid Job, Job table full, volume table full, invalid media channel, oversized media |
+| `7` | `NETWORK_TOKEN` (TCP builds) | empty, or byte `0` / `1` | current IP string, or select the initial / rotated test pairing token |
 
 `StateV1` is `<HH21I12s>`:
 
@@ -33,7 +34,15 @@ Additional fixture RPCs are:
 | `1/3` | delayed echo; `<H>` delay ms followed by the body |
 | `1/7` | return the requested `<i>` `esp_err_t` |
 | `0x1001/1` | fixed pointer message `<BBhhHI>`; x/y are clipped to `0..479`, stored, and echoed |
+| `0x7ffc/1` | with Flash Core Dump enabled, empty request schedules an intentional panic after the response drains |
 
 The fixture exposes `fs` (FAT read/write), `ro` (read-only view), and
 `atomic` (LittleFS atomic-replace) volumes. LittleFS is pinned by the fixture
 manifest to `joltwallet/littlefs==1.22.3`.
+
+TCP fixture Wi-Fi credentials and both pairing tokens default to empty. Supply
+them through private, ignored build configuration. Wi-Fi uses RAM storage;
+only the token selector is persisted in the fixture's `iris_net_test` namespace.
+The installed-fixture TCP and crash tests require explicit hardware identity
+and opt-in environment variables documented in their test modules. The stop
+RPC only stops Iris; entering ROM Download Mode remains a hardware operation.

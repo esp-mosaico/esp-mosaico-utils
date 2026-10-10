@@ -9,7 +9,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 TOOLS = ROOT
 TEMPLATE = ROOT.parent / "mosaico-tools/templates/hello_world"
-LAYOUT_ID = "mosaico-retained-recovery-2m-v1"
+LAYOUT_ID = "mosaico-retained-test-2m-v2"
 NORMAL_FIRMWARE_PROJECTS = (
     TEMPLATE,
     ROOT / "tests/firmware/iris_acceptance",
@@ -79,15 +79,15 @@ class RetainedRecoveryContractTests(unittest.TestCase):
         self.assertEqual(contract["application_region_start"], 0x200000)
         for label, entry in contract["immutable_layout"].items():
             self.assertEqual(tuple(entry), recovery[label])
-        self.assertEqual(recovery["factory"], ("app", "factory", 0x20000, 0x1C0000, ""))
+        self.assertEqual(recovery["vibe_mode"], ("app", "test", 0x20000, 0x1C0000, ""))
         self.assertEqual(recovery["coredump"], ("data", "coredump", 0x1E0000, 0x20000, ""))
         for project in NORMAL_FIRMWARE_PROJECTS:
             with self.subTest(project=project.name):
                 actual = partitions(project / "partitions.csv")
-                for label in ("otadata", "phy_init", "sysmeta", "factory", "coredump"):
+                for label in ("otadata", "phy_init", "sysmeta", "vibe_mode", "coredump"):
                     self.assertEqual(actual[label], recovery[label])
                 for label, entry in actual.items():
-                    if label not in ("otadata", "phy_init", "sysmeta", "factory", "coredump"):
+                    if label not in ("otadata", "phy_init", "sysmeta", "vibe_mode", "coredump"):
                         self.assertGreaterEqual(entry[2], 0x200000)
                 if project.name in ("iris_acceptance", "iris_crash"):
                     self.assertEqual(actual, recovery)

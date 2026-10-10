@@ -27,7 +27,7 @@ def workspace():
         (engine / "idf_component.yml").touch()
         (engine / "CMakeLists.txt").touch()
         (root / ".mosaico.json").write_text(json.dumps({
-            "schema_version": 1,
+            "schema_version": 2,
             "workspace": {"projects_dir": "projects"},
             "dependencies": {"bsp": "board", "raylib": "engine", "esp_iris": "iris"},
             "build": {"runner": "builtin"},
@@ -76,7 +76,7 @@ def test_blank_creation_uses_project_identity_without_example_assets(workspace, 
     contract = json.loads((TOOLS.parent / "esp-mosaico-recovery/product_contract.json").read_text())
     for name, values in contract["immutable_layout"].items():
         assert partitions[name] == values
-    assert set(partitions) == {*contract["immutable_layout"], "nvs", "ota_0"}
+    assert set(partitions) == {*contract["immutable_layout"], "nvs", "main_app"}
 
 
 def test_blank_dry_run_and_refusal_to_overwrite(workspace, capsys):

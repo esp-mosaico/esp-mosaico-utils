@@ -55,7 +55,7 @@ static bool is_ota_partition(const esp_partition_t *partition)
 {
     return partition != NULL &&
            partition->subtype >= ESP_PARTITION_SUBTYPE_APP_OTA_0 &&
-           partition->subtype <= ESP_PARTITION_SUBTYPE_APP_OTA_MAX;
+           partition->subtype < ESP_PARTITION_SUBTYPE_APP_OTA_MAX;
 }
 
 static esp_err_t recovery_write(uint32_t last_good, uint32_t target)
@@ -101,7 +101,7 @@ esp_err_t esp_iris_platform_prepare_ota(uint32_t running_address,
 
     const esp_partition_t *running = esp_ota_get_running_partition();
     if (running == NULL || running->address != running_address ||
-        running->subtype != ESP_PARTITION_SUBTYPE_APP_FACTORY) {
+        running->subtype != ESP_PARTITION_SUBTYPE_APP_TEST) {
         return ESP_ERR_INVALID_STATE;
     }
 
@@ -138,14 +138,14 @@ esp_err_t esp_iris_platform_select_ota_target(uint32_t default_address,
      * product can safely replace ota_0 without preserving another app slot. */
     const esp_partition_t *running = esp_ota_get_running_partition();
     return running != NULL &&
-                   running->subtype == ESP_PARTITION_SUBTYPE_APP_FACTORY
+                   running->subtype == ESP_PARTITION_SUBTYPE_APP_TEST
                ? ESP_OK
                : ESP_ERR_NOT_FOUND;
 }
 
 esp_err_t esp_iris_platform_mark_healthy(void)
 {
-    /* Recovery always boots from the fixed factory slot and has no pending
+    /* Recovery always boots from the fixed test slot and has no pending
      * application rollback state to accept.  The product-level healthy mark
      * therefore only authorizes ESP-Iris to publish its replayable HEALTHY
      * event after app_main has initialized every Recovery service. */

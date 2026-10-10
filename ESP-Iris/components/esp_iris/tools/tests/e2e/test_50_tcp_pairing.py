@@ -138,7 +138,7 @@ def test_tcp_pairing_delay_rotation_persistence_and_single_owner(
             ):
                 second_gateway.start()
             status, still_owned, _ = api.request(
-                "GET", f"/v1/devices/{device['device_id']}"
+                "GET", f"/v2/devices/{device['device_id']}"
             )
             assert status == 200
             assert still_owned["device_id"] == device["device_id"]

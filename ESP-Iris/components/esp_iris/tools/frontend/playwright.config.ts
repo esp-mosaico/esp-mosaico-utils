@@ -12,7 +12,7 @@ export default defineConfig({
   timeout: 30_000,
   webServer: externalBaseUrl ? undefined : {
     command: `"${python}" ../esp_iris.py web --demo --listen 127.0.0.1 --port 8878 --state-dir "${stateDir}" --no-tls`,
-    url: `${baseURL}/v1/health`,
+    url: `${baseURL}/v2/health`,
     reuseExistingServer: false,
     timeout: 30_000,
   },

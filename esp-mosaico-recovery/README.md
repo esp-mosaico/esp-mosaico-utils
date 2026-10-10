@@ -1,21 +1,28 @@
 # ESP-Mosaico Vibe Mode
 
+The [0.2 software specification (中文)](docs/esp-mosaico-recovery-software-spec-zh.md)
+defines the architecture. The reviewed base bundle is now 0.2.0, with Recovery
+ABI 2 and QIO. See the [0.2 validation record (中文)](docs/validation-0.2.md)
+for tested devices, artifacts and remaining validation limits.
+
 Vibe Mode is the ESP-Mosaico application installation and device maintenance mode.
 It runs ESP-Iris; ROM Download Mode is the chip flashing path without ESP-Iris.
-The technical component name `esp-mosaico-recovery` and its ABI remain unchanged.
+The technical component name remains `esp-mosaico-recovery`; its new boot policy
+uses Recovery ABI 2 and the `mosaico-retained-test-2m-v2` layout.
 
 This component owns retained Vibe Mode firmware, its reviewed bundle and the
 public product ABI in `include/mosaico_recovery_contract.h`. The header is used
-by independently built normal applications and Vibe Mode. Its existing 64-byte
-sysmeta record, NVS namespace, magic and version remain unchanged.
+by independently built normal applications and Vibe Mode. The 64-byte sysmeta
+record now uses version 2; one-shot boot intent uses `mosaico_boot_v2`.
+The 0.2 ABI does not accept 0.1 firmware or update bundles.
 
 The product CLI and build runner now live in [mosaico-tools](../mosaico-tools/README.md).
-The old `mosaico.py`, Python import path and build-runner entrypoint forward to
-that implementation for compatibility. New consumers use `mosaico-tools`.
+The old local launcher, Python forwarding package and build-runner entrypoint
+have been removed. Consumers use `mosaico-tools`.
 Integration and firmware tests remain under `tests/`.
 
 To add Vibe Mode and Iris to an existing application, follow the
-[migration guide (中文)](../docs/recovery-iris-migration.zh-CN.md).
+[0.2 migration and boot contract (中文)](docs/migration-0.2.md).
 
 Firmware and reviewed images stay under `firmware/recovery`; moving host tools
 does not rebuild or replace the reviewed bundle. Perform device operations
@@ -50,8 +57,10 @@ applications must release the serial port before this operation can use it.
 
 Only the existing `mosaico-recover-flash` target writes firmware. Its complete
 bundle writes bootloader, partition table, OTA selection data and Vibe Mode
-firmware in `factory`; this option does **not** introduce whole-flash erase or
-writing only the `factory` partition. Preserve the normal bundle/layout contract.
+firmware in `vibe_mode` (`app/test`); this option does **not** introduce whole-flash
+erase. The installer otadata contains a one-shot Vibe Mode bootstrap marker.
+Native normal-application flash uses standard blank otadata and preserves the
+maintenance image. Preserve the complete bundle/layout contract.
 Vibe Mode acceptance uses the original managed connection: the same Device ID,
 a new Boot ID, the prepared Vibe Mode version and OTA capability must be verified.
 The operation record contains before/after evidence and links to the raw writer

@@ -2,3 +2,5 @@
 # the recovery adapter validates the effective configuration during configure.
 list(APPEND SDKCONFIG_DEFAULTS
     "${CMAKE_CURRENT_LIST_DIR}/../components/esp_mosaico_app_recovery/sdkconfig.defaults")
+list(APPEND EXTRA_COMPONENT_DIRS
+    "${CMAKE_CURRENT_LIST_DIR}/../components/esp_mosaico_boot")

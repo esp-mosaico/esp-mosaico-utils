@@ -1,43 +1,73 @@
-# ESP-Iris protocol v1
+# ESP-Iris protocol 0.2 (wire version 2)
 
-Status: milestones M1-M11 are implemented. The v1 wire envelope is frozen;
-newer services use the existing request ID, stream ID, credit and channel
-fields.
+This is the active contract for the 0.2 implementation. It is incompatible with
+0.1. The historical contract and vectors live in `archive/0.1/`; they are not
+accepted by the current device or host. Service-specific schema/profile numbers
+are independent of the outer wire version.
 
-## Link
+## Links and console ownership
 
-Firmware compiles one or more links: application USB CDC0, USB Serial/JTAG,
-and/or a raw TCP server. USB serial channels contain only ESP-Iris binary
-frames. Baud rate and line coding have no protocol meaning. Application USB
-DTR open/close delimits a physical candidate, but never requests reset or ROM
-download mode.
+A device has one control session and, when configured, one independent data
+session. USB HS exposes CDC0 (`ESP-Iris 0.2 console`) and CDC1
+(`ESP-Iris 0.2 data`) under one stable device serial. TCP listens on separate
+ports, default 19772 for control and 19773 for data. UART and USB Serial/JTAG
+are control-only. Transport values are USB=1, TCP=2, Serial/JTAG=3, UART=4;
+NONE=0 is a local status value, never a HELLO transport.
 
-With multiple links enabled, a physical connection is provisional. Candidates
-receive bounded negotiation turns, and only a valid HELLO_ACK (including a
-valid pairing proof when TCP pairing is configured) claims the device's single
-active session. A timed-out candidate is released so another connected link
-can negotiate. Losing transport drivers stop after the claim and restart when
-the winner disconnects. Single-link firmware retains the original immediate
-physical-session behavior.
+Control is ordinary text: standard logs continue before, during and after Iris
+sessions. Stock `idf.py monitor` needs no Iris host software. Monitor and Gateway
+exclusively own the control endpoint; no device mode switch is involved.
+Iris never disables Serial/JTAG reset/download behavior. Reconnection does not
+request a reset. HS CDC cannot provide bootloader logs before its stack starts;
+use a native UART/Serial-JTAG path for early boot and fault diagnostics.
 
-Transport value `0` (`ESP_IRIS_TRANSPORT_KIND_NONE`) is used only by the local
-C status API while multi-link firmware is idle. A HELLO frame never advertises
-transport `0`.
+Products with an existing UART/Serial-JTAG REPL select
+`CONFIG_ESP_IRIS_CONSOLE_EXTERNAL_INPUT`, initialize their REPL/driver, set its
+maximum line length to `ESP_IRIS_CONSOLE_LINE_BYTES`, and register the `iris`
+namespace with `esp_iris_console_register_commands()`. Custom dispatchers can
+submit complete lines with `esp_iris_console_submit()`. The product remains the
+sole input reader and driver owner. Its driver RX queue must hold at least two
+complete records; the default 256-byte interactive Serial/JTAG ring is too small.
+Configure it before starting the product REPL, not while Iris borrows it.
+Iris queues one bounded command and responds
+asynchronously; queue-full returns ESP_ERR_TIMEOUT. Stop Iris before the REPL.
+Without this option the Iris worker owns the configured console input.
 
-USB Serial/JTAG uses transport value `3` (`1` is application USB CDC0 and `2`
-is TCP). Its ESP-IDF public connection state describes cable/SOF presence, not
-whether a process has the serial endpoint open. It therefore repeats HELLO
-once per second even after HELLO_ACK. A Gateway reopen may re-acknowledge that
-HELLO and joins the existing physical session; only cable loss or reboot
-creates a new session ID after a committed session. A provisional timeout may
-also rotate the session ID while multiple links compete. Repeated HELLO_ACK
-remains idempotent. Firmware
-disables the USB Serial/JTAG DTR/RTS reset function while this transport owns
-the serial channel, restoring its previous value on `esp_iris_stop()`.
+### Printable records
 
-The TCP server listens on `0.0.0.0:19772` by default and accepts one physical
-session. ESP-Iris does not initialize Wi-Fi or provision credentials. The PC
-Web API is a separate process and listens only on a loopback address.
+```text
+host:   iris @BASE64(COBS(v2 header || payload || crc32) || 00) CR LF
+device: @iris/0.2 BASE64(COBS(v2 header || payload || crc32) || 00) CR LF
+```
+
+Base64 is canonical RFC 4648 with padding and no whitespace inside it. Each
+record, including its prefix and line terminators, is bounded by 5476 bytes.
+Firmware puts a CR/LF before a response record to separate partial log lines;
+native console logging is serialized around the complete record. Invalid,
+truncated or oversized input is discarded through a line boundary. Ordinary
+text and invalid machine-looking output remain raw capture evidence; only a
+fully validated frame is dispatched as a response.
+
+`iris`, `iris help`: list commands; `iris status`: readable identity/health;
+`iris hello`: one discovery response; `iris @...`: all bounded control services,
+including RPC, jobs, input and snapshot OPEN/READ/CLOSE. CR or LF terminates a
+command; backspace/delete edits the current input. Normal console output has
+no unsolicited binary HELLO or heartbeat. A Gateway may retry the explicit
+HELLO query while continuing to capture raw boot logs.
+
+Data uses the binary envelope below. It may connect first and advertises HELLO
+while negotiating. USB descriptors, mDNS and control HELLO endpoint hints select
+candidates only. Pairing by adjacent tty numbers or IP address alone is invalid.
+The data handshake independently verifies version, device, boot and authority.
+
+The two links must use the same nonzero 16-byte owner token and actual device/
+boot identity. Session IDs are independently random, nonzero and distinct.
+A second link claiming another owner is rejected. A task binds its service
+object/stream/operation ID to its data session and therefore to the authenticated
+owner and boot. Disconnecting control preserves a healthy data session; loss
+of data aborts its live streams/transfers while preserving control. Reboot or
+final owner release invalidates all bindings. No mutation is automatically
+replayed after reconnect.
 
 ## Envelope
 
@@ -56,7 +86,7 @@ The decoded 32-byte header is:
 | Offset | Size | Field |
 |---:|---:|---|
 | 0 | 4 | ASCII `IRIS` |
-| 4 | 1 | protocol version (`1`) |
+| 4 | 1 | protocol version (`2`) |
 | 5 | 1 | header size (`32`) |
 | 6 | 1 | channel |
 | 7 | 1 | type, scoped by channel |
@@ -93,9 +123,13 @@ Closing a session fails every pending request and prevents queued mutations from
 being sent. Thus live status remains observable while the device RPC executor is
 busy, without treating another queued RPC as a liveness probe (IRIS-A02).
 
-The device chooses a nonzero random session ID for every physical connection
-and repeats HELLO once a second until HELLO_ACK. The PC echoes that session ID
-in every frame. Old-session frames are discarded.
+Each link chooses a nonzero random session ID. Data repeats HELLO while
+negotiating; control emits HELLO only in response to `iris hello`. The PC echoes
+the session ID in every frame. Old-session frames are discarded. HELLO_ACK is
+`role:u8 || owner_id[16]` on local links and appends the TCP proof below when
+pairing is enabled. Role is 0 for control and 1 for data and must match the
+endpoint. Every accepted ACK receives AUTH_RESULT(1), including local links;
+readiness requires that result, not merely a HELLO.
 
 After the first HELLO_ACK in a session, the device emits exactly one BOOT event
 for that session. A repeated HELLO or HELLO_ACK must not create another BOOT
@@ -117,7 +151,7 @@ Implemented control types:
 | Type | Value | Payload |
 |---|---:|---|
 | HELLO | `0x01` | TLV device description |
-| HELLO_ACK | `0x02` | empty, or auth nonce + proof |
+| HELLO_ACK | `0x02` | role + owner binding, optionally TCP nonce + proof |
 | PING/PONG | `0x03/0x04` | opaque echoed bytes |
 | TIME_SYNC_REQUEST | `0x05` | host monotonic `t1_ns: u64` |
 | TIME_SYNC_RESPONSE | `0x06` | `t1_ns, device_d2_us, device_d3_us: u64` |
@@ -133,7 +167,9 @@ Implemented control types:
 | ERROR | `0x7f` | `esp_err:u32, channel:u8, type:u8, reserved:u16` |
 
 CONTROL and reliable EVENT traffic are not charged against media/log credit.
-The PC must grant LOG credit before the device transmits LOG records.
+Ordinary control logs require no handshake or credit. Bulk-only services are
+rejected on control with NOT_SUPPORTED: FILE, continuous media and firmware
+content. SCREEN OPEN/READ/CLOSE and read-only diagnostics remain available.
 
 ## TLV
 
@@ -166,7 +202,7 @@ byte counts. `FREE_INTERNAL` (`0x20`) and `MIN_FREE_INTERNAL` (`0x21`) retain
 their existing meaning. A zero SPIRAM total means no allocatable SPIRAM was
 registered. The minimum-free values sum per-region low watermarks, which may
 have occurred at different times; they are not an exact simultaneous global
-minimum. Older firmware omits the new tags.
+minimum. Unavailable allocators report zero totals.
 
 When `CAP_TASK_MEMORY` (bit 19) is advertised, TASKS_REQUEST returns a single
 bounded TASKS_RESPONSE:
@@ -190,7 +226,44 @@ present, the device returns CONTROL ERROR with `ESP_ERR_INVALID_SIZE` rather
 than silently truncating the list. The query allocates temporary storage and
 scans stacks only on request; it has no device-side polling task.
 
+HELLO additionally requires LINK_ROLE (`0x17`, u8), and advertises optional
+DATA_TCP_PORT (`0x18`, u16) and DATA_AVAILABLE (`0x19`, u8). DATA_AVAILABLE means
+firmware support, not that a peer is currently connected. The host uses live
+control/data sessions to determine actual feature availability.
+
 ## Logs
+
+Control transmits native text, not LOG-channel envelopes. Gateway starts reading
+and storing `console_raw` records before sending HELLO: capture ID, endpoint,
+host receive time, offset and Base64 original bytes. Unknown device/boot identity
+is explicitly null. A later `console_binding` event associates the capture with
+a verified device and boot at its recorded offset; it never retroactively
+assigns early bytes a boot ID. Disconnect, reset and retention gaps are explicit.
+Raw logs use the existing rotation/index/Follow APIs (`/v2`); use capture/endpoint
+filters for unidentified or console-only firmware.
+
+The S31 USB transport registers a shutdown handler while it owns the controller.
+Before a software CPU reset it disables the USB interrupt, resets the HS USB
+controller/PHY and gates its clocks. CPU reset alone in the pinned SDK leaves
+DMA destinations from the previous image active; those addresses may contain
+instructions in the next image. This shutdown path does not wait for the Iris
+worker, which can itself initiate the restart. A product bootloader must also
+stop inherited DMA before loading application RAM to cover panic/watchdog resets
+that bypass application shutdown handlers.
+
+When binding previously unidentified records, `console_binding` includes
+`history_start_event_id` and `history_end_event_id`. Device-filtered Follow
+subscribers receive those retained records before the binding event, including
+when resuming across a binding that occurred while disconnected. Replayed records
+retain their original event IDs and receive times; their unknown boot IDs stay
+null. IDs can therefore arrive below the subscriber's current cursor: deduplicate
+by event ID and advance the resume cursor with `max`, rather than discarding all
+lower IDs. Unfiltered subscribers already received these records and do not get
+this additional replay. Rotation still limits available history.
+
+The LOG-channel record format below remains reserved for structured diagnostics;
+it is not the wire representation of native console text.
+
 
 LOG RECORD (`type=0x01`) payload:
 
@@ -436,13 +509,28 @@ stride:u32, format:u16, quality:u16
 ```
 
 SCREEN OPEN supplies a requested description. OPENED returns the negotiated
-description plus `total_size:u32`. READ uses
-`offset:u32, maximum:u16, reserved:u16`; DATA returns
-`offset:u32, total_size:u32, data[]`. The backend fills only the requested
-chunk, so Iris never requires a full framebuffer or PSRAM. CLOSE releases the
-capture.
+description plus `total_size:u32`, with a nonzero stream ID. READ uses that ID
+and `offset:u32, maximum:u16, reserved:u16=0`; DATA returns
+`offset:u32, total_size:u32, data[]`. The final DATA sets STREAM_END and appends
+whole-object IEEE CRC32:u32 after its bytes. All reads are sequential and must
+match the opening session/stream ID; CLOSE uses the same ID. The provider freezes
+the snapshot from begin until end; stale IDs cannot read a newer image.
+
+A capture is limited to 16 MiB, 30 seconds idle, and 600 seconds total. Control
+chunks are at most 768 bytes; data uses its frame payload budget. Close, timeout
+or owner-session loss releases the backend. The host validates size, offset,
+stream ID, terminal boundary and final CRC and closes even on cancellation or
+invalid responses. Gateway snapshots prefer data, fall back to control when no
+data link exists, and accept `path=auto|control|data`. A forced control capture
+requires any active screen mirror to stop. It never starts a continuous stream
+on a weak link. Push-only providers retain the data mirror screenshot path.
 
 SCREEN, IMAGE and AUDIO share MIRROR_START/MIRROR_STOP and DATA types.
+
+The returned nonzero `stream_id` identifies the transfer task within its data
+session. Media CREDIT and MIRROR_STOP must carry that exact ID; the device also
+checks the owning session. Stale credits or a stop for another task cannot alter
+the current stream. Reconnecting creates a new session and requires a new start.
 MIRROR_START appends `fps:u16, reserved:u16` to the description. It is always
 off after boot and link loss. Each active channel owns one bounded latest
 chunk. A newer application submission overwrites an unsent chunk and
@@ -473,16 +561,17 @@ stores a random 32-byte token in the existing `esp_iris` NVS namespace and
 advertises auth mode 1 plus a fresh 32-byte challenge in HELLO. The token is
 never sent on the link.
 
-The PC HELLO_ACK is `client_nonce[16] || hmac_sha256[32]`. The HMAC key is the
-token and its message is:
+The TCP HELLO_ACK is `binding[17] || client_nonce[16] || hmac_sha256[32]`,
+where binding is `role:u8 || owner_id[16]`. The HMAC key is the token and its
+message is:
 
 ```text
-"ESP-Iris-auth-v1" || device_id[16] || boot_id:u64 || session_id:u32
-|| challenge[32] || client_nonce[16]
+"ESP-Iris-auth-0.2" || device_id[16] || boot_id:u64 || session_id:u32
+|| challenge[32] || client_nonce[16] || binding[17]
 ```
 
 The device uses PSA Crypto, constant-time comparison, a fresh challenge per
-physical session and a bounded delay after failure. Only a successful
+link session and a bounded nonblocking retry delay after failure. Only a successful
 AUTH_RESULT makes the session ready; before that, every frame except
 HELLO_ACK is discarded without reaching status, crash, RPC, media or OTA
 handlers. Token get/rotate is intended for a product-owned secure
@@ -499,7 +588,9 @@ reserved:u16, project[project_len], version[version_len]
 
 The device accepts only the ESP-IDF-selected non-running app partition and
 rejects oversized images. BEGIN_RESPONSE returns
-`job_id:u32, total_size:u32, chunk_max:u16, label_len:u8, label[]`. DATA is
+`job_id:u32, total_size:u32, chunk_max:u16, label_len:u8, label[]`. The label
+preserves up to 16 bytes of the ESP-IDF partition name; STATUS uses the same
+bound. DATA is
 `offset:u32, bytes[]` and must be strictly sequential. Every chunk updates a
 PSA SHA-256 operation and `esp_ota_write`. END requires exact byte count,
 full-image SHA match, a valid ESP-IDF image, exact agreement with the
@@ -508,14 +599,17 @@ before selecting the boot partition. When
 `CONFIG_ESP_IRIS_OTA_REQUIRE_PROJECT_NAME_MATCH` is enabled, END additionally
 requires the image project name to equal the running firmware project name.
 The Gateway honors the advertised capability before recovery entry or direct
-OTA. The option defaults off. The default weak recovery hook returns
-`ESP_ERR_NOT_SUPPORTED`, which deliberately rejects boot-slot selection.
+OTA. The option defaults off. The default preparation hook succeeds for
+standard ESP-IDF OTA. Products that need retained-firmware metadata override
+it; a product hook failure prevents boot-slot selection.
 CANCEL, job cancellation, disconnect or any error calls `esp_ota_abort`.
 
 The reference writer prepares only the declared image range in BEGIN, allowing
 the Flash driver to batch erases before DATA arrives. This runs on the service
 worker; status and cancellation remain available on the protocol task. Hosts
-allow up to 120 seconds for BEGIN (also covering legacy full-partition erases),
+wait for each DATA response before sending the next block; protocol 0.2 does
+not negotiate a pipelined Flash-write window. Hosts
+allow up to 120 seconds for BEGIN (including full-partition erases),
 while DATA retains its normal request timeout. Cancellation is cooperative and
 releases the OTA handle after the current Flash operation returns.
 
@@ -529,8 +623,13 @@ reported offset.
 retained last-known-good slot. `esp_iris_platform_prepare_ota()` records
 last-known-good/target metadata without teaching Iris a custom partition
 layout. `esp_iris_mark_healthy()` remains gated by product acceptance. RESTART
-records planned intent, drains its response, then reboots. Factory, NVS,
-coredump and crash-evidence partitions are never OTA targets. Crash collection
+records planned intent and schedules a device-owned restart. The delay is clamped
+to at least 100 ms; values above 60,000 ms are rejected. Repeated requests retain
+the earliest deadline. Once the active service callback finishes, both protocol
+TX queues may drain for up to 100 ms beyond that deadline; a stalled receiver
+cannot defer restart indefinitely. Disconnect preserves the action, while an
+explicit Iris stop cancels it. Factory, NVS, coredump and crash-evidence partitions
+are never OTA targets. Crash collection
 is an independent evidence workflow; the Gateway does not infer that a crash
 was caused by an OTA operation.
 
@@ -543,10 +642,10 @@ waiting to boot. The hook is never called for a failed or cancelled OTA.
 
 ## Compatibility vectors
 
-[`golden_vectors.json`](golden_vectors.json) is the normative byte-level v1
+[`golden_vectors.json`](golden_vectors.json) is the normative byte-level 0.2
 compatibility set. Device C and PC Python codec tests consume the same file.
 Any intentional envelope change requires a new negotiated protocol version;
-existing v1 vectors are never rewritten to reinterpret an existing field.
+Historical 0.1 vectors remain unchanged in `archive/0.1/`.
 
 ## System Update
 
@@ -668,7 +767,7 @@ ID, application identity, and product health after reboot.
 TCP products may publish the DNS-SD service `_esp-iris._tcp.local.`. Each
 instance name is unique per device and its SRV port is the raw ESP-Iris TCP
 port. TXT records contain `device_id`, `protocol`, `transport`, `pairing`,
-`mode`, and `port`. For protocol v1, `transport=tcp`, `protocol=1`, and
+`mode`, `port`, and optional `data_port`. For 0.2, `transport=tcp`, `protocol=2`, and
 `pairing` is either `none` or `hmac`; `device_id` is the same 32-character
 lowercase identity later returned by HELLO. The Gateway rejects advertisements
 whose TXT identity and authenticated/session HELLO identity differ.
@@ -694,8 +793,8 @@ All nonempty declarations observed in normal firmware are retained and checked
 again in Recovery before writing, even without a caller expectation. The actual
 System Update source-layout hash remains separately checked against its bundle.
 
-- `POST /v1/devices/{id}/ota`: JSON field `compatibility` alongside `artifact_id`.
-- `POST /v1/devices/{id}/system-update`: JSON-encoded header `X-Iris-Compatibility`
+- `POST /v2/devices/{id}/ota`: JSON field `compatibility` alongside `artifact_id`.
+- `POST /v2/devices/{id}/system-update`: JSON-encoded header `X-Iris-Compatibility`
   alongside the binary archive body.
 - Both CLI commands accept `--compatibility-json '{"chip_target":"esp32s31"}'`.
 
@@ -705,15 +804,14 @@ expectations returns conflict rather than reusing or running another write.
 These expectations select a compatible device; they do not authenticate the
 artifact or replace signed bundle policies.
 
-Legacy firmware without role/chip can still be observed but cannot be updated
+0.2 firmware without a product role/chip declaration can be observed but cannot be updated
 through these generic writers. Migrate it through the product's provisioning or
-recovery procedure (ESP-Mosaico: `mosaico.py recover`), install firmware declaring
+recovery procedure defined by that product, install firmware declaring
 the contract, then resume the normal install workflow. There is no project-name
 fallback or implicit legacy write bypass. Rebuild the supplied examples/fixtures
 to obtain their explicit normal/Recovery role declarations.
 
-HELLO remains protocol v1. The following optional TLVs extend identity; existing
-v1 golden vectors remain unchanged. Integers are little endian. Unknown optional
+HELLO uses wire version 2. The following TLVs describe product compatibility. Integers are little endian. Unknown optional
 tags are ignored. Identity strings are UTF-8, at most 64 bytes, without a NUL.
 
 | Tag | Value | Meaning |
@@ -738,10 +836,10 @@ mutating requests to such a peer. Introducing a requirement old hosts cannot
 understand requires a protocol version bump, not merely this additive tag.
 
 An absent role is **unknown**, regardless of project/version/USB product names.
-Legacy peers can still connect for observation; product installers must require
-an explicit matching role/contract or use an explicit versioned legacy adapter.
+Product installers require an explicit matching role/contract. Old 0.1 peers
+are rejected before services; there is no legacy adapter.
 The role is authoritative only after HELLO; USB discovery hints are provisional.
-Missing string/ABI fields mean unspecified; the legacy health default is 45000 ms.
+Missing string/ABI fields mean unspecified; the unspecified health default is 45000 ms.
 These declarations do not authenticate a device or prove its flash layout. Match
 the selected product/chip/board/Recovery ABI contract and verify the actual
 system inventory/layout hash before writes. Existing `AUTH_MODE` and capability
@@ -756,11 +854,11 @@ on an initially provisional link. The device authenticates the ACK first,
 ends the previous logical session, generates a fresh nonzero Session ID,
 and sends HELLO. The host waits for this new HELLO before sending a normal
 ACK and advertising readiness. A duplicate NEW_SESSION for the old Session ID
-is discarded. A normal ACK for the current session is idempotent. Peers without
-the capability retain the original handshake. This explicit handshake lets a
+is discarded. A normal ACK for the current session is idempotent. 0.2 firmware advertises this capability. This explicit handshake lets a
 new USB Serial/JTAG host reopen a device whose physical USB connection stayed up.
 It is not an authenticated-channel substitute; TCP pairing remains a separate
-policy. Reopening ends session-owned jobs/streams just like disconnecting.
+policy. Reopening invalidates objects owned by that session, while the other healthy
+link retains its independently owned tasks.
 
 Within a session, non-HELLO_ACK frames must advance their per-channel uint32
 sequence using serial arithmetic: distance must be in [1, 2^31). The first
@@ -776,7 +874,7 @@ cache: after a lost ACK the caller must reconcile product state, never assign
 a new ID to automatically repeat a mutating RPC. IDs and frame sequences reset
 only at a new session. This provides no exactly-once guarantee across session
 reopen, power loss, or reboot. FILE/OTA have their own offset/receipt/status
-protocols; this change does not impose a new nonzero OTA stream ID on v1 peers.
+protocols; transfer requests remain bound to their opening data session.
 
 All transport configurations, including TCP-only firmware, keep a physical
 connection provisional until a valid HELLO_ACK. The configured claim deadline

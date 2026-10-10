@@ -6,6 +6,7 @@ idf_component_register(
         app_update
         esp_app_format
         esp_iris
+        esp_mosaico_boot
         esp_partition
         freertos
         mbedtls
@@ -21,6 +22,10 @@ foreach(entry IN LISTS mosaico_contract)
     string(REGEX MATCH "^([^=]+)=(.*)$" unused "${entry}")
     set(key "${CMAKE_MATCH_1}")
     string(REPLACE "\"" "" expected "${CMAKE_MATCH_2}")
+    if(NOT key MATCHES "^CONFIG_ESP_IRIS_" AND
+       NOT key STREQUAL "CONFIG_ESPTOOLPY_FLASHMODE_QIO")
+        continue()
+    endif()
     if(expected STREQUAL "y")
         if(NOT ${key})
             message(FATAL_ERROR "Mosaico application requires ${key}=y; update sdkconfig and rebuild")

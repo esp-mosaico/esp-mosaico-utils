@@ -22,6 +22,7 @@ class IrisMdnsDevice:
     port: int
     mode: str
     pairing: str
+    data_port: int | None = None
 
 
 def _decode_properties(properties: Mapping[Any, Any]) -> dict[str, str]:
@@ -47,7 +48,7 @@ def parse_iris_service(service_name: str, info: Any) -> IrisMdnsDevice | None:
     device_id = properties.get("device_id", "")
     if (
         not _DEVICE_ID.fullmatch(device_id)
-        or properties.get("protocol") != "1"
+        or properties.get("protocol") != "2"
         or properties.get("transport") != "tcp"
         or properties.get("pairing") not in {"none", "hmac"}
         or not properties.get("mode")
@@ -56,6 +57,9 @@ def parse_iris_service(service_name: str, info: Any) -> IrisMdnsDevice | None:
     try:
         txt_port = int(properties.get("port", ""))
         srv_port = int(info.port)
+        data_port = int(properties["data_port"]) if "data_port" in properties else None
+        if data_port is not None and (not 1 <= data_port <= 65535 or data_port == srv_port):
+            return None
     except (TypeError, ValueError):
         return None
     if not 1 <= srv_port <= 65535 or txt_port != srv_port:
@@ -96,6 +100,7 @@ def parse_iris_service(service_name: str, info: Any) -> IrisMdnsDevice | None:
         port=srv_port,
         mode=properties["mode"],
         pairing=properties["pairing"],
+        data_port=data_port,
     )
 
 

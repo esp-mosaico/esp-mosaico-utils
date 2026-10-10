@@ -1,5 +1,7 @@
 /* OTA request handling; included by esp_iris_services.c. */
 #if CONFIG_ESP_IRIS_OTA
+enum { IRIS_OTA_LABEL_BYTES = sizeof(((esp_partition_t *)0)->label) - 1U };
+
 static void ota_reset_without_finish(iris_service_state_t *state)
 {
     iris_ota_t *ota = state->ota;
@@ -79,7 +81,7 @@ static bool handle_ota(iris_service_call_t *runtime,
                                    header->channel, header->type);
             return true;
         }
-        uint8_t payload[25] = {0};
+        uint8_t payload[20 + IRIS_OTA_LABEL_BYTES] = {0};
         esp_iris_job_info_t info = {0};
         if (ota->job != NULL) {
             (void)esp_iris_job_get_info(ota->job, &info);
@@ -90,7 +92,7 @@ static bool handle_ota(iris_service_call_t *runtime,
         iris_put_le16(payload + 12, info.progress_permille);
         payload[14] = ota->active ? 1 : 0;
         const size_t label_size = ota->partition != NULL
-            ? strnlen(ota->partition->label, 5) : 0;
+            ? strnlen(ota->partition->label, IRIS_OTA_LABEL_BYTES) : 0;
         payload[15] = (uint8_t)label_size;
         iris_put_le32(payload + 16, (uint32_t)info.result);
         if (label_size > 0) {
@@ -181,13 +183,13 @@ static bool handle_ota(iris_service_call_t *runtime,
             return true;
         }
         ota->active = true;
-        uint8_t payload[16] = {0};
+        uint8_t payload[11 + IRIS_OTA_LABEL_BYTES] = {0};
         esp_iris_job_info_t info;
         (void)esp_iris_job_get_info(ota->job, &info);
         iris_put_le32(payload, info.id);
         iris_put_le32(payload + 4, total_size);
         iris_put_le16(payload + 8, CONFIG_ESP_IRIS_OTA_CHUNK_BYTES);
-        const size_t label_size = strnlen(partition->label, 5);
+        const size_t label_size = strnlen(partition->label, IRIS_OTA_LABEL_BYTES);
         payload[10] = (uint8_t)label_size;
         memcpy(payload + 11, partition->label, label_size);
         (void)iris_service_reply(runtime, header->channel,

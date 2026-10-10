@@ -261,6 +261,7 @@ class Runner:
         self.results["device_id"] = self.device_id
         self.results["initial"] = initial
         fixture_installed = False
+        primary_error: Exception | None = None
         try:
             fixture_installed = True
             install = self.install_project("install-fixture", FIXTURE)
@@ -348,18 +349,26 @@ class Runner:
                 raise AcceptanceFailure(
                     f"startup loop checks failed: {checks}"
                 )
+        except Exception as error:
+            primary_error = error
+            raise
         finally:
             if fixture_installed:
-                restore = self.install_project("restore-application", self.application)
-                restored = self.list_device("restored-device")
-                self.results["restore"] = {
-                    "install": restore,
-                    "device": restored,
-                    "healthy": restored.get("project_name") == self.application.name
-                    and restored.get("firmware_mode") == "normal",
-                }
-                if not self.results["restore"]["healthy"]:
-                    raise AcceptanceFailure("application restoration was not verified")
+                try:
+                    restore = self.install_project("restore-application", self.application)
+                    restored = self.list_device("restored-device")
+                    self.results["restore"] = {
+                        "install": restore,
+                        "device": restored,
+                        "healthy": restored.get("project_name") == self.application.name
+                        and restored.get("firmware_mode") == "normal",
+                    }
+                    if not self.results["restore"]["healthy"]:
+                        raise AcceptanceFailure("application restoration was not verified")
+                except Exception as error:
+                    self.results["restore"] = {"healthy": False, "error": str(error)}
+                    if primary_error is None:
+                        raise
 
     def save_result(self, status: str, error: str | None = None) -> Path:
         self.results["status"] = status

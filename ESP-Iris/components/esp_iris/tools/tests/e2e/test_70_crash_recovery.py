@@ -24,7 +24,7 @@ def _wait_status(api, device_id: str, predicate, timeout: float = 45) -> dict:
     deadline = time.monotonic() + timeout
     last = None
     while time.monotonic() < deadline:
-        status, value, _ = api.request("GET", f"/v1/devices/{device_id}")
+        status, value, _ = api.request("GET", f"/v2/devices/{device_id}")
         if status == 200:
             last = value
             if predicate(value):
@@ -38,7 +38,7 @@ def _wait_crash_report(api, device_id: str, predicate, timeout: float = 45) -> d
     last = None
     while time.monotonic() < deadline:
         status, value, _ = api.request(
-            "GET", f"/v1/devices/{device_id}/crashes"
+            "GET", f"/v2/devices/{device_id}/crashes"
         )
         if status == 200 and value.get("reports"):
             last = value["reports"][0]
@@ -51,7 +51,7 @@ def _wait_crash_report(api, device_id: str, predicate, timeout: float = 45) -> d
 def _rpc(api, device_id: str, method: int) -> None:
     status, value, _ = api.request(
         "POST",
-        f"/v1/devices/{device_id}/rpc/raw",
+        f"/v2/devices/{device_id}/rpc/raw",
         json_body={"service_id": 0x1400, "method_id": method, "payload_hex": ""},
     )
     assert status == 200 and value["response_bytes"] == 0
@@ -140,7 +140,7 @@ def test_real_crash_returns_to_factory_preserves_coredump_retry_and_resume(
 
         status, core, headers = api.request(
             "GET",
-            f"/v1/devices/{device_id}/crashes/core-dump",
+            f"/v2/devices/{device_id}/crashes/core-dump",
             timeout=60,
         )
         assert status == 200 and len(core) == report["core_dump_size"]
@@ -176,7 +176,7 @@ def test_real_crash_returns_to_factory_preserves_coredump_retry_and_resume(
         )["firmware_mode"] == "normal"
 
         status, history, _ = api.request(
-            "GET", f"/v1/events?device_id={device_id}"
+            "GET", f"/v2/events?device_id={device_id}"
         )
         assert status == 200
         names = {

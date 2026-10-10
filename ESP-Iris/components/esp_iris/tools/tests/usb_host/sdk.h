@@ -1,0 +1,107 @@
+#pragma once
+#include <assert.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdatomic.h>
+
+#define CONFIG_ESP_IRIS_DATA_LINK 1
+#define CFG_TUD_CDC 2
+#define TUD_OPT_HIGH_SPEED 1
+#define CFG_TUD_ENDPOINT0_SIZE 64
+#define CONFIG_ESP_IRIS_USB_MANUFACTURER "test"
+#define CONFIG_ESP_IRIS_USB_PRODUCT "test"
+#define CONFIG_ESP_IRIS_USB_VID 1
+#define CONFIG_ESP_IRIS_USB_PID 2
+#define CONFIG_ESP_IRIS_USB_TASK_STACK_SIZE 4096
+#define TUSB_DESC_DEVICE 1
+#define TUSB_CLASS_MISC 2
+#define MISC_SUBCLASS_COMMON 3
+#define MISC_PROTOCOL_IAD 4
+#define TUD_CONFIG_DESC_LEN 1
+#define TUD_CDC_DESC_LEN 1
+#define TUD_CONFIG_DESCRIPTOR(...) 0
+#define TUD_CDC_DESCRIPTOR(...) 0
+#define TINYUSB_EVENT_DETACHED 1
+#define ESP_OK 0
+#define ESP_FAIL 1
+#define ESP_ERR_INVALID_ARG 2
+#define ESP_ERR_INVALID_STATE 3
+#define ESP_ERR_NOT_SUPPORTED 4
+#define ESP_LOGW(...) ((void)0)
+typedef int esp_err_t;
+typedef struct { bool data_link; uint8_t hardware_mac[6]; } iris_runtime_t;
+typedef struct {
+    bool driver_started, link_up, reported_link_up;
+    atomic_bool host_open, disconnect_pending;
+} iris_transport_state_t;
+typedef enum { IRIS_LINK_EVENT_NONE, IRIS_LINK_EVENT_CONNECTED,
+               IRIS_LINK_EVENT_DISCONNECTED } iris_link_event_t;
+#define ESP_IRIS_TRANSPORT_KIND_USB 1
+typedef struct {
+    int kind;
+    const char *name;
+    esp_err_t (*start)(iris_runtime_t *, iris_transport_state_t *);
+    void (*stop)(iris_runtime_t *, iris_transport_state_t *);
+    iris_link_event_t (*poll)(iris_runtime_t *, iris_transport_state_t *);
+    void (*disconnect)(iris_runtime_t *, iris_transport_state_t *);
+    int (*read)(iris_runtime_t *, iris_transport_state_t *, uint8_t *, size_t);
+    int (*write)(iris_runtime_t *, iris_transport_state_t *, const uint8_t *, size_t);
+} iris_transport_ops_t;
+typedef struct {
+    unsigned bLength, bDescriptorType, bcdUSB, bDeviceClass, bDeviceSubClass,
+        bDeviceProtocol, bMaxPacketSize0, idVendor, idProduct, bcdDevice,
+        iManufacturer, iProduct, iSerialNumber, bNumConfigurations;
+} tusb_desc_device_t;
+typedef struct { struct { bool dtr; } line_state_changed_data; } cdcacm_event_t;
+typedef struct { int id; } tinyusb_event_t;
+typedef struct {
+    struct { unsigned size; } task;
+    struct {
+        const void *device;
+        const char **string;
+        size_t string_count;
+        const uint8_t *full_speed_config, *high_speed_config;
+    } descriptor;
+    void (*callback)(tinyusb_event_t *, void *);
+} tinyusb_config_t;
+#define TINYUSB_DEFAULT_CONFIG(cb, arg) { .callback = cb }
+typedef struct {
+    unsigned cdc_port;
+    void (*callback_rx)(int, cdcacm_event_t *);
+    void (*callback_line_state_changed)(int, cdcacm_event_t *);
+} tinyusb_config_cdcacm_t;
+
+static void (*shutdown_handler)(void);
+static unsigned installs, uninstalls, registrations, removals, io_calls, stop_step;
+static bool fail_install, fail_register, fail_cdc, clock_enabled;
+static void iris_notify_worker(iris_runtime_t *runtime) { }
+static esp_err_t tinyusb_driver_install(const tinyusb_config_t *config)
+{ ++installs; clock_enabled = !fail_install; return fail_install ? ESP_FAIL : ESP_OK; }
+static esp_err_t tinyusb_driver_uninstall(void)
+{ ++uninstalls; clock_enabled = false; return ESP_OK; }
+static esp_err_t esp_register_shutdown_handler(void (*handler)(void))
+{
+    ++registrations;
+    if (fail_register) return ESP_FAIL;
+    assert(shutdown_handler == NULL);
+    shutdown_handler = handler;
+    return ESP_OK;
+}
+static esp_err_t esp_unregister_shutdown_handler(void (*handler)(void))
+{ assert(shutdown_handler == handler); ++removals; shutdown_handler = NULL; return ESP_OK; }
+static esp_err_t tinyusb_cdcacm_init(const tinyusb_config_cdcacm_t *config)
+{ return fail_cdc ? ESP_FAIL : ESP_OK; }
+static esp_err_t tinyusb_cdcacm_deinit(unsigned itf) { return ESP_OK; }
+static bool tud_mounted(void) { return true; }
+static esp_err_t tinyusb_cdcacm_read(unsigned itf, uint8_t *data, size_t size, size_t *received)
+{ ++io_calls; *received = 0; return ESP_OK; }
+static size_t tinyusb_cdcacm_write_queue(unsigned itf, const uint8_t *data, size_t size)
+{ ++io_calls; return size; }
+static esp_err_t tinyusb_cdcacm_write_flush(unsigned itf, unsigned timeout) { return ESP_OK; }
+static void dcd_int_disable(unsigned rhport)
+{ assert(rhport == 0 && stop_step == 0); stop_step = 1; }
+static void usb_utmi_ll_reset_register(void)
+{ assert(stop_step == 1 && clock_enabled); stop_step = 2; }
+static void usb_utmi_ll_enable_bus_clock(bool enabled)
+{ assert(stop_step == 2 && !enabled); stop_step = 3; clock_enabled = false; }

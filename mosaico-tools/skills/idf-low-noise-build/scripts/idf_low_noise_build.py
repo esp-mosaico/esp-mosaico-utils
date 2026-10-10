@@ -37,7 +37,7 @@ from mosaico_cli.build_progress import (  # noqa: E402
 ANSI_RE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1b\\))")
 PROJECT_RE = re.compile(r"(?:^|\n)\s*(?:include\s*\([^)]*project\.cmake|project\s*\()", re.I)
 TARGET_RE = re.compile(r'^CONFIG_IDF_TARGET="([^"]+)"$', re.M)
-IDF_CONSTRAINT_RE = re.compile(r'^\s{2}idf:\s*["\']?([^"\'\s#]+)', re.M)
+IDF_CONSTRAINT_RE = re.compile(r'^ {2}idf:[ \t]*([^\n#]*)', re.M)
 WARNING_RE = re.compile(r"\bwarning:", re.I)
 DEFAULT_CONTEXT_BEFORE = 8
 DEFAULT_CONTEXT_AFTER = 20
@@ -232,9 +232,24 @@ def idf_action_arguments(project: Path, action: str) -> list[str]:
 def declared_idf_constraint(project: Path) -> str | None:
     for path in (project / "main" / "idf_component.yml", project / "idf_component.yml"):
         if path.is_file():
-            match = IDF_CONSTRAINT_RE.search(read_text(path))
+            source = read_text(path)
+            match = IDF_CONSTRAINT_RE.search(source)
             if match:
-                return match.group(1)
+                value = match.group(1).strip()
+                if not value:
+                    # IDF manifests allow both `idf: ">=5.5"` and a nested
+                    # `idf: {version: ">=5.5"}` block. Do not consume the
+                    # word "version:" as the version constraint.
+                    for line in source[match.end():].splitlines():
+                        if not line.strip() or line.lstrip().startswith("#"):
+                            continue
+                        if not line.startswith("    "):
+                            break
+                        nested = re.match(r'^ {4}version:[ \t]*([^#\n]*)', line)
+                        if nested:
+                            value = nested.group(1).strip()
+                            break
+                return value.strip("\"'") or None
     return None
 
 
@@ -308,8 +323,21 @@ def warning_count(text: str) -> int:
     return sum(1 for line in text.splitlines() if WARNING_RE.search(line))
 
 
-def collect_artifacts(project: Path) -> list[dict[str, Any]]:
-    build = project / "build"
+def selected_build_dir(project: Path, arguments: Sequence[str]) -> Path:
+    directory = "build"
+    options = iter(arguments)
+    for option in options:
+        if option in ("-B", "--build-dir"):
+            directory = next(options, directory)
+        elif option.startswith("--build-dir="):
+            directory = option.split("=", 1)[1]
+        elif option.startswith("-B") and len(option) > 2:
+            directory = option[2:]
+    return (project / directory).resolve()
+
+
+def collect_artifacts(project: Path, build: Path | None = None) -> list[dict[str, Any]]:
+    build = build or project / "build"
     if not build.is_dir():
         return []
     candidates: list[Path] = []
@@ -471,6 +499,14 @@ def run_build_step(
         exit_code = 127
 
     clean = save_clean_log(raw_path, clean_path)
+    build = selected_build_dir(project, arguments)
+    target = configured_target(project)
+    description = build / "project_description.json"
+    if description.is_file():
+        try:
+            target = json.loads(read_text(description)).get("target") or target
+        except (OSError, json.JSONDecodeError):
+            pass
     result: dict[str, Any] = {
         "schema_version": 1,
         "run_id": run_id,
@@ -480,10 +516,11 @@ def run_build_step(
         "duration_seconds": round(time.monotonic() - started, 3),
         "project": str(project),
         "idf_path": str(idf_path),
-        "target": configured_target(project),
+        "target": target,
+        "build_dir": str(build),
         "warnings": warning_count(clean),
         "diagnostic": find_diagnostic(clean) if exit_code else None,
-        "artifacts": collect_artifacts(project),
+        "artifacts": collect_artifacts(project, build),
         "raw_log": str(raw_path.resolve()),
         "clean_log": str(clean_path.resolve()),
         "result_file": str(result_path.resolve()),

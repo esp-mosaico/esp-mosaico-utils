@@ -24,7 +24,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 
 from .firmware import inspect_firmware_image
 
-SYSTEM_UPDATE_SCHEMA = "esp-iris-system-update/v1"
+SYSTEM_UPDATE_SCHEMA = "esp-iris-system-update/0.2"
 MAX_BUNDLE_BYTES = 32 * 1024 * 1024
 MAX_ARCHIVE_MEMBERS = 16
 MAX_MANIFEST_BYTES = 3072

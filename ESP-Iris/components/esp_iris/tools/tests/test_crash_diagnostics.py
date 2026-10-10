@@ -133,7 +133,8 @@ def test_decode_coredump_does_not_claim_idf_frame_as_app_source(
             return SimpleNamespace(
                 returncode=0,
                 stdout=(
-                    f"#0  panic_abort () at {idf}/components/panic.c:10\n"
+                    '#0  panic_abort (details="abort() was called at PC 0x400123 on core 0") '
+                    f"at {idf}/components/panic.c:10\n"
                     "#1  app_fault () at /workspace/main/crash.c:42\n"
                 ),
             )

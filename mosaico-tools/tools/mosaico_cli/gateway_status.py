@@ -13,7 +13,7 @@ from .project import resolve_project
 
 
 def status(workspace: Any, project: str | None, *, all_projects: bool = False) -> dict[str, Any]:
-    root = session_runtime.state_root("esp-mosaico")
+    root = session_runtime.state_root("esp-mosaico") / "0.2"
     api = host_api(workspace)
     try:
         snapshot = api.registry_snapshot(root)
@@ -42,7 +42,7 @@ def status(workspace: Any, project: str | None, *, all_projects: bool = False) -
             address = urlsplit(session["url"])
             if address.scheme != "http" or address.hostname != "127.0.0.1":
                 raise DeviceError("Registry URL is not a local project Gateway")
-            value = session_runtime.request(session["url"], "/v1/project", timeout=2)
+            value = session_runtime.request(session["url"], "/v2/project", timeout=2)
             if not isinstance(value, dict) or not isinstance(value.get("session"), dict):
                 raise DeviceError("Invalid project status response")
             live = value.get("session") or {}

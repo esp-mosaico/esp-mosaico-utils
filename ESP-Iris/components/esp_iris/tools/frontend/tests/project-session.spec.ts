@@ -8,11 +8,11 @@ for (const force of [false, true]) {
     ];
     let owner = "session-b";
     const actions: { action: string; body: Record<string, unknown> }[] = [];
-    await page.route("**/v1/health", async (route) => {
+    await page.route("**/v2/health", async (route) => {
       const response = await route.fetch();
       await route.fulfill({ json: { ...await response.json(), project_session: sessions[0] } });
     });
-    await page.route("**/v1/project**", async (route) => {
+    await page.route("**/v2/project**", async (route) => {
       const request = route.request();
       if (request.method() === "POST") {
         const action = new URL(request.url()).pathname.split("/").pop()!;
@@ -46,16 +46,16 @@ for (const force of [false, true]) {
     expect(actions).toEqual([]);
     await page.screenshot({ path: `/tmp/esp-iris-takeover-${force}.png`, fullPage: true });
     await page.getByRole("button", { name: force ? "强制接管" : "接管到本项目", exact: true }).click();
-    await expect(page.getByRole("button", { name: "释放设备" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "断开连接" })).toBeVisible();
     expect(actions[0].action).toBe("takeovers");
     expect(actions[0].body.device_id).toBe("00112233445566778899aabbccddeeff");
     expect(actions[0].body.takeover_id).toMatch(/^[0-9a-f-]{36}$/);
     expect(actions[0].body.force).toBe(force || undefined);
     await expect(page.getByRole("button", { name: "接管到本项目" })).toHaveCount(0);
-    await page.getByRole("button", { name: "释放设备" }).click();
+    await page.getByRole("button", { name: "断开连接" }).click();
     await expect(page.getByRole("button", { name: "连接到本项目" })).toBeVisible();
     await page.getByRole("button", { name: "连接到本项目" }).click();
-    await expect(page.getByRole("button", { name: "释放设备" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "断开连接" })).toBeVisible();
     expect(actions[2]).toEqual({ action: "acquire", body: { endpoint: "usb:location=test" } });
   });
 }
@@ -64,14 +64,14 @@ test("transferred device history stays readable without polling its former owner
   const history = { device_id: "old-device", suggested_alias: "Transferred device", connected: false, cached: true, state: "offline" };
   const current = { device_id: "current-device", suggested_alias: "Current device", connected: true, cached: false, state: "idle" };
   let forbiddenRequests = 0;
-  await page.route("**/v1/devices**", async (route) => {
+  await page.route("**/v2/devices**", async (route) => {
     const path = new URL(route.request().url()).pathname;
-    if (path === "/v1/devices") {
+    if (path === "/v2/devices") {
       await route.fulfill({ json: { demo: false, devices: [history, current] } });
-    } else if (path === "/v1/devices/old-device") {
+    } else if (path === "/v2/devices/old-device") {
       forbiddenRequests += 1;
       await route.fulfill({ status: 409, json: { message: "device belongs to another project" } });
-    } else if (path === "/v1/devices/current-device") {
+    } else if (path === "/v2/devices/current-device") {
       await route.fulfill({ json: { ...current, stale: false, mode: "develop" } });
     } else {
       await route.continue();

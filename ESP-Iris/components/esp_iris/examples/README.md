@@ -9,17 +9,17 @@ during source development.
 
 | Example | Transport | What it validates | Extra setup |
 | --- | --- | --- | --- |
-| [`minimal`](minimal/README.md) | TCP, USB CDC0, USB Serial/JTAG, or all three | Identity, lifecycle, status, logs, and single-winner transport arbitration | TCP needs an application network interface to become reachable |
+| [`minimal`](minimal/README.md) | TCP, USB CDC0 + CDC1, USB Serial/JTAG, or all three | Identity, lifecycle, status, logs, and independent control/data session binding | TCP needs an application network interface to become reachable |
 | [`tcp_wifi`](tcp_wifi/README.md) | TCP | Application-owned Wi-Fi STA, DHCP, and reconnect | Private Wi-Fi credentials |
 | [`tcp_pairing`](tcp_pairing/README.md) | TCP | Challenge-HMAC authentication and persistent token provisioning | Private Wi-Fi credentials and pairing token |
-| [`rpc_jobs`](rpc_jobs/README.md) | USB CDC0 | Echo/info RPCs and a cancellable long-running job | Separate programming interface |
-| [`display_input`](display_input/README.md) | USB CDC0 | Pull screenshot backend, screen mirror, and pointer RPC | Separate programming interface |
-| [`media_streams`](media_streams/README.md) | USB CDC0 | RGB565/RGB888/JPEG/PNG image profiles and PCM S16LE audio | Separate programming interface |
-| [`file_transfer`](file_transfer/README.md) | USB CDC0 | Streamed files, directories, rename, and safe deletion on FATFS | Separate programming interface and 2 MB partition layout |
-| [`ota`](ota/README.md) | USB CDC0 | Recovery-first/direct OTA, A/B slots, acceptance, and rollback | 16 MB flash layout and separate programming interface |
-| [`file_service`](file_service/README.md) | USB CDC0 | Bounded FATFS file browsing, streaming transfer, and mutations | 2 MB flash layout and separate programming interface |
-| [`crash_recovery`](crash_recovery/README.md) | USB CDC0 | Retained Core Dump and crash-threshold factory recovery | 16 MB flash layout and separate programming interface |
-| [`lifecycle`](lifecycle/README.md) | USB CDC0 | Stop, unregister, re-register, restart, and reconnect | Separate programming interface |
+| [`rpc_jobs`](rpc_jobs/README.md) | USB CDC0 + CDC1 | Echo/info RPCs and a cancellable long-running job | Separate programming interface |
+| [`display_input`](display_input/README.md) | USB CDC0 + CDC1 | Pull screenshot backend, screen mirror, and pointer RPC | Separate programming interface |
+| [`media_streams`](media_streams/README.md) | USB CDC0 + CDC1 | RGB565/RGB888/JPEG/PNG image profiles and PCM S16LE audio | Separate programming interface |
+| [`file_transfer`](file_transfer/README.md) | USB CDC0 + CDC1 | Streamed files, directories, rename, and safe deletion on FATFS | Separate programming interface and 2 MB partition layout |
+| [`ota`](ota/README.md) | USB CDC0 + CDC1 | Recovery-first/direct OTA, A/B slots, acceptance, and rollback | 16 MB flash layout and separate programming interface |
+| [`file_service`](file_service/README.md) | USB CDC0 + CDC1 | Bounded FATFS file browsing, streaming transfer, and mutations | 2 MB flash layout and separate programming interface |
+| [`crash_recovery`](crash_recovery/README.md) | USB CDC0 + CDC1 | Retained Core Dump and crash-threshold factory recovery | 16 MB flash layout and separate programming interface |
+| [`lifecycle`](lifecycle/README.md) | USB CDC0 + CDC1 | Stop, unregister, re-register, restart, and reconnect | Separate programming interface |
 
 Start with `minimal`, then choose a focused example for the service you are
 integrating.
@@ -38,15 +38,21 @@ From a downloaded example directory:
 idf.py build
 ```
 
+The ESP32-S31 example defaults select QIO. When reusing an existing `sdkconfig`,
+select QIO in `idf.py menuconfig` as well; defaults do not overwrite saved choices.
+The SDK still generates `--flash-mode dio` for the bootloader image and enables
+QIO during bootloader initialization.
+
 Use a stable serial path when flashing and verify the intended board first:
 
 ```bash
 idf.py -p /dev/serial/by-id/<programming-port> flash
 ```
 
-Application USB CDC0 is an ESP-Iris binary link, not a text console or general
-flashing port. USB examples should normally be flashed and monitored through a
-separate UART or USB Serial/JTAG programming interface.
+Application USB CDC0 is the text console for stock `idf.py monitor` and Iris
+commands. CDC1 is the independent binary data link. Gateway and monitor take
+turns owning the console; no device mode switch is needed. Flashing uses the
+board's ROM download interface.
 
 ## Local secrets
 

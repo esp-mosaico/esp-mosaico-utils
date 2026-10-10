@@ -104,38 +104,38 @@ def test_http_client_leases_and_workbench_reference_cleanup(tmp_path):
         client = TestClient(TestServer(create_app(service)))
         await client.start_server()
         try:
-            response = await client.post("/v1/project/clients", json={"session_id": "wrong"})
+            response = await client.post("/v2/project/clients", json={"session_id": "wrong"})
             assert response.status == 409
-            response = await client.post("/v1/project/clients", json={"session_id": "session", "kind": "run", "pid": 123})
+            response = await client.post("/v2/project/clients", json={"session_id": "session", "kind": "run", "pid": 123})
             assert response.status == 200
             lease = await response.json()
             lease["session_id"] = "session"
-            first = await client.ws_connect("/v1/events/ws?client=workbench")
+            first = await client.ws_connect("/v2/events/ws?client=workbench")
             notification = await first.receive_json()
             first_id = notification["client_id"]
             last_seen = project.clients.clients[first_id]["last_seen_ns"]
             with patch("iris_gateway.client_lifecycle.time.time_ns", return_value=last_seen + 1):
                 await first.pong(b"alive")
                 await until(lambda: project.clients.clients[first_id]["last_seen_ns"] == last_seen + 1)
-            second = await client.ws_connect("/v1/events/ws?client=workbench")
+            second = await client.ws_connect("/v2/events/ws?client=workbench")
             assert {item["kind"] for item in project.clients.snapshot({})["clients"]} == {"run", "workbench"}
             assert len(project.clients.clients) == 3
             await first.close()
             await until(lambda: len(project.clients.clients) == 2)
-            path = "/v1/project/clients/" + lease["client_id"]
+            path = "/v2/project/clients/" + lease["client_id"]
             assert (await client.post(path + "/renew", json=lease)).status == 200
             assert (await client.post(path + "/release", json=lease)).status == 200
             assert (await client.post(path + "/release", json=lease)).status == 200
             assert len(project.clients.clients) == 1
             await second.close()
             await until(lambda: not project.clients.clients)
-            state = await (await client.get("/v1/project")).json()
+            state = await (await client.get("/v2/project")).json()
             assert state["lifecycle"]["clients"] == []
             assert 9 < state["lifecycle"]["idle_remaining_seconds"] <= 10
             project.request_stop()
-            response = await client.post("/v1/project/clients", json={"session_id": "session"})
+            response = await client.post("/v2/project/clients", json={"session_id": "session"})
             assert response.status == 409
-            assert (await client.get("/v1/project")).status == 200
+            assert (await client.get("/v2/project")).status == 200
         finally:
             await client.close()
             await hub.close()

@@ -28,6 +28,7 @@ esp_err_t esp_wifi_stop(void) { return ESP_OK; }
 esp_err_t esp_wifi_deinit(void) { assert(wifi == 1); --wifi; return ESP_OK; }
 esp_err_t esp_wifi_set_storage(int mode) { assert(mode == WIFI_STORAGE_RAM); return next(); }
 esp_err_t esp_wifi_set_mode(int mode) { return next(); }
+esp_err_t esp_wifi_set_ps(int mode) { assert(mode == WIFI_PS_NONE); return next(); }
 esp_err_t esp_event_handler_instance_register(esp_event_base_t b, int32_t id,
     mock_event_callback_t cb, void *ctx, esp_event_handler_instance_t *out)
 {
@@ -83,7 +84,7 @@ int main(void)
     mock_alloc_fail_after = -1;
     assert(factory_network_start() == ESP_OK);
     reset();
-    for (int failure = 1; failure <= 9; ++failure) {
+    for (int failure = 1; failure <= 10; ++failure) {
         fail_step = failure;
         assert(factory_network_start() != ESP_OK);
         assert(!netifs && !wifi && !handlers);

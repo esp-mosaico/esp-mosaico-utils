@@ -110,6 +110,19 @@ def test_serial_read_returns_eof_after_close() -> None:
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("application_cdc", [False, True])
+def test_only_application_cdc_deasserts_dtr_on_close(application_cdc):
+    async def scenario():
+        serial = FakeSerial([])
+        serial.dtr = True
+        link = SerialLink("/dev/fake-iris", serial)
+        link._release_dtr = application_cdc
+        await link.close()
+        assert serial.dtr is (not application_cdc)
+        assert not serial.is_open
+    asyncio.run(scenario())
+
+
 def test_serial_close_waits_for_in_flight_read() -> None:
     class SlowSerial(FakeSerial):
         def read(self, size: int) -> bytes:
@@ -154,9 +167,15 @@ def test_usb_serial_jtag_disables_hangup_on_close(monkeypatch) -> None:
     changed: list[tuple[int, int, list[object]]] = []
 
     class DeferredSerial(FakeSerial):
-        def __init__(self, *, port: str, **options: object) -> None:
+        def __init__(self, *, port: str | None, **options: object) -> None:
             super().__init__([])
-            assert port == "/dev/fake-usj"
+            assert port is None
+            self.is_open = False
+
+        def open(self) -> None:
+            assert self.port == "/dev/fake-usj"
+            assert self.dtr is True and self.rts is True
+            self.is_open = True
 
         def fileno(self) -> int:
             return 42
@@ -174,6 +193,7 @@ def test_usb_serial_jtag_disables_hangup_on_close(monkeypatch) -> None:
 
     async def scenario() -> None:
         link = await SerialLink.open("/dev/fake-usj", hupcl=False)
+        assert link._serial.dtr is False and link._serial.rts is False
         assert len(changed) == 1
         fd, when, values = changed[0]
         assert fd == 42

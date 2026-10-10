@@ -109,7 +109,7 @@ class ProjectGateway:
         if not device_id:
             # Status/health and client lease control are passive. All business
             # mutations retain a reference even if their HTTP client disappears.
-            work = request.method not in {"GET", "HEAD", "OPTIONS"} and not request.path.startswith("/v1/project/clients")
+            work = request.method not in {"GET", "HEAD", "OPTIONS"} and not request.path.startswith("/v2/project/clients")
             if not work:
                 return await handler(request)
             if self.closing:
@@ -201,23 +201,36 @@ class ProjectGateway:
         owned = self.owned_target()
         if owned is not None:
             return owned, None
-        candidates = {}
-        blocked = []
+        candidates: dict[str, dict[str, Any]] = {}
+        blocked: list[str] = []
+        usb_groups: dict[str, list[dict[str, Any]]] = collections.defaultdict(list)
         for device in await to_thread(discover_iris_usb_devices):
             metadata = {
                 "path": device.path, "device_path": device.device,
                 "vid": device.vid, "pid": device.pid, "product": device.product,
                 "serial_number": device.serial_number, "location": device.location,
+                "interface": device.interface, "link_role": device.link_role,
             }
             if not iris_usb_allowed(metadata):
                 continue
             endpoint = usb_endpoint(metadata)
             metadata["endpoint"] = endpoint
-            claim = self.registry.claim(endpoint)
-            if claim is not None:
-                blocked.append(f"{endpoint} (owner={claim['owner']}, state={claim['state']})")
-            else:
-                candidates[endpoint] = metadata
+            # Physical topology is only a selection hint. A composite device's
+            # control/data interfaces still require independent live handshakes.
+            # Never collapse devices solely by serial number or adjacent ports.
+            parent = device.location.split(":", 1)[0] if device.location else endpoint
+            usb_groups[parent].append(metadata)
+        for group in usb_groups.values():
+            reservations = [(item, self.registry.claim(item["endpoint"])) for item in group]
+            reserved = [(item, claim) for item, claim in reservations if claim is not None]
+            if reserved:
+                blocked.extend(f"{item['endpoint']} (owner={claim['owner']}, state={claim['state']})"
+                               for item, claim in reserved)
+                continue
+            # Prefer the standard console when both roles are present. A lone
+            # data endpoint remains eligible for data-first admission.
+            selected = [item for item in group if item["link_role"] == "control"] or group
+            candidates.update((item["endpoint"], item) for item in selected)
         if len(candidates) > 1:
             self.selection_error("Multiple available USB devices; specify --endpoint.", sorted(candidates))
         if candidates:
@@ -234,6 +247,12 @@ class ProjectGateway:
         if device_id and (not isinstance(device_id, str) or re.fullmatch(r"[0-9a-f]{32}", device_id) is None):
             raise ValueError("Device ID must contain 32 lowercase hexadecimal characters")
         endpoint = body.get("endpoint")
+        baudrate = body.get("baudrate")
+        if baudrate is not None and (
+            type(baudrate) is not int or not 9600 <= baudrate <= 3000000
+            or not endpoint or str(endpoint).startswith("tcp:")
+        ):
+            raise ValueError("baudrate requires an explicit serial endpoint and an integer from 9600 to 3000000")
         token = body.get("pairing_token")
         if token is not None and (not isinstance(token, str) or len(bytes.fromhex(token)) != 32):
             raise ValueError("pairing token must contain 32 bytes")
@@ -283,12 +302,20 @@ class ProjectGateway:
                 candidates = [{"endpoint": endpoint}]
             elif not candidates:
                 metadata = await to_thread(resolve_usb_port, str(endpoint))
-                if not iris_usb_allowed(metadata, explicit=True):
+                serial_jtag = metadata.get("vid") == 0x303A and metadata.get("pid") == 0x1001
+                if not iris_usb_allowed(metadata, explicit=True, allow_serial_jtag=serial_jtag):
                     raise ValueError("endpoint is reserved for the ROM recovery workflow")
                 candidates = [{"endpoint": usb_endpoint(metadata), **metadata}]
         else:
             candidates = await identity_candidates(self, str(device_id))
-        for candidate in candidates:
+        for index, candidate in enumerate(candidates):
+            if endpoint and candidate["endpoint"].startswith("usb:"):
+                candidate = candidate.copy()
+                candidate["allow_serial_jtag"] = candidate.get("vid") == 0x303A and candidate.get("pid") == 0x1001
+                candidate["uart"] = candidate.get("vid") != 0x303A
+                if baudrate is not None:
+                    candidate["baudrate"] = baudrate
+                candidates[index] = candidate
             claim = self.registry.claim(candidate["endpoint"])
             if claim and claim.get("device_id") in self.blocked:
                 raise OwnershipConflict("device is draining for handoff")
@@ -372,8 +399,8 @@ class ProjectGateway:
             return web.json_response({"released": client_id})
 
         register_takeover_routes(app, self)
-        app.router.add_post("/v1/project/clients", clients)
-        app.router.add_post("/v1/project/clients/{client_id}/{verb:renew|release}", clients)
+        app.router.add_post("/v2/project/clients", clients)
+        app.router.add_post("/v2/project/clients/{client_id}/{verb:renew|release}", clients)
 
         async def handle(request: web.Request) -> web.Response:
             if not request_is_loopback(request):
@@ -419,5 +446,5 @@ class ProjectGateway:
                     return web.json_response({"reconciled": resource})
                 raise ValueError("unknown project action")
 
-        app.router.add_get("/v1/project", handle)
-        app.router.add_post("/v1/project/{action:acquire|release|reconcile}", handle)
+        app.router.add_get("/v2/project", handle)
+        app.router.add_post("/v2/project/{action:acquire|release|reconcile}", handle)

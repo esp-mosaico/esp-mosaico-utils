@@ -26,7 +26,7 @@ from .iris import host_api
 from .project import resolve_project
 
 CURRENT_SCOPE: ContextVar[Any] = ContextVar("mosaico_project_scope", default=None)
-LIFECYCLE_CAPABILITY = "project-client-lifecycle/v1"
+LIFECYCLE_CAPABILITY = "project-client-lifecycle/v2"
 
 
 class GatewayDraining(DeviceError):
@@ -40,7 +40,7 @@ class ClientLease:
                      "lease_token": secrets.token_hex(32), "pid": os.getpid(),
                      "kind": "run" if getattr(args, "session_action", None) == "run" else "cli",
                      "command": getattr(args, "public_command", None) or getattr(args, "command", "cli")}
-        result = request(url, "/v1/project/clients", self.body, timeout=3)
+        result = request(url, "/v2/project/clients", self.body, timeout=3)
         self.interval = float(result["renew_seconds"])
         self.duration = float(result["lease_seconds"])
         self.last_success = time.monotonic()
@@ -52,7 +52,7 @@ class ClientLease:
     def _renew(self) -> None:
         while not self.stopped.wait(self.interval):
             try:
-                request(self.url, f"/v1/project/clients/{self.body['client_id']}/renew", self.body, timeout=2)
+                request(self.url, f"/v2/project/clients/{self.body['client_id']}/renew", self.body, timeout=2)
                 self.last_success = time.monotonic()
             except DeviceError:
                 if time.monotonic() - self.last_success >= self.duration - self.interval:
@@ -67,7 +67,7 @@ class ClientLease:
         self.stopped.set()
         self.thread.join(timeout=3)
         with contextlib.suppress(DeviceError):
-            request(self.url, f"/v1/project/clients/{self.body['client_id']}/release", self.body, timeout=2)
+            request(self.url, f"/v2/project/clients/{self.body['client_id']}/release", self.body, timeout=2)
 
 
 def read_pairing_token(path: Path) -> str:
@@ -108,10 +108,13 @@ def acquire_device(url: str, arguments: Any, context: Any, *, allow_none: bool =
     endpoint = getattr(arguments, "endpoint", None)
     body = {"device_id": selected, "endpoint": endpoint,
             "auto": not (selected or endpoint), "allow_none": allow_none}
+    baudrate = getattr(arguments, "baudrate", None)
+    if baudrate is not None:
+        body["baudrate"] = baudrate
     token_file = getattr(arguments, "pairing_token_file", None)
     if token_file:
         body["pairing_token"] = read_pairing_token(Path(token_file))
-    device = request(url, "/v1/project/acquire", body, timeout=35)["device"]
+    device = request(url, "/v2/project/acquire", body, timeout=35)["device"]
     if device is not None:
         arguments.device_id = device["device_id"]
         context.status(f"device: {'selected' if selected or endpoint else 'automatically selected'} "
@@ -148,7 +151,7 @@ class SessionScope:
         args = self.arguments
         project = resolve_project(context.workspace, getattr(args, "project", None), Path.cwd())
         api = host_api(context.workspace)
-        local = api.LocalProject(state_root("esp-mosaico"), context.workspace.root, project)
+        local = api.LocalProject((state_root("esp-mosaico") / "0.2"), context.workspace.root, project)
         expected_source = (api.source_identity(context.workspace.esp_iris_path)
                            if context.workspace.gateway_source_policy == "exact" else None)
         project_key = local.project_id
@@ -167,7 +170,7 @@ class SessionScope:
             existing = None
             try:
                 record = local.connection()
-                health = request(record["url"], "/v1/health", timeout=2)
+                health = request(record["url"], "/v2/health", timeout=2)
                 live = health.get("project_session") or {}
                 if (live.get("session_id"), live.get("project_id"), live.get("instance_id")) != (
                     record["session_id"], project_key, record["instance_id"],
@@ -233,7 +236,7 @@ class SessionScope:
                         try:
                             record = local.connection()
                             if record["session_id"] == session_id:
-                                health = request(record["url"], "/v1/health", timeout=2)
+                                health = request(record["url"], "/v2/health", timeout=2)
                                 _require_compatible_gateway(health, expected_source=expected_source)
                                 break
                         except (OSError, ValueError, KeyError, DeviceError):
@@ -261,7 +264,7 @@ class SessionScope:
                 except DeviceError:
                     # Only admission may retry; no business request has run yet.
                     try:
-                        state = request(record["url"], "/v1/health", timeout=2)
+                        state = request(record["url"], "/v2/health", timeout=2)
                     except DeviceError:
                         raise GatewayDraining("Gateway exited during client admission")
                     if (state.get("lifecycle") or {}).get("state") == "draining":

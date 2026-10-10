@@ -59,24 +59,13 @@ def server_url(value: str | None) -> str:
 
 
 def private_root(server: str) -> Path:
-    state = state_root("esp-mosaico")
+    state = state_root("esp-mosaico") / "0.2"
     server_key = hashlib.sha256(server.encode()).hexdigest()
     parent = state / "mosaico-ideas"
     root = parent / server_key
     parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     if os.name != "nt":
         parent.chmod(0o700)
-    # One-time per-server migration of credentials and resumable uploads.
-    # New state wins; never merge it with potentially stale credentials.
-    legacy = state / "maker-spark" / server_key
-    if not root.exists() and legacy.exists():
-        if legacy.is_symlink() or not legacy.is_dir():
-            raise OperationError("Invalid legacy Mosaico Ideas state directory.")
-        try:
-            legacy.rename(root)
-        except OSError as error:
-            if not root.is_dir():
-                raise OperationError("Cannot migrate private Mosaico Ideas state.") from error
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     if os.name != "nt":
         root.chmod(0o700)

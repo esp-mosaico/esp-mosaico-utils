@@ -41,13 +41,13 @@ static void exit_snapshot(void *arg)
              current, peak, errors);
 }
 
-esp_err_t __real_esp_ota_set_boot_partition(const esp_partition_t *partition);
-esp_err_t __wrap_esp_ota_set_boot_partition(const esp_partition_t *partition)
+esp_err_t __real_mosaico_boot_request_recovery(void);
+esp_err_t __wrap_mosaico_boot_request_recovery(void)
 {
-    const esp_err_t err = __real_esp_ota_set_boot_partition(partition);
-    if (err == ESP_OK && partition->subtype == ESP_PARTITION_SUBTYPE_APP_FACTORY) {
+    const esp_err_t err = __real_mosaico_boot_request_recovery();
+    if (err == ESP_OK) {
         /* Existing timer task, test-only timer allocated before attribution:
-         * sample after the normal enter-recovery task is created, before reset. */
+         * sample the transition after the RPC response, before reset. */
         if (esp_timer_start_once(s_exit_timer, 250000) != ESP_OK) {
             taskENTER_CRITICAL(&s_lock);
             ++s_errors;

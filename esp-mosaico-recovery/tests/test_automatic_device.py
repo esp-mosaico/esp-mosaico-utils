@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "mosaico-tools/tools"))
 
 from mosaico_cli.cli import _project_command, build_parser
 from mosaico_cli.errors import DeviceError, SelectionError
@@ -24,6 +24,21 @@ from mosaico_cli.session_runtime import (
 from test_project_sessions import workspace
 
 
+def test_uart_baudrate_from_public_cli_reaches_project_admission():
+    from mosaico_cli.session_runtime import acquire_device
+
+    arguments = build_parser().parse_args([
+        "iris", "device-status", "--endpoint", "/dev/ttyUSB0", "--baudrate", "74880"])
+    with patch("mosaico_cli.session_runtime.request", return_value={
+        "device": {"device_id": "verified", "endpoint": "usb:location=1-7"}}) as http:
+        acquire_device("http://gateway", arguments, Mock())
+    assert http.call_args.args[2] == {
+        "device_id": None, "endpoint": "/dev/ttyUSB0", "auto": False,
+        "allow_none": False, "baudrate": 74880,
+    }
+    assert arguments.device_id == "verified"
+
+
 @pytest.mark.parametrize("command", [
     "monitor", "memory", "crash", "rpc", "install", "system-update",
     "enter-recovery", "recovery-wifi", "bridge-code", "recover",
@@ -34,7 +49,7 @@ def test_device_commands_auto_acquire_and_pin_the_returned_identity(tmp_path, mo
     project = tmp_path / "projects/a"
     key = hashlib.sha256((str(work.root.resolve()) + "\0" + str(project)).encode()).hexdigest()
     monkeypatch.setattr("mosaico_cli.session_runtime.state_root", lambda name: tmp_path / "state" / name)
-    directory = tmp_path / "state/esp-mosaico/project-sessions" / key
+    directory = tmp_path / "state/esp-mosaico/0.2/project-sessions" / key
     directory.mkdir(parents=True)
     record = {"session_id": "owner", "project_id": key, "instance_id": "instance",
               "persistent": True, "url": "http://127.0.0.1:1234"}
@@ -43,9 +58,9 @@ def test_device_commands_auto_acquire_and_pin_the_returned_identity(tmp_path, mo
     scope.arguments = Namespace(command=command, project=str(project), device_id=None, endpoint=None)
 
     def request(url, path, body=None, **kwargs):
-        if path == "/v1/health":
+        if path == "/v2/health":
             return {"project_session": record, "capabilities": [LIFECYCLE_CAPABILITY]}
-        assert path == "/v1/project/acquire"
+        assert path == "/v2/project/acquire"
         assert body["auto"] is True
         assert body["allow_none"] == (command == "recover")
         return {"device": {"device_id": "verified-device", "boot_id": 42}}
@@ -69,7 +84,7 @@ def test_queries_and_explicit_rom_mac_do_not_auto_acquire(tmp_path, monkeypatch,
     project = tmp_path / "projects/a"
     key = hashlib.sha256((str(work.root.resolve()) + "\0" + str(project)).encode()).hexdigest()
     monkeypatch.setattr("mosaico_cli.session_runtime.state_root", lambda name: tmp_path / "state" / name)
-    directory = tmp_path / "state/esp-mosaico/project-sessions" / key
+    directory = tmp_path / "state/esp-mosaico/0.2/project-sessions" / key
     directory.mkdir(parents=True)
     record = {"session_id": "owner", "project_id": key, "instance_id": "instance",
               "persistent": True, "url": "http://127.0.0.1:1234"}
@@ -81,7 +96,7 @@ def test_queries_and_explicit_rom_mac_do_not_auto_acquire(tmp_path, monkeypatch,
             patch("mosaico_cli.session_runtime.ClientLease"):
         scope.gateway(RunContext(work, "test", json_output=True), Path(sys.executable),
                       work.esp_iris_path / "components/esp_iris/tools/esp_iris.py", "revision")
-    http.assert_called_once_with(record["url"], "/v1/health", timeout=2)
+    http.assert_called_once_with(record["url"], "/v2/health", timeout=2)
 
 
 @pytest.mark.parametrize("error", [DeviceError("occupied"), SelectionError("multiple")])
@@ -108,8 +123,8 @@ def test_run_only_auto_connects_on_initial_start(created):
 
 
 @pytest.mark.parametrize("argv,path", [
-    (["iris", "claim"], "/v1/project/acquire"),
-    (["iris", "release"], "/v1/project/release"),
+    (["iris", "claim"], "/v2/project/acquire"),
+    (["iris", "release"], "/v2/project/release"),
 ])
 def test_ownership_commands_can_omit_device_and_join_shared_gateway(argv, path):
     arguments = build_parser().parse_args(argv)
@@ -140,6 +155,6 @@ def test_gateway_ambiguity_preserves_candidates_for_cli_errors():
     failure = HTTPError("http://gateway", 400, "Bad Request", {}, io.BytesIO(json.dumps(payload).encode()))
     with patch("mosaico_cli.session_runtime.urlopen", side_effect=failure), \
             pytest.raises(SelectionError) as caught:
-        request("http://gateway", "/v1/project/acquire", {"auto": True})
+        request("http://gateway", "/v2/project/acquire", {"auto": True})
     assert caught.value.details["candidates"] == ["usb:location=a", "usb:location=b"]
     assert caught.value.exit_code == 2

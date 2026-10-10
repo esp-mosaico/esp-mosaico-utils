@@ -355,14 +355,14 @@ def register_file_routes(app: web.Application, service: Any) -> None:
             headers={"X-Operation-ID": operation["operation_id"]},
         )
 
-    app.router.add_get("/v1/devices/{device_id}/files/volumes", file_volumes)
-    app.router.add_get("/v1/devices/{device_id}/files/stat", file_stat)
-    app.router.add_get("/v1/devices/{device_id}/files", file_list)
-    app.router.add_get("/v1/devices/{device_id}/file", file_download)
-    app.router.add_put("/v1/devices/{device_id}/file", file_upload)
-    app.router.add_delete("/v1/devices/{device_id}/file", file_delete)
-    app.router.add_post("/v1/devices/{device_id}/directories", file_mkdir)
-    app.router.add_post("/v1/devices/{device_id}/file-rename", file_rename)
+    app.router.add_get("/v2/devices/{device_id}/files/volumes", file_volumes)
+    app.router.add_get("/v2/devices/{device_id}/files/stat", file_stat)
+    app.router.add_get("/v2/devices/{device_id}/files", file_list)
+    app.router.add_get("/v2/devices/{device_id}/file", file_download)
+    app.router.add_put("/v2/devices/{device_id}/file", file_upload)
+    app.router.add_delete("/v2/devices/{device_id}/file", file_delete)
+    app.router.add_post("/v2/devices/{device_id}/directories", file_mkdir)
+    app.router.add_post("/v2/devices/{device_id}/file-rename", file_rename)
 
 
 __all__ = ["register_file_routes"]

@@ -8,7 +8,6 @@ import json
 import os
 import pathlib
 import re
-import struct
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -19,6 +18,7 @@ from aiohttp import BodyPartReader, WSMsgType, web
 from .boot_identity import boot_id_text
 from .client_lifecycle import CAPABILITY as LIFECYCLE_CAPABILITY
 from .compatibility import compatibility_expectation, validate_update_compatibility
+from .console_input import encode_console_line
 from .contracts import GatewayHub
 from .crashes import (
     archive_evidence,
@@ -85,9 +85,8 @@ from .update_acceptance import validate_updated_contract
 
 LOG_PATTERN = re.compile(r"^(?P<level>[EWIDV])\s+\((?P<stamp>\d+)\)\s+(?P<tag>[^:]+):\s?(?P<message>.*)$")
 CONSOLE_METHOD_NAME = "console.execute"
-CONSOLE_LINE_MAX_BYTES = 255
 GATEWAY_CLIENT_MAX_SIZE = 1024 * 1024 * 1024
-GATEWAY_API = {"major": 1, "minor": 2}
+GATEWAY_API = {"major": 2, "minor": 0}
 GATEWAY_CAPABILITIES = [
     "local-host-operations/v1",
     "device-states/v1",
@@ -181,6 +180,8 @@ class GatewayService:
             if match:
                 item["parsed"] = match.groupdict()
             category = "log"
+        elif kind in {"console_raw", "console_binding", "console_gap", "hardware_reset"}:
+            category = "console"
         elif kind == "operation":
             category = "operation"
         else:
@@ -316,7 +317,8 @@ class GatewayService:
             cached[device_id] = item
         for device_id, item in cached.items():
             if device_id not in connected:
-                item["connected"] = False
+                item.update(connected=False, online=False, cached=True, stale=True, control_link=None,
+                            data_link=None, data_available=False, console_available=False)
         result = sorted(
             cached.values(), key=lambda item: str(item.get("alias") or item["device_id"])
         )
@@ -328,13 +330,23 @@ class GatewayService:
     def list_endpoints(self) -> list[dict[str, Any]]:
         endpoints = {item["endpoint"]: dict(item) for item in self.device_hub.list_endpoints()}
         if not self.demo:
-            for port in discover_iris_usb_devices(include_rom=True):
+            # Listing is passive, including unclaimed USB Serial/JTAG and UART.
+            # Keep auto-admission restricted to Iris descriptors in ProjectGateway.
+            for item in endpoints.values():
+                if item["endpoint"].startswith("usb:"):
+                    item["present"] = False
+            for port in discover_iris_usb_devices(
+                include_rom=True, include_usb_serial_jtag=True, include_uart=True
+            ):
+                metadata = {"path": port.path, "device_path": port.device, "vid": port.vid,
+                            "pid": port.pid, "serial_number": port.serial_number, "location": port.location,
+                            "product": port.product, "interface": port.interface, "link_role": port.link_role,
+                            "transport_name": port.transport, "uart": port.transport == "uart"}
+                endpoint = usb_endpoint(metadata)
+                endpoints[endpoint] = {**endpoints.get(endpoint, {}), **metadata,
+                                       "endpoint": endpoint, "present": True}
                 if port.vid == 0x303A and port.pid == 0x0020:
-                    metadata = {"path": port.path, "device": port.device, "vid": port.vid,
-                                "pid": port.pid, "serial_number": port.serial_number, "location": port.location}
-                    endpoint = usb_endpoint(metadata)
-                    endpoints[endpoint] = {**endpoints.get(endpoint, {}), **metadata,
-                                           "endpoint": endpoint, "firmware_mode": "rom", "present": True}
+                    endpoints[endpoint]["firmware_mode"] = "rom"
         workers = active_workers()
         result = []
         for item in endpoints.values():
@@ -356,7 +368,7 @@ class GatewayService:
             if not cached:
                 raise LookupError("no cached device status is available")
             snapshot = next((item for item in self.list_devices() if item["device_id"] == device_id), {})
-            return boot_id_text({**cached, **describe_device(self, snapshot, workers=active_workers()),
+            return boot_id_text({**cached, **snapshot, **describe_device(self, snapshot, workers=active_workers()),
                                  "stale": True, "mode": "observe"})
         result = boot_id_text(await self.device_hub.status(device_id))
         result.update(stale=False, mode="develop", queue=self.operations.queue_state(device_id))
@@ -607,6 +619,10 @@ class GatewayService:
             }
         queue = self.device_hub.subscribe(device_id)
         try:
+            # subscribe() replays recent history. Only events received after
+            # this request can establish this restart's reconnect.
+            while not queue.empty():
+                queue.get_nowait()
             accepted_delay = await self.device_hub.restart(device_id, delay_ms)
             await self.operations.stage(operation_id, "reconnecting")
             deadline = asyncio.get_running_loop().time() + 30
@@ -622,7 +638,16 @@ class GatewayService:
                     and boot_id is not None
                     and boot_id != previous_boot
                 ):
-                    status = await self.device_hub.status(device_id)
+                    try:
+                        status = await self.device_hub.status(device_id)
+                    except (KeyError, ConnectionError, OSError, asyncio.TimeoutError):
+                        # The link can disappear again between the event and
+                        # the live read; keep observing the same device.
+                        continue
+                    if (status.get("device_id") != device_id
+                            or status.get("boot_id") != boot_id
+                            or status.get("stale") is True):
+                        continue
                     return {
                         "accepted": True,
                         "delay_ms": accepted_delay,
@@ -673,7 +698,7 @@ def create_app(service: GatewayService) -> web.Application:
 
     @web.middleware
     async def authentication(request: web.Request, handler: Callable[[web.Request], Awaitable[web.StreamResponse]]) -> web.StreamResponse:
-        if request.method == "OPTIONS" or request.path in PUBLIC_API or not request.path.startswith("/v1"):
+        if request.method == "OPTIONS" or request.path in PUBLIC_API or not request.path.startswith("/v2"):
             return await handler(request)
         if not service.authentication_required(request):
             token = ACTOR_CONTEXT.set(Actor("local", "Unauthenticated local client"))
@@ -713,7 +738,7 @@ def create_app(service: GatewayService) -> web.Application:
                     service.project.registry.session(service.project.registry.session_id)
                     if service.project is not None else None
                 ),
-                "esp_iris_version": "0.1.0",
+                "esp_iris_version": "0.2.0",
                 "source": service.source_identity,
                 "esp_iris_revision": os.environ.get(
                     "ESP_IRIS_SOURCE_REVISION", "unknown"
@@ -864,13 +889,15 @@ def create_app(service: GatewayService) -> web.Application:
         cursor = int(request.query.get("cursor", "0"))
         categories = [item for item in request.query.get("categories", "").split(",") if item]
         device_id = request.query.get("device_id")
+        capture_id = request.query.get("capture_id")
+        endpoint = request.query.get("endpoint")
         if cursor:
             items, gap = service.store.events_after(
-                cursor, device_id=device_id, categories=categories, limit=3000
+                cursor, device_id=device_id, categories=categories, capture_id=capture_id, endpoint=endpoint, limit=3000
             )
         else:
             items = service.store.latest_events(
-                device_id=device_id, categories=categories, limit=3000
+                device_id=device_id, categories=categories, capture_id=capture_id, endpoint=endpoint, limit=3000
             )
             gap = False
         return web.json_response({"events": items, "history_gap": gap, "next_cursor": items[-1]["event_id"] if items else cursor})
@@ -878,6 +905,8 @@ def create_app(service: GatewayService) -> web.Application:
     async def event_socket(request: web.Request) -> web.StreamResponse:
         cursor = int(request.query.get("cursor", "0"))
         device_id = request.query.get("device_id")
+        capture_id = request.query.get("capture_id")
+        endpoint = request.query.get("endpoint")
         lease = None
         if service.project and service.project.shared:
             lease = service.project.clients.register({
@@ -889,6 +918,33 @@ def create_app(service: GatewayService) -> web.Application:
         # owns heartbeat timeouts; project sockets reply to PING explicitly.
         websocket = web.WebSocketResponse(heartbeat=5 if lease else 20, autoping=not bool(lease))
         last_event_id = cursor
+        initial_event_ids: set[int] = set()
+
+        async def forward_bound_history(binding: dict[str, Any]) -> None:
+            # A device-filtered follower could not see these records before
+            # HELLO identified the capture. Replay their original IDs and
+            # timestamps; a later HELLO never invents a Boot ID for them.
+            start = int(binding.get("history_start_event_id") or 0)
+            end = int(binding.get("history_end_event_id") or 0)
+            if not device_id or not start or not end:
+                return
+            bound_cursor = start - 1
+            while bound_cursor < end:
+                records, gap = service.store.events_after(
+                    bound_cursor, device_id=device_id,
+                    capture_id=binding["capture_id"], endpoint=endpoint,
+                )
+                if gap:
+                    await websocket.send_json({"kind": "history_gap", "reason": "console history rotated before identity binding"})
+                if not records:
+                    break
+                for record in records:
+                    record_id = int(record["event_id"])
+                    if record_id > end:
+                        return
+                    if record_id not in initial_event_ids:
+                        await websocket.send_json(record)
+                    bound_cursor = record_id
 
         async def forward() -> None:
             nonlocal last_event_id
@@ -896,9 +952,15 @@ def create_app(service: GatewayService) -> web.Application:
                 item = await queue.get()
                 if device_id and item.get("device_id") != device_id:
                     continue
+                if capture_id and item.get("capture_id") != capture_id:
+                    continue
+                if endpoint and item.get("endpoint") != endpoint:
+                    continue
                 event_id = int(item.get("event_id") or 0)
                 if event_id and event_id <= last_event_id:
                     continue
+                if item.get("kind") == "console_binding":
+                    await forward_bound_history(item)
                 await websocket.send_json(item)
                 last_event_id = max(last_event_id, event_id)
 
@@ -906,12 +968,15 @@ def create_app(service: GatewayService) -> web.Application:
         try:
             await websocket.prepare(request)
             if cursor:
-                history, gap = service.store.events_after(cursor, device_id=device_id, limit=3000)
+                history, gap = service.store.events_after(cursor, device_id=device_id, capture_id=capture_id, endpoint=endpoint, limit=3000)
             else:
-                history, gap = service.store.latest_events(device_id=device_id, limit=3000), False
+                history, gap = service.store.latest_events(device_id=device_id, capture_id=capture_id, endpoint=endpoint, limit=3000), False
             if gap:
                 await websocket.send_json({"kind": "history_gap", "reason": "requested cursor is outside retention"})
+            initial_event_ids.update(int(item["event_id"]) for item in history)
             for item in history:
+                if cursor and item.get("kind") == "console_binding":
+                    await forward_bound_history(item)
                 await websocket.send_json(item)
             last_event_id = history[-1]["event_id"] if history else cursor
             if lease:
@@ -1056,67 +1121,18 @@ def create_app(service: GatewayService) -> web.Application:
         line = body.get("line")
         if not isinstance(line, str):
             raise TypeError("console line must be a string")
-        line = line.strip()
-        encoded = line.encode("utf-8")
-        if (
-            not encoded
-            or len(encoded) > CONSOLE_LINE_MAX_BYTES
-            or "\x00" in line
-            or "\r" in line
-            or "\n" in line
-        ):
-            raise ValueError(
-                f"console line must contain 1 to {CONSOLE_LINE_MAX_BYTES} UTF-8 bytes without CR, LF, or NUL"
-            )
-        method = next(
-            (
-                item
-                for item in service.rpc_catalog.get("methods", [])
-                if item.get("name") == CONSOLE_METHOD_NAME
-            ),
-            None,
-        )
-        if method is None:
-            raise RuntimeError("console RPC is missing from the catalog")
+        encoded = encode_console_line(line)
         device_id = service.resolve_device(request.match_info["device_id"])
-        deadline_ms = int(method.get("timeout_ms", 1000))
-        command_name = line.split(maxsplit=1)[0]
         operation, result, created = await service.operations.execute(
-            device_id,
-            _actor(request),
-            CONSOLE_METHOD_NAME,
-            {
-                "command": command_name,
-                "service_id": int(method["service_id"]),
-                "method_id": int(method["method_id"]),
-                "request_sha256": hashlib.sha256(encoded).hexdigest(),
-                "request_bytes": len(encoded),
-                "deadline_ms": deadline_ms,
-            },
-            lambda: service.device_hub.rpc(
-                device_id,
-                int(method["service_id"]),
-                int(method["method_id"]),
-                encoded,
-                deadline_ms=deadline_ms,
-            ),
+            device_id, _actor(request), CONSOLE_METHOD_NAME,
+            {"command": line.split(maxsplit=1)[0], "request_sha256": hashlib.sha256(encoded).hexdigest(),
+             "request_bytes": len(encoded), "transport": "console-text"},
+            lambda: service.device_hub.console_write(device_id, line),
             operation_id=request.headers.get("X-Operation-ID"),
         )
-        if not created:
-            return web.json_response(
-                {"operation": operation, "idempotent_reuse": True, "console": None}
-            )
-        if result is None or len(result) != 4:
-            raise RuntimeError("console RPC returned an invalid job response")
-        return web.json_response(
-            {
-                "operation": operation,
-                "console": {
-                    "job_id": struct.unpack("<I", result)[0],
-                    "accepted": True,
-                },
-            }
-        )
+        return web.json_response({"operation": operation,
+                                  "idempotent_reuse": not created,
+                                  "console": result if created else operation.get("result")})
 
     async def job(request: web.Request) -> web.Response:
         blocked = service.require_develop()
@@ -1136,6 +1152,24 @@ def create_app(service: GatewayService) -> web.Application:
         )
         service.observe_device_activity({"kind": "job", "device_id": device_id, **result})
         return web.json_response({"operation": operation, "job": result})
+
+    async def hardware_reset(request: web.Request) -> web.Response:
+        blocked = service.require_develop()
+        if blocked is not None:
+            return blocked
+        body = await _json_body(request)
+        endpoint = str(body.get("endpoint", ""))
+        mode = str(body.get("mode", "run"))
+        if not endpoint or mode not in {"run", "rom", "attach"}:
+            raise web.HTTPBadRequest(text="endpoint and valid reset mode are required")
+        resource = service.device_hub.device_for_endpoint(endpoint) or endpoint
+        operation, result, _ = await service.operations.execute(
+            resource, _actor(request), "console.hardware_reset",
+            {"endpoint": endpoint, "mode": mode},
+            lambda: service.device_hub.hardware_reset(endpoint, mode),
+            operation_id=request.headers.get("X-Operation-ID"),
+        )
+        return web.json_response({"operation": operation, "reset": result})
 
     async def restart(request: web.Request) -> web.Response:
         blocked = service.require_develop()
@@ -1420,7 +1454,7 @@ def create_app(service: GatewayService) -> web.Application:
             {
                 "operation": operation,
                 "accepted": created,
-                "status_url": f"/v1/operations/{operation_id}",
+                "status_url": f"/v2/operations/{operation_id}",
             },
             status=202,
         )
@@ -1468,7 +1502,7 @@ def create_app(service: GatewayService) -> web.Application:
             {
                 "operation": operation,
                 "accepted": created,
-                "status_url": f"/v1/operations/{operation_id}",
+                "status_url": f"/v2/operations/{operation_id}",
                 "bundle": bundle.as_dict(),
             },
             status=202,
@@ -1543,65 +1577,66 @@ def create_app(service: GatewayService) -> web.Application:
             status=404,
         )
 
-    app.router.add_get("/v1/health", health)
-    app.router.add_get("/v1/metrics", metrics)
-    app.router.add_get("/v1/auth/state", auth_state)
-    app.router.add_post("/v1/auth/setup", setup)
-    app.router.add_post("/v1/auth/login", login)
-    app.router.add_post("/v1/auth/logout", logout)
-    app.router.add_get("/v1/mode", mode)
-    app.router.add_put("/v1/mode", mode)
-    app.router.add_get("/v1/devices", devices)
-    app.router.add_get("/v1/endpoints", endpoints)
+    app.router.add_get("/v2/health", health)
+    app.router.add_get("/v2/metrics", metrics)
+    app.router.add_get("/v2/auth/state", auth_state)
+    app.router.add_post("/v2/auth/setup", setup)
+    app.router.add_post("/v2/auth/login", login)
+    app.router.add_post("/v2/auth/logout", logout)
+    app.router.add_get("/v2/mode", mode)
+    app.router.add_put("/v2/mode", mode)
+    app.router.add_get("/v2/devices", devices)
+    app.router.add_get("/v2/endpoints", endpoints)
     register_host_routes(app, service)
-    app.router.add_get("/v1/devices/{device_id}", status)
-    app.router.add_get("/v1/devices/{device_id}/memory", memory_snapshot)
-    app.router.add_delete("/v1/devices/{device_id}", remove_device)
-    app.router.add_patch("/v1/devices/{device_id}/alias", alias)
-    app.router.add_get("/v1/events", event_history)
-    app.router.add_get("/v1/events/ws", event_socket)
-    app.router.add_get("/v1/operations", operation_list)
-    app.router.add_get("/v1/operations/{operation_id}", operation_get)
-    app.router.add_post("/v1/operations/{operation_id}/reconcile", operation_reconcile)
-    app.router.add_get("/v1/operations/{operation_id}/reconciliations", operation_reconciliations)
+    app.router.add_get("/v2/devices/{device_id}", status)
+    app.router.add_get("/v2/devices/{device_id}/memory", memory_snapshot)
+    app.router.add_delete("/v2/devices/{device_id}", remove_device)
+    app.router.add_patch("/v2/devices/{device_id}/alias", alias)
+    app.router.add_get("/v2/events", event_history)
+    app.router.add_get("/v2/events/ws", event_socket)
+    app.router.add_get("/v2/operations", operation_list)
+    app.router.add_get("/v2/operations/{operation_id}", operation_get)
+    app.router.add_post("/v2/operations/{operation_id}/reconcile", operation_reconcile)
+    app.router.add_get("/v2/operations/{operation_id}/reconciliations", operation_reconciliations)
     register_file_routes(app, service)
-    app.router.add_get("/v1/firmware-artifacts", firmware_artifacts)
-    app.router.add_post("/v1/firmware-artifacts", firmware_artifacts)
-    app.router.add_get("/v1/firmware-artifacts/{artifact_id}", firmware_artifact)
-    app.router.add_get("/v1/system-audit", audits)
-    app.router.add_get("/v1/rpc-catalog", rpc_catalog)
-    app.router.add_post("/v1/devices/{device_id}/rpc/raw", raw_rpc)
-    app.router.add_post("/v1/devices/{device_id}/rpc/{method}", structured_rpc)
-    app.router.add_post("/v1/devices/{device_id}/console", console)
-    app.router.add_get("/v1/devices/{device_id}/jobs/{job_id}", job)
-    app.router.add_delete("/v1/devices/{device_id}/jobs/{job_id}", job)
-    app.router.add_post("/v1/devices/{device_id}/restart", restart)
+    app.router.add_get("/v2/firmware-artifacts", firmware_artifacts)
+    app.router.add_post("/v2/firmware-artifacts", firmware_artifacts)
+    app.router.add_get("/v2/firmware-artifacts/{artifact_id}", firmware_artifact)
+    app.router.add_get("/v2/system-audit", audits)
+    app.router.add_get("/v2/rpc-catalog", rpc_catalog)
+    app.router.add_post("/v2/devices/{device_id}/rpc/raw", raw_rpc)
+    app.router.add_post("/v2/devices/{device_id}/rpc/{method}", structured_rpc)
+    app.router.add_post("/v2/devices/{device_id}/console", console)
+    app.router.add_get("/v2/devices/{device_id}/jobs/{job_id}", job)
+    app.router.add_delete("/v2/devices/{device_id}/jobs/{job_id}", job)
+    app.router.add_post("/v2/devices/{device_id}/restart", restart)
+    app.router.add_post("/v2/consoles/reset", hardware_reset)
     app.router.add_post(
-        "/v1/devices/{device_id}/factory-recovery", factory_recovery
+        "/v2/devices/{device_id}/factory-recovery", factory_recovery
     )
-    app.router.add_post("/v1/devices/{device_id}/screenshot", screenshot)
-    app.router.add_post("/v1/devices/{device_id}/mirror/start", mirror)
-    app.router.add_post("/v1/devices/{device_id}/mirror/stop", mirror)
-    app.router.add_get("/v1/devices/{device_id}/streams/{channel}", media_stream)
-    app.router.add_post("/v1/devices/{device_id}/input", input_event)
-    app.router.add_post("/v1/devices/{device_id}/audio", audio_upload)
-    app.router.add_post("/v1/devices/{device_id}/ota", ota)
+    app.router.add_post("/v2/devices/{device_id}/screenshot", screenshot)
+    app.router.add_post("/v2/devices/{device_id}/mirror/start", mirror)
+    app.router.add_post("/v2/devices/{device_id}/mirror/stop", mirror)
+    app.router.add_get("/v2/devices/{device_id}/streams/{channel}", media_stream)
+    app.router.add_post("/v2/devices/{device_id}/input", input_event)
+    app.router.add_post("/v2/devices/{device_id}/audio", audio_upload)
+    app.router.add_post("/v2/devices/{device_id}/ota", ota)
     app.router.add_get(
-        "/v1/devices/{device_id}/system-inventory", system_inventory
+        "/v2/devices/{device_id}/system-inventory", system_inventory
     )
     app.router.add_post(
-        "/v1/devices/{device_id}/system-update", system_update
+        "/v2/devices/{device_id}/system-update", system_update
     )
     register_crash_routes(app, service)
-    app.router.add_get("/v1/auth/tokens", tokens)
-    app.router.add_post("/v1/auth/tokens", tokens)
-    app.router.add_delete("/v1/auth/tokens/{token_id}", revoke_token)
-    app.router.add_put("/v1/auth/password", change_password)
-    app.router.add_post("/v1/export", export)
-    app.router.add_get("/v1/openapi.json", openapi)
+    app.router.add_get("/v2/auth/tokens", tokens)
+    app.router.add_post("/v2/auth/tokens", tokens)
+    app.router.add_delete("/v2/auth/tokens/{token_id}", revoke_token)
+    app.router.add_put("/v2/auth/password", change_password)
+    app.router.add_post("/v2/export", export)
+    app.router.add_get("/v2/openapi.json", openapi)
     if service.project is not None:
         service.project.register_routes(app)
-    app.router.add_route("*", "/v1/{path:.*}", api_not_found)
+    app.router.add_route("*", "/v2/{path:.*}", api_not_found)
     app.router.add_get("/{path:.*}", spa)
     return app
 

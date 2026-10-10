@@ -20,7 +20,9 @@ const esp_app_desc_t *esp_app_get_description(void) { static esp_app_desc_t d; r
 size_t heap_caps_get_free_size(unsigned c) { return 10000; }
 size_t heap_caps_get_minimum_free_size(unsigned c) { return 10000; }
 esp_reset_reason_t esp_reset_reason(void) { return ESP_RST_UNKNOWN; }
-void esp_restart(void) { assert(0); }
+static bool allow_restart;
+static unsigned restart_calls;
+void esp_restart(void) { assert(allow_restart); ++restart_calls; }
 esp_err_t iris_identity_load_or_create(iris_runtime_t *r) { return ESP_OK; }
 esp_err_t iris_log_vfs_init(iris_runtime_t *r) { return ESP_OK; }
 esp_err_t iris_log_vfs_deinit(void) { return ESP_OK; }
@@ -80,7 +82,7 @@ static unsigned starts, stops;
 static esp_err_t fake_start(iris_runtime_t *r, iris_transport_state_t *s) { ++starts; s->driver_started = true; return ESP_OK; }
 static void fake_stop(iris_runtime_t *r, iris_transport_state_t *s) { ++stops; s->driver_started = false; }
 static iris_link_event_t fake_poll(iris_runtime_t *r, iris_transport_state_t *s) {
-    if (transport_poll_hook != NULL) transport_poll_hook(r);
+    if (transport_poll_hook != NULL && r != &g_iris_data) transport_poll_hook(r);
     if (candidate) { candidate = false; return IRIS_LINK_EVENT_CONNECTED; }
     return IRIS_LINK_EVENT_NONE;
 }
@@ -106,7 +108,7 @@ const iris_transport_ops_t g_iris_usb_transport_ops = {
 
 #if CONFIG_ESP_IRIS_OTA
 static const esp_partition_t running_partition = {0x10000, 4096, "running", 0};
-static const esp_partition_t target_partition = {0x20000, 4096, "ota_0", 0};
+static const esp_partition_t target_partition = {0x20000, 4096, "main_app_slot_00", 0};
 static unsigned flash_writes, boot_selections, flash_aborts;
 static unsigned ota_commits;
 static esp_err_t ota_begin_error, ota_end_error, boot_select_error;
@@ -140,3 +142,8 @@ void esp_iris_platform_ota_committed(void) {
 esp_err_t esp_iris_platform_select_ota_target(uint32_t candidate, uint32_t *out) { *out = candidate; return ESP_OK; }
 esp_err_t esp_iris_platform_prepare_ota(uint32_t a, uint32_t b) { return ESP_OK; }
 #endif
+
+void iris_log_console_frame_begin(iris_runtime_t *r) { }
+void iris_log_console_frame_end(iris_runtime_t *r) { }
+bool iris_log_uses_native_console(const iris_runtime_t *r) { return false; }
+void iris_log_forward_deferred(const iris_log_record_t *r) { }

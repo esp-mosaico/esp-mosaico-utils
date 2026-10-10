@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-TOOLS = Path(__file__).resolve().parents[1]
+TOOLS = Path(__file__).resolve().parents[2] / "mosaico-tools"
 sys.path.insert(0, str(TOOLS / "tools"))
 
 from mosaico_cli.errors import DeviceError, EnvironmentError
@@ -28,7 +28,7 @@ def workspace(tmp_path):
         project.mkdir(parents=True)
         (project / "CMakeLists.txt").write_text("include($ENV{IDF_PATH}/tools/cmake/project.cmake)\nproject(test)\n")
     (tmp_path / ".mosaico.json").write_text(json.dumps({
-        "schema_version": 1,
+        "schema_version": 2,
         "workspace": {"projects_dir": "projects", "default_project": "projects/a", "run_dir": ".runs"},
         "dependencies": {"bsp": "bsp", "esp_iris": str(TOOLS.parent / "ESP-Iris")},
         "build": {"runner": "builtin"},
@@ -114,10 +114,10 @@ def test_two_projects_reuse_and_creator_lifetime(tmp_path, monkeypatch):
             assert not unavailable.processes
             assert a.processes[0][2].exists()
             follower.close()
-            assert request(first.connection_args[1], "/v1/health")["ready"]
-            assert request(first.connection_args[1], "/v1/devices")["devices"] == []
+            assert request(first.connection_args[1], "/v2/health")["ready"]
+            assert request(first.connection_args[1], "/v2/devices")["devices"] == []
             a.close()
-            assert request(second.connection_args[1], "/v1/health")["ready"]
+            assert request(second.connection_args[1], "/v2/health")["ready"]
         finally:
             stop_scopes(a, b, follower)
 
@@ -135,12 +135,12 @@ def test_shared_session_reused_and_creator_exit_does_not_stop_follower(tmp_path,
             second = follower.gateway(context, Path(sys.executable), script, "test-revision")
             assert second.connection_args == first.connection_args
             assert not second.started_local
-            before = request(first.connection_args[1], "/v1/project")
+            before = request(first.connection_args[1], "/v2/project")
             assert {item["kind"] for item in before["lifecycle"]["clients"]} == {"cli", "run"}
             owner.close()
             time.sleep(0.2)
             assert owner.processes[0][0].poll() is None
-            after = request(first.connection_args[1], "/v1/project")
+            after = request(first.connection_args[1], "/v2/project")
             assert len(after["lifecycle"]["clients"]) == 1
             assert after["lifecycle"]["clients"][0]["kind"] == "run"
             assert after["lifecycle"]["idle_remaining_seconds"] is None
@@ -151,7 +151,7 @@ def test_shared_session_reused_and_creator_exit_does_not_stop_follower(tmp_path,
             started = time.monotonic()
             while owner.processes[0][0].poll() is None and time.monotonic() < deadline:
                 try:
-                    request(first.connection_args[1], "/v1/project", timeout=1)
+                    request(first.connection_args[1], "/v2/project", timeout=1)
                 except DeviceError:
                     pass
                 time.sleep(0.2)
@@ -170,12 +170,12 @@ def test_public_list_handles_passive_discovery_without_connected_devices(tmp_pat
     script = work.esp_iris_path / "components/esp_iris/tools/esp_iris.py"
     with patch("mosaico_cli.gateway.ensure_iris_tools", return_value=(Path(sys.executable), script)), \
             patch("mosaico_cli.runtime.resolve_idf_path", side_effect=EnvironmentError("no IDF needed")):
-        assert main(["--workspace", str(tmp_path), "list"], tool_root=TOOLS) == 0
+        assert main(["--workspace", str(tmp_path), "iris", "list"], tool_root=TOOLS) == 0
     assert "DEVICE_ID" in capsys.readouterr().out
     records = list((tmp_path / "state").rglob("connection.json"))
     assert len(records) == 1
     value = json.loads(records[0].read_text())
-    snapshot = request(value["url"], "/v1/project")
+    snapshot = request(value["url"], "/v2/project")
     assert snapshot["lifecycle"]["clients"] == []
     assert snapshot["lifecycle"]["idle_timeout_seconds"] == 10
     _print_device_table({"devices": [], "endpoints": [{"endpoint": "tcp:127.0.0.1:1234"}]}, False)
@@ -319,7 +319,7 @@ def test_status_observes_live_gateway_without_taking_its_lifetime(tmp_path, monk
             bootstrap.assert_not_called()
             spawn.assert_not_called()
             assert owner.processes[0][0].poll() is None
-            assert request(session.connection_args[1], "/v1/health")["project_session"]["session_id"] == state["session"]["session_id"]
+            assert request(session.connection_args[1], "/v2/health")["project_session"]["session_id"] == state["session"]["session_id"]
         finally:
             stop_scopes(owner)
         # A stopped session's retained state also must not trigger startup.
@@ -342,7 +342,7 @@ def test_parallel_commands_create_one_shared_gateway(tmp_path, monkeypatch):
                 sessions = list(pool.map(connect, scopes))
             assert len({item.connection_args for item in sessions}) == 1
             assert sum(item.started_local for item in sessions) == 1
-            state = request(sessions[0].connection_args[1], "/v1/project")
+            state = request(sessions[0].connection_args[1], "/v2/project")
             assert len(state["lifecycle"]["clients"]) == 3
         finally:
             stop_scopes(*scopes)
@@ -362,7 +362,7 @@ def test_all_status_without_local_gateway_sees_other_workspace(tmp_path, monkeyp
         try:
             owner.gateway(RunContext(first, "test", json_output=True), Path(sys.executable), script, "test-revision")
             # A synthetic ownership row, without opening any hardware endpoint.
-            with sqlite3.connect(tmp_path / "state/esp-mosaico/ownership/ownership.sqlite3") as db:
+            with sqlite3.connect(tmp_path / "state/esp-mosaico/0.2/ownership/ownership.sqlite3") as db:
                 db.execute("INSERT INTO claims VALUES(?,?,?,'owned',?,'{}',NULL)",
                            ("device:fixture", owner.info["session_id"], 1, "fixture"))
             with patch("mosaico_cli.gateway.ensure_iris_tools") as bootstrap, \
@@ -412,7 +412,7 @@ def test_takeover_cli_submits_to_receiver_and_retains_id_on_lost_response(tmp_pa
         status = main(["--workspace", str(tmp_path), "iris", "takeover", "start", "--project", "projects/b",
                        "--endpoint", "/dev/ttyACM0", "--force", "--timeout", "60",
                        "--takeover-id", takeover_id, "--json"], tool_root=TOOLS)
-    request_mock.assert_called_once_with("http://127.0.0.1:10000", "/v1/project/takeovers", {
+    request_mock.assert_called_once_with("http://127.0.0.1:10000", "/v2/project/takeovers", {
         "device_id": None, "endpoint": "/dev/ttyACM0", "force": True,
         "timeout": 60, "takeover_id": takeover_id,
     }, timeout=105)
@@ -436,7 +436,7 @@ def test_takeover_lifecycle_commands_use_record_routes(tmp_path, capsys, action)
         assert main(["--workspace", str(tmp_path), "iris", "takeover", action,
                      "--takeover-id", takeover_id, "--json"], tool_root=TOOLS) == 0
     assert ensure.call_args.kwargs["start"] is (action != "status")
-    path = "/v1/project/takeovers/" + takeover_id
+    path = "/v2/project/takeovers/" + takeover_id
     if action == "status":
         http.assert_called_once_with("http://127.0.0.1:10000", path)
     else:

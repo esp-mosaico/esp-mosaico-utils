@@ -4,6 +4,15 @@ All notable ESP-Iris component changes are documented in this file.
 
 ## Unreleased
 
+- Target 0.2: standard printable console, native monitor/reset/JTAG support,
+  UART and product-owned ESP-IDF REPL integration.
+- Independent USB CDC and TCP data sessions with device/boot/owner binding;
+  continuous media, files and firmware use data while snapshots also support control.
+- Preserve pre-handshake raw logs, capture offsets and explicit hardware-reset
+  evidence; retain history, rotation and Follow through reconnects.
+- Break with 0.1: wire version 2, `/v2` HTTP/WebSocket API, isolated fresh host
+  state and documentation-only migration; no runtime compatibility layer.
+
 - Include the prebuilt Web Workbench, so a source checkout can serve the UI
   without Node.js. Verify in CI that rebuilding matches the committed files.
 

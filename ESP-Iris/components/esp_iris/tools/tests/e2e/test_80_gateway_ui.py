@@ -29,7 +29,7 @@ async def _websocket_log_event(
 ) -> dict:
     websocket_url = base_url.replace("https://", "wss://", 1)
     async with ClientSession(cookies=cookies) as session, session.ws_connect(
-        f"{websocket_url}/v1/events/ws?device_id={device_id}",
+        f"{websocket_url}/v2/events/ws?device_id={device_id}",
         ssl=False,
     ) as websocket:
         trigger()
@@ -66,11 +66,11 @@ def test_cli_tls_auth_websocket_workbench_and_final_smoke(
         name="final-tls",
     ) as gateway:
         api = gateway.start()
-        status, _, _ = api.request("GET", "/v1/devices")
+        status, _, _ = api.request("GET", "/v2/devices")
         assert status == 401
         status, login, _ = api.request(
             "POST",
-            "/v1/auth/login",
+            "/v2/auth/login",
             json_body={"password": "iris-e2e-developer-password"},
         )
         assert status == 200 and login["authenticated"] is True
@@ -89,7 +89,7 @@ def test_cli_tls_auth_websocket_workbench_and_final_smoke(
 
         status, created, _ = api.request(
             "POST",
-            "/v1/auth/tokens",
+            "/v2/auth/tokens",
             json_body={
                 "name": "iris-e2e-agent",
                 "scopes": ["files.read", "files.write", "files.delete"],
@@ -104,13 +104,13 @@ def test_cli_tls_auth_websocket_workbench_and_final_smoke(
             bearer_token=agent_token,
         )
         status, volumes, _ = agent.request(
-            "GET", f"/v1/devices/{device_id}/files/volumes"
+            "GET", f"/v2/devices/{device_id}/files/volumes"
         )
         assert status == 200 and len(volumes["volumes"]) == 3
 
         status, reader, _ = api.request(
             "POST",
-            "/v1/auth/tokens",
+            "/v2/auth/tokens",
             json_body={"name": "iris-e2e-reader", "scopes": ["files.read"]},
         )
         assert status == 201
@@ -123,7 +123,7 @@ def test_cli_tls_auth_websocket_workbench_and_final_smoke(
         query = urllib.parse.urlencode({"volume": "fs", "path": "denied.txt"})
         status, denied, _ = read_only_agent.request(
             "PUT",
-            f"/v1/devices/{device_id}/file?{query}",
+            f"/v2/devices/{device_id}/file?{query}",
             body=b"denied",
             headers={"Content-Type": "application/octet-stream"},
         )
@@ -156,7 +156,7 @@ def test_cli_tls_auth_websocket_workbench_and_final_smoke(
 
         status, started, _ = agent.request(
             "POST",
-            f"/v1/devices/{device_id}/rpc/raw",
+            f"/v2/devices/{device_id}/rpc/raw",
             json_body={
                 "service_id": 1,
                 "method_id": 2,
@@ -211,7 +211,7 @@ def test_cli_tls_auth_websocket_workbench_and_final_smoke(
         def trigger_log() -> None:
             status, _, _ = api.request(
                 "POST",
-                f"/v1/devices/{device_id}/rpc/raw",
+                f"/v2/devices/{device_id}/rpc/raw",
                 json_body={
                     "service_id": TEST_SERVICE_ID,
                     "method_id": LOG_BURST_METHOD,
@@ -270,23 +270,23 @@ def test_cli_tls_auth_websocket_workbench_and_final_smoke(
 
         iris_playwright.run_hardware(gateway.base_url, device_id)
 
-        status, final, _ = api.request("GET", f"/v1/devices/{device_id}")
+        status, final, _ = api.request("GET", f"/v2/devices/{device_id}")
         assert status == 200
         assert final["invalid_frames"] == 0
         assert final["log_dropped_bytes"] == 0
         status, image, _ = api.request(
-            "POST", f"/v1/devices/{device_id}/screenshot", json_body={}
+            "POST", f"/v2/devices/{device_id}/screenshot", json_body={}
         )
         assert status == 200 and image.startswith(b"\x89PNG")
         query = urllib.parse.urlencode({"volume": "fs", "path": "final-smoke.txt"})
         status, uploaded, _ = api.request(
             "PUT",
-            f"/v1/devices/{device_id}/file?{query}",
+            f"/v2/devices/{device_id}/file?{query}",
             body=b"final smoke\n",
             headers={"Content-Type": "application/octet-stream"},
         )
         assert status in {200, 201} and uploaded["file"]["size"] == 12
         status, _, _ = api.request(
-            "DELETE", f"/v1/devices/{device_id}/file?{query}"
+            "DELETE", f"/v2/devices/{device_id}/file?{query}"
         )
         assert status == 200

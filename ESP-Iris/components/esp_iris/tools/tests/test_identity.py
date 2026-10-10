@@ -30,7 +30,8 @@ def hello(extra: list[tuple[int, bytes]]) -> Frame:
     return Frame(channel=Channel.CONTROL, type=ControlType.HELLO, session_id=7,
                  payload=encode_tlv([
                      (TlvTag.DEVICE_ID, bytes(16)),
-                     (TlvTag.PROTOCOL_VERSION, struct.pack("<H", 1)),
+                     (TlvTag.PROTOCOL_VERSION, struct.pack("<H", 2)),
+                     (TlvTag.LINK_ROLE, b"\x01"),
                      (TlvTag.PROJECT_NAME, b"recovery-analysis-app"),
                      (TlvTag.APP_VERSION, b"recovery-stable-1"),
                      *extra,
@@ -86,7 +87,8 @@ def test_hardware_mac_determines_device_id() -> None:
             payload=encode_tlv([
                 (TlvTag.DEVICE_ID, b"ESP-IRIS\x01\x00" + hardware_mac),
                 (TlvTag.HARDWARE_MAC, hardware_mac),
-                (TlvTag.PROTOCOL_VERSION, struct.pack("<H", 1)),
+                (TlvTag.PROTOCOL_VERSION, struct.pack("<H", 2)),
+                (TlvTag.LINK_ROLE, b"\x01"),
             ]),
         )
         try:

@@ -99,7 +99,7 @@ def main() -> int:
                 f"unexpected {name} layout: {layout.get(name)!r}, expected {expected!r}"
             )
 
-    ota_partition = layout.get("ota_0")
+    ota_partition = layout.get("main_app")
     if (
         ota_partition is None
         or ota_partition.type != "app"
@@ -107,7 +107,7 @@ def main() -> int:
         or ota_partition.flags
     ):
         raise ValueError(
-            f"ota_0 must be a writable app/ota_0 partition: {ota_partition!r}"
+            f"main_app must be a writable app/ota_0 partition: {ota_partition!r}"
         )
     data_images = {}
     if args.ui_apps is not None:
@@ -161,7 +161,7 @@ def main() -> int:
                            "target_offset": layout[label].offset, "file": f"{label}.bin"})
 
     manifest = {
-        "schema": "esp-iris-system-update/v1",
+        "schema": "esp-iris-system-update/0.2",
         "release": args.release,
         "minimum_recovery_version": PRODUCT_CONTRACT["minimum_recovery_version"],
         "target": {"chip_id": 0x20, "flash_size": 16 * 1024 * 1024},

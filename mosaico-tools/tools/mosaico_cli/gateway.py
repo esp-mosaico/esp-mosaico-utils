@@ -30,7 +30,7 @@ from .product_contract import COMPATIBILITY
 from .runtime import RunContext
 from .workspace import WorkspaceConfig, user_path
 
-REQUIRED_GATEWAY_API_MAJOR = 1
+REQUIRED_GATEWAY_API_MAJOR = 2
 HOST_OPERATION_CAPABILITY = "local-host-operations/v1"
 SYSTEM_INVENTORY_CAPABILITY = "system-inventory/v1"
 MOSAICO_COMPATIBILITY_JSON = json.dumps(COMPATIBILITY, separators=(",", ":"))
@@ -62,10 +62,6 @@ def iris_environment_root(source: Path) -> Path:
     """Select an isolated Gateway environment for the active Python runtime."""
 
     desired = sys.version_info.major, sys.version_info.minor
-    legacy = source / ".venv"
-    legacy_python = virtual_environment_python(legacy)
-    if legacy_python.is_file() and _python_major_minor(legacy_python) == desired:
-        return legacy
     source_key = hashlib.sha256(str(source.resolve()).encode("utf-8")).hexdigest()[:16]
     return (
         state_root("esp-mosaico")

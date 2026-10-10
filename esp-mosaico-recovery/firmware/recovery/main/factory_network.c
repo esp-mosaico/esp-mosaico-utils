@@ -388,6 +388,10 @@ static esp_err_t start_network(void)
     ESP_GOTO_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), fail, TAG,
                       "set Wi-Fi storage");
     ESP_GOTO_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), fail, TAG, "set station mode");
+    /* Maintenance mode prioritizes responsive transfers over modem sleep.
+     * Keep this policy local to Vibe Mode; applications own their power policy. */
+    ESP_GOTO_ON_ERROR(esp_wifi_set_ps(WIFI_PS_NONE), fail, TAG,
+                      "disable Wi-Fi modem sleep");
     ESP_GOTO_ON_ERROR(esp_wifi_start(), fail, TAG, "start Wi-Fi");
     xSemaphoreTake(s_network.lock, portMAX_DELAY);
     s_network.snapshot.started = true;

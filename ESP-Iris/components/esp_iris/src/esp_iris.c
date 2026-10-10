@@ -2,6 +2,7 @@
 #include "esp_iris_memory.h"
 
 #include <limits.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "esp_app_desc.h"
@@ -31,6 +32,66 @@ iris_runtime_t g_iris = {
     .task_stack_free_min_bytes = UINT32_MAX,
 };
 
+#if CONFIG_ESP_IRIS_DATA_LINK
+iris_runtime_t g_iris_data = {
+    .data_link = true,
+    .transport.tcp = {.listen_fd = -1, .client_fd = -1},
+    .log_lock = portMUX_INITIALIZER_UNLOCKED,
+    .event_lock = portMUX_INITIALIZER_UNLOCKED,
+};
+#endif
+
+iris_runtime_t *iris_peer_runtime(const iris_runtime_t *runtime)
+{
+#if CONFIG_ESP_IRIS_DATA_LINK
+    return runtime->data_link ? &g_iris : &g_iris_data;
+#else
+    (void)runtime;
+    return NULL;
+#endif
+}
+
+bool iris_session_is_live(uint32_t session_id)
+{
+    return session_id != 0 && ((g_iris.hello_acked && g_iris.session_id == session_id)
+#if CONFIG_ESP_IRIS_DATA_LINK
+        || (g_iris_data.hello_acked && g_iris_data.session_id == session_id)
+#endif
+    );
+}
+
+static iris_runtime_t *common_runtime(iris_runtime_t *runtime)
+{
+#if CONFIG_ESP_IRIS_DATA_LINK
+    if (runtime == &g_iris_data) return &g_iris;
+#endif
+    return runtime;
+}
+
+static uint32_t runtime_static_bytes(void)
+{
+    return sizeof(g_iris) + IRIS_STDIO_STATIC_BYTES + iris_services_static_bytes()
+#if CONFIG_ESP_IRIS_DATA_LINK
+        + sizeof(g_iris_data)
+#endif
+#if CONFIG_ESP_IRIS_CONSOLE_EXTERNAL_INPUT
+        + IRIS_CONSOLE_RECORD_BYTES + sizeof(portMUX_TYPE) + 2 * sizeof(size_t) + sizeof(bool)
+#endif
+        ;
+}
+
+esp_err_t iris_link_claim(iris_runtime_t *runtime, const uint8_t owner_id[16])
+{
+    uint8_t nonzero = 0;
+    for (size_t i = 0; i < 16; ++i) nonzero |= owner_id[i];
+    if (!nonzero) return ESP_ERR_INVALID_ARG;
+    const iris_runtime_t *peer = iris_peer_runtime(runtime);
+    if (peer != NULL && peer->hello_acked && memcmp(peer->owner_id, owner_id, 16) != 0)
+        return ESP_ERR_INVALID_STATE;
+    memcpy(runtime->owner_id, owner_id, 16);
+    return ESP_OK;
+}
+
 static portMUX_TYPE s_start_lock = portMUX_INITIALIZER_UNLOCKED;
 
 esp_err_t iris_runtime_wire_init(iris_runtime_t *runtime)
@@ -39,13 +100,13 @@ esp_err_t iris_runtime_wire_init(iris_runtime_t *runtime)
     if (runtime->rx_wire != NULL) {
         return ESP_OK;
     }
-    uint8_t *frames = heap_caps_malloc(2U * ESP_IRIS_MAX_WIRE_FRAME_SIZE,
+    uint8_t *frames = heap_caps_malloc(2U * IRIS_CONSOLE_RECORD_BYTES,
                                       MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (frames == NULL) {
         return ESP_ERR_NO_MEM;
     }
     runtime->rx_wire = frames;
-    runtime->tx_wire = frames + ESP_IRIS_MAX_WIRE_FRAME_SIZE;
+    runtime->tx_wire = frames + IRIS_CONSOLE_RECORD_BYTES;
 #else
     (void)runtime;
 #endif
@@ -90,415 +151,7 @@ static bool transition_session(iris_runtime_t *runtime,
     return true;
 }
 
-typedef struct {
-    uint8_t *data;
-    size_t capacity;
-    size_t length;
-} tlv_writer_t;
-
-static bool tlv_put(tlv_writer_t *writer, uint8_t tag, const void *value,
-                    size_t length)
-{
-    if (length > UINT16_MAX || writer->length + 3U + length > writer->capacity) {
-        return false;
-    }
-    writer->data[writer->length++] = tag;
-    iris_put_le16(writer->data + writer->length, (uint16_t)length);
-    writer->length += 2;
-    if (length > 0) {
-        memcpy(writer->data + writer->length, value, length);
-        writer->length += length;
-    }
-    return true;
-}
-
-static bool tlv_put_u8(tlv_writer_t *writer, uint8_t tag, uint8_t value)
-{
-    return tlv_put(writer, tag, &value, sizeof(value));
-}
-
-static bool tlv_put_u16(tlv_writer_t *writer, uint8_t tag, uint16_t value)
-{
-    uint8_t bytes[2];
-    iris_put_le16(bytes, value);
-    return tlv_put(writer, tag, bytes, sizeof(bytes));
-}
-
-static bool tlv_put_u32(tlv_writer_t *writer, uint8_t tag, uint32_t value)
-{
-    uint8_t bytes[4];
-    iris_put_le32(bytes, value);
-    return tlv_put(writer, tag, bytes, sizeof(bytes));
-}
-
-static bool tlv_put_u64(tlv_writer_t *writer, uint8_t tag, uint64_t value)
-{
-    uint8_t bytes[8];
-    iris_put_le64(bytes, value);
-    return tlv_put(writer, tag, bytes, sizeof(bytes));
-}
-
-static bool tlv_put_string(tlv_writer_t *writer, uint8_t tag,
-                           const char *value, size_t maximum)
-{
-    return tlv_put(writer, tag, value, strnlen(value, maximum));
-}
-
-static esp_err_t queue_frame(iris_runtime_t *runtime, uint8_t channel,
-                             uint8_t type, uint16_t flags,
-                             uint32_t request_id, uint32_t stream_id,
-                             const uint8_t *payload, size_t payload_size)
-{
-    if (runtime->tx_wire_length != 0) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    esp_iris_wire_header_t header = {
-        .channel = channel,
-        .type = type,
-        .flags = flags,
-        .session_id = runtime->session_id,
-        .request_id = request_id,
-        .stream_id = stream_id,
-        .sequence = ++runtime->sequence[channel],
-        .payload_size = payload_size,
-    };
-    size_t wire_size = 0;
-    esp_err_t err = iris_frame_encode(runtime->tx_wire,
-                                      ESP_IRIS_MAX_WIRE_FRAME_SIZE, &header,
-                                      payload, payload_size, &wire_size);
-    if (err == ESP_OK) {
-        runtime->tx_wire_length = wire_size;
-        runtime->tx_wire_offset = 0;
-    }
-    return err;
-}
-
-static esp_err_t queue_error(iris_runtime_t *runtime, uint32_t request_id,
-                             esp_err_t code, uint8_t channel, uint8_t type)
-{
-    uint8_t payload[8] = {0};
-    iris_put_le32(payload, (uint32_t)code);
-    payload[4] = channel;
-    payload[5] = type;
-    return queue_frame(runtime, ESP_IRIS_CHANNEL_CONTROL,
-                       ESP_IRIS_CONTROL_ERROR,
-                       ESP_IRIS_FLAG_RESPONSE | ESP_IRIS_FLAG_ERROR,
-                       request_id, 0, payload, sizeof(payload));
-}
-
-esp_err_t iris_queue_frame(iris_runtime_t *runtime, uint8_t channel,
-                           uint8_t type, uint16_t flags,
-                           uint32_t request_id, uint32_t stream_id,
-                           const uint8_t *payload, size_t payload_size)
-{
-    return queue_frame(runtime, channel, type, flags, request_id, stream_id,
-                       payload, payload_size);
-}
-
-esp_err_t iris_queue_error(iris_runtime_t *runtime, uint32_t request_id,
-                           esp_err_t code, uint8_t channel, uint8_t type)
-{
-    return queue_error(runtime, request_id, code, channel, type);
-}
-
-static esp_err_t queue_hello(iris_runtime_t *runtime)
-{
-    _Static_assert(sizeof(CONFIG_ESP_IRIS_PRODUCT_CONTRACT) <= 65 &&
-                   sizeof(CONFIG_ESP_IRIS_BOARD_ID) <= 65 &&
-                   sizeof(CONFIG_ESP_IRIS_LAYOUT_ID) <= 65,
-                   "ESP-Iris compatibility identifiers must be at most 64 bytes");
-    uint8_t payload[512];
-    tlv_writer_t writer = {.data = payload, .capacity = sizeof(payload)};
-    const esp_app_desc_t *app = esp_app_get_description();
-    uint64_t capabilities = ESP_IRIS_CAP_LOG | ESP_IRIS_CAP_EVENT |
-                                  ESP_IRIS_CAP_STATUS |
-                                  ESP_IRIS_CAP_TIME_SYNC |
-                                  ESP_IRIS_CAP_CRASH |
-                                  iris_services_capabilities();
-#if CONFIG_ESP_IRIS_CRASH_LOOP_TRACKING
-    capabilities |= ESP_IRIS_CAP_CRASH_LOOP;
-#endif
-#if CONFIG_ESP_IRIS_TASK_MEMORY_OBSERVATION
-    capabilities |= ESP_IRIS_CAP_TASK_MEMORY;
-#endif
-    const uint8_t transport = (uint8_t)iris_transport_kind();
-    const uint8_t auth_mode = iris_services_auth_mode();
-    const uint32_t reset_reason = (uint32_t)esp_reset_reason();
-
-    if (!tlv_put(&writer, ESP_IRIS_TLV_DEVICE_ID, runtime->device_id,
-                 sizeof(runtime->device_id)) ||
-            !tlv_put(&writer, ESP_IRIS_TLV_HARDWARE_MAC,
-                     runtime->hardware_mac, sizeof(runtime->hardware_mac)) ||
-            !tlv_put_u64(&writer, ESP_IRIS_TLV_BOOT_ID, runtime->boot_id) ||
-            !tlv_put_u64(&writer, ESP_IRIS_TLV_UPTIME_US,
-                         (uint64_t)esp_timer_get_time()) ||
-            !tlv_put_u16(&writer, ESP_IRIS_TLV_PROTOCOL_VERSION,
-                         ESP_IRIS_PROTOCOL_VERSION) ||
-            !tlv_put_u64(&writer, ESP_IRIS_TLV_CAPABILITIES, capabilities) ||
-            !tlv_put_u8(&writer, ESP_IRIS_TLV_TRANSPORT, transport) ||
-            !tlv_put_u8(&writer, ESP_IRIS_TLV_AUTH_MODE, auth_mode) ||
-            !tlv_put_u32(&writer, ESP_IRIS_TLV_RESET_REASON, reset_reason) ||
-            !tlv_put_string(&writer, ESP_IRIS_TLV_PROJECT_NAME,
-                            app->project_name, sizeof(app->project_name)) ||
-            !tlv_put_string(&writer, ESP_IRIS_TLV_APP_VERSION,
-                            app->version, sizeof(app->version)) ||
-            !tlv_put(&writer, ESP_IRIS_TLV_FIRMWARE_SHA256,
-                     app->app_elf_sha256, sizeof(app->app_elf_sha256)) ||
-            !tlv_put_string(&writer, ESP_IRIS_TLV_IDF_VERSION,
-                            app->idf_ver, sizeof(app->idf_ver)) ||
-            !tlv_put_u32(&writer, ESP_IRIS_TLV_MAX_PAYLOAD,
-                         ESP_IRIS_MAX_PAYLOAD_SIZE) ||
-            !tlv_put_u8(&writer, ESP_IRIS_TLV_FIRMWARE_ROLE,
-                        CONFIG_ESP_IRIS_FIRMWARE_ROLE) ||
-            !tlv_put_string(&writer, ESP_IRIS_TLV_PRODUCT_CONTRACT,
-                            CONFIG_ESP_IRIS_PRODUCT_CONTRACT,
-                            sizeof(CONFIG_ESP_IRIS_PRODUCT_CONTRACT)) ||
-            !tlv_put_string(&writer, ESP_IRIS_TLV_CHIP_TARGET,
-                            CONFIG_IDF_TARGET, sizeof(CONFIG_IDF_TARGET)) ||
-            !tlv_put_string(&writer, ESP_IRIS_TLV_BOARD_ID,
-                            CONFIG_ESP_IRIS_BOARD_ID, sizeof(CONFIG_ESP_IRIS_BOARD_ID)) ||
-            !tlv_put_u16(&writer, ESP_IRIS_TLV_RECOVERY_ABI,
-                         CONFIG_ESP_IRIS_RECOVERY_ABI) ||
-            !tlv_put_u64(&writer, ESP_IRIS_TLV_REQUIRED_FEATURES, 0) ||
-            !tlv_put_u32(&writer, ESP_IRIS_TLV_HEALTH_TIMEOUT_MS,
-                         CONFIG_ESP_IRIS_HEALTH_TIMEOUT_MS) ||
-            !tlv_put_string(&writer, ESP_IRIS_TLV_LAYOUT_ID,
-                            CONFIG_ESP_IRIS_LAYOUT_ID, sizeof(CONFIG_ESP_IRIS_LAYOUT_ID))) {
-        return ESP_ERR_INVALID_SIZE;
-    }
-    size_t challenge_size = 0;
-    const uint8_t *challenge =
-        iris_services_auth_challenge(&challenge_size);
-    if (challenge_size > 0 &&
-        !tlv_put(&writer, ESP_IRIS_TLV_AUTH_CHALLENGE,
-                 challenge, challenge_size)) {
-        return ESP_ERR_INVALID_SIZE;
-    }
-    return queue_frame(runtime, ESP_IRIS_CHANNEL_CONTROL,
-                       ESP_IRIS_CONTROL_HELLO, ESP_IRIS_FLAG_RELIABLE,
-                       0, 0, payload, writer.length);
-}
-
-static void schedule_event(iris_runtime_t *runtime, uint8_t type)
-{
-    if (type == 0 || type >= 32) {
-        return;
-    }
-    taskENTER_CRITICAL(&runtime->event_lock);
-    runtime->pending_events |= IRIS_EVENT_BIT(type);
-    taskEXIT_CRITICAL(&runtime->event_lock);
-    iris_notify_worker(runtime);
-}
-
-static void schedule_session_events(iris_runtime_t *runtime)
-{
-    schedule_event(runtime, ESP_IRIS_EVENT_BOOT);
-    schedule_event(runtime, ESP_IRIS_EVENT_LINK_READY);
-    if (runtime->previous_boot_crash) {
-        schedule_event(runtime, ESP_IRIS_EVENT_PREVIOUS_BOOT_CRASH);
-    }
-    if (runtime->core_dump_present) {
-        schedule_event(runtime, ESP_IRIS_EVENT_CORE_DUMP_AVAILABLE);
-    }
-    if (runtime->crash_loop_triggered) {
-        schedule_event(runtime, ESP_IRIS_EVENT_CRASH_LOOP_DETECTED);
-    }
-    if (runtime->healthy) {
-        schedule_event(runtime, ESP_IRIS_EVENT_HEALTHY);
-    }
-}
-
-static uint8_t next_pending_event(iris_runtime_t *runtime)
-{
-    static const uint8_t order[] = {
-        ESP_IRIS_EVENT_BOOT,
-        ESP_IRIS_EVENT_LINK_READY,
-        ESP_IRIS_EVENT_PREVIOUS_BOOT_CRASH,
-        ESP_IRIS_EVENT_CORE_DUMP_AVAILABLE,
-        ESP_IRIS_EVENT_CRASH_LOOP_DETECTED,
-        ESP_IRIS_EVENT_HEALTHY,
-        ESP_IRIS_EVENT_PLANNED_RESTART,
-        ESP_IRIS_EVENT_RECOVERY_ENTERED,
-    };
-    taskENTER_CRITICAL(&runtime->event_lock);
-    const uint32_t pending = runtime->pending_events;
-    taskEXIT_CRITICAL(&runtime->event_lock);
-    for (size_t i = 0; i < sizeof(order); ++i) {
-        if ((pending & IRIS_EVENT_BIT(order[i])) != 0) {
-            return order[i];
-        }
-    }
-    return 0;
-}
-
-static esp_err_t queue_event(iris_runtime_t *runtime, uint8_t event_type)
-{
-    uint8_t payload[160];
-    tlv_writer_t writer = {.data = payload, .capacity = sizeof(payload)};
-    if (!tlv_put(&writer, ESP_IRIS_TLV_DEVICE_ID, runtime->device_id,
-                 sizeof(runtime->device_id)) ||
-            !tlv_put_u64(&writer, ESP_IRIS_TLV_BOOT_ID, runtime->boot_id) ||
-            !tlv_put_u64(&writer, ESP_IRIS_TLV_UPTIME_US,
-                         (uint64_t)esp_timer_get_time()) ||
-            !tlv_put_u32(&writer, ESP_IRIS_TLV_RESET_REASON,
-                         (uint32_t)esp_reset_reason()) ||
-            (event_type == ESP_IRIS_EVENT_CORE_DUMP_AVAILABLE &&
-             !tlv_put_u32(&writer, ESP_IRIS_TLV_CORE_DUMP_SIZE,
-                          runtime->core_dump_size <= UINT32_MAX
-                            ? (uint32_t)runtime->core_dump_size
-                            : UINT32_MAX)) ||
-            (event_type == ESP_IRIS_EVENT_CRASH_LOOP_DETECTED &&
-             (!tlv_put_u32(&writer, ESP_IRIS_TLV_CRASH_COUNT,
-                           runtime->crash_count) ||
-              !tlv_put_u32(&writer, ESP_IRIS_TLV_CRASH_LIMIT,
-                           runtime->crash_limit) ||
-              !tlv_put_u8(&writer,
-                          ESP_IRIS_TLV_CRASH_RECOVERY_PENDING,
-                          runtime->crash_recovery_pending ? 1U : 0U) ||
-              !tlv_put_u32(&writer,
-                           ESP_IRIS_TLV_CRASH_ORIGIN_RESET_REASON,
-                           runtime->crash_origin_reset_reason) ||
-              !tlv_put_u32(&writer,
-                           ESP_IRIS_TLV_CRASH_FAILED_APP_ADDRESS,
-                           runtime->crash_failed_app_address) ||
-              !tlv_put(&writer,
-                       ESP_IRIS_TLV_CRASH_FAILED_FIRMWARE_SHA256,
-                       runtime->crash_failed_firmware_sha256,
-                       sizeof(runtime->crash_failed_firmware_sha256)) ||
-              !tlv_put_u32(&writer, ESP_IRIS_TLV_CRASH_STATE_ERROR,
-                           (uint32_t)runtime->crash_state_error)))) {
-        return ESP_ERR_INVALID_SIZE;
-    }
-    esp_err_t err = queue_frame(runtime, ESP_IRIS_CHANNEL_EVENT,
-                                event_type, ESP_IRIS_FLAG_RELIABLE,
-                                0, 0, payload, writer.length);
-    if (err == ESP_OK) {
-        taskENTER_CRITICAL(&runtime->event_lock);
-        runtime->pending_events &= ~IRIS_EVENT_BIT(event_type);
-        taskEXIT_CRITICAL(&runtime->event_lock);
-    }
-    return err;
-}
-
-static esp_err_t queue_status(iris_runtime_t *runtime, uint32_t request_id)
-{
-    uint8_t payload[320];
-    tlv_writer_t writer = {.data = payload, .capacity = sizeof(payload)};
-    esp_iris_heap_memory_t heap;
-    esp_err_t heap_err = esp_iris_memory_get_heap(&heap);
-    if (heap_err != ESP_OK) {
-        return heap_err;
-    }
-    uint32_t dropped;
-    taskENTER_CRITICAL(&runtime->log_lock);
-    dropped = runtime->log_dropped_bytes;
-    taskEXIT_CRITICAL(&runtime->log_lock);
-
-    if (!tlv_put(&writer, ESP_IRIS_TLV_HARDWARE_MAC,
-                 runtime->hardware_mac, sizeof(runtime->hardware_mac)) ||
-            !tlv_put_u64(&writer, ESP_IRIS_TLV_UPTIME_US,
-                     (uint64_t)esp_timer_get_time()) ||
-            !tlv_put_u32(&writer, ESP_IRIS_TLV_FREE_INTERNAL,
-                         heap.free_internal_bytes) ||
-            !tlv_put_u32(&writer, ESP_IRIS_TLV_MIN_FREE_INTERNAL,
-                         heap.min_free_internal_bytes) ||
-            !tlv_put_u32(&writer, ESP_IRIS_TLV_TOTAL_INTERNAL,
-                         heap.total_internal_bytes) ||
-            !tlv_put_u32(&writer, ESP_IRIS_TLV_TOTAL_SPIRAM,
-                         heap.total_spiram_bytes) ||
-            !tlv_put_u32(&writer, ESP_IRIS_TLV_FREE_SPIRAM,
-                         heap.free_spiram_bytes) ||
-            !tlv_put_u32(&writer, ESP_IRIS_TLV_MIN_FREE_SPIRAM,
-                         heap.min_free_spiram_bytes) ||
-            !tlv_put_u32(&writer, ESP_IRIS_TLV_LOG_DROPPED, dropped) ||
-            !tlv_put_u32(&writer, ESP_IRIS_TLV_RX_FRAMES,
-                         runtime->rx_frames) ||
-            !tlv_put_u32(&writer, ESP_IRIS_TLV_TX_FRAMES,
-                         runtime->tx_frames) ||
-            !tlv_put_u32(&writer, ESP_IRIS_TLV_INVALID_FRAMES,
-                         runtime->invalid_frames) ||
-            !tlv_put_u32(&writer, ESP_IRIS_TLV_LINK_COUNT,
-                         runtime->link_count) ||
-            !tlv_put_u32(&writer, ESP_IRIS_TLV_TASK_STACK_FREE_MIN,
-                         runtime->task_stack_free_min_bytes) ||
-            !tlv_put_u32(&writer, ESP_IRIS_TLV_WORKER_ACTIVE_MAX_US,
-                         runtime->worker_active_max_us) ||
-            !tlv_put_u8(&writer, ESP_IRIS_TLV_LIFECYCLE_STATE,
-                        (uint8_t)runtime->lifecycle) ||
-            !tlv_put_u32(&writer, ESP_IRIS_TLV_INTERNAL_HEAP_USED,
-                         runtime->internal_heap_used_bytes +
-                         (iris_services_allocated_bytes() >
-                          runtime->service_bytes_at_start
-                          ? iris_services_allocated_bytes() -
-                            runtime->service_bytes_at_start : 0)) ||
-            !tlv_put_u32(&writer, ESP_IRIS_TLV_STATIC_INTERNAL_BYTES,
-                         (uint32_t)(sizeof(*runtime) +
-                                    IRIS_STDIO_STATIC_BYTES +
-                                    iris_services_static_bytes())) ||
-            !tlv_put_u32(&writer, ESP_IRIS_TLV_CRASH_COUNT,
-                         runtime->crash_count) ||
-            !tlv_put_u32(&writer, ESP_IRIS_TLV_CRASH_LIMIT,
-                         runtime->crash_limit) ||
-            !tlv_put_u8(&writer, ESP_IRIS_TLV_CRASH_LOOP_TRIGGERED,
-                        runtime->crash_loop_triggered ? 1U : 0U) ||
-            !tlv_put_u8(&writer, ESP_IRIS_TLV_CRASH_RECOVERY_PENDING,
-                        runtime->crash_recovery_pending ? 1U : 0U) ||
-            !tlv_put_u32(&writer,
-                         ESP_IRIS_TLV_CRASH_ORIGIN_RESET_REASON,
-                         runtime->crash_origin_reset_reason) ||
-            !tlv_put_u32(&writer, ESP_IRIS_TLV_CRASH_FAILED_APP_ADDRESS,
-                         runtime->crash_failed_app_address) ||
-            !tlv_put(&writer, ESP_IRIS_TLV_CRASH_FAILED_FIRMWARE_SHA256,
-                     runtime->crash_failed_firmware_sha256,
-                     sizeof(runtime->crash_failed_firmware_sha256)) ||
-            !tlv_put_u32(&writer, ESP_IRIS_TLV_CRASH_STATE_ERROR,
-                         (uint32_t)runtime->crash_state_error)) {
-        return ESP_ERR_INVALID_SIZE;
-    }
-    return queue_frame(runtime, ESP_IRIS_CHANNEL_CONTROL,
-                       ESP_IRIS_CONTROL_STATUS_RESPONSE,
-                       ESP_IRIS_FLAG_RESPONSE, request_id, 0,
-                       payload, writer.length);
-}
-
-static esp_err_t queue_task_memory(iris_runtime_t *runtime,
-                                   uint32_t request_id)
-{
-#if CONFIG_ESP_IRIS_TASK_MEMORY_OBSERVATION
-    _Static_assert(sizeof(esp_iris_task_memory_t) == 8,
-                   "task wire record must be eight bytes");
-    const size_t capacity = 12U + IRIS_MAX_TASK_MEMORY_RECORDS * 8U;
-    uint8_t *payload = heap_caps_malloc(capacity, MALLOC_CAP_8BIT);
-    if (payload == NULL) {
-        return ESP_ERR_NO_MEM;
-    }
-    size_t count = 0;
-    esp_err_t err = esp_iris_memory_get_tasks(
-        (esp_iris_task_memory_t *)(void *)(payload + 12),
-        IRIS_MAX_TASK_MEMORY_RECORDS, &count);
-    if (err == ESP_OK) {
-        iris_put_le64(payload, (uint64_t)esp_timer_get_time());
-        iris_put_le16(payload + 8, (uint16_t)count);
-        iris_put_le16(payload + 10, 0);
-        for (size_t i = 0; i < count; ++i) {
-            esp_iris_task_memory_t record;
-            memcpy(&record, payload + 12 + i * 8, sizeof(record));
-            iris_put_le32(payload + 12 + i * 8, record.task_number);
-            iris_put_le32(payload + 16 + i * 8, record.stack_free_min_bytes);
-        }
-        err = queue_frame(runtime, ESP_IRIS_CHANNEL_CONTROL,
-                          ESP_IRIS_CONTROL_TASKS_RESPONSE,
-                          ESP_IRIS_FLAG_RESPONSE, request_id, 0,
-                          payload, 12U + count * 8U);
-    }
-    heap_caps_free(payload);
-    return err;
-#else
-    (void)runtime;
-    (void)request_id;
-    return ESP_ERR_NOT_SUPPORTED;
-#endif
-}
+#include "esp_iris_control_frames.inc"
 
 static void begin_session(iris_runtime_t *runtime);
 static void end_session(iris_runtime_t *runtime);
@@ -531,7 +184,7 @@ static void handle_control(iris_runtime_t *runtime,
         {
             esp_err_t auth_err = iris_services_authenticate(
                 runtime, frame->payload, header->payload_size);
-            if (iris_services_auth_mode() != 0) {
+            { /* Every link receives explicit authenticated binding acceptance. */
                 const uint8_t result = auth_err == ESP_OK ? 1U : 0U;
                 (void)queue_frame(
                     runtime, ESP_IRIS_CHANNEL_CONTROL,
@@ -596,7 +249,7 @@ static void handle_control(iris_runtime_t *runtime,
             runtime->log_credit = UINT32_MAX - runtime->log_credit < amount
                 ? UINT32_MAX : runtime->log_credit + amount;
         } else if (header->payload_size == 8U &&
-                   iris_services_credit(frame->payload[0],
+                   iris_services_credit(runtime, frame->payload[0], header->stream_id,
                                         iris_get_le32(frame->payload + 4))) {
             /* Media credits are maintained independently per channel. */
         } else {
@@ -616,6 +269,7 @@ static void handle_control(iris_runtime_t *runtime,
 static void handle_crash(iris_runtime_t *runtime,
                          const iris_decoded_frame_t *frame)
 {
+    iris_runtime_t *common = common_runtime(runtime);
     const esp_iris_wire_header_t *header = &frame->header;
     if (header->type == ESP_IRIS_CRASH_METADATA_REQUEST) {
         if (header->payload_size != 0) {
@@ -626,7 +280,7 @@ static void handle_crash(iris_runtime_t *runtime,
         }
         size_t payload_size = 0;
         esp_err_t err = iris_crash_build_metadata(
-            runtime, runtime->rx_wire, ESP_IRIS_MAX_WIRE_FRAME_SIZE,
+            common, runtime->rx_wire, ESP_IRIS_MAX_WIRE_FRAME_SIZE,
             &payload_size);
         if (err == ESP_OK) {
             err = queue_frame(runtime, ESP_IRIS_CHANNEL_CRASH,
@@ -650,17 +304,17 @@ static void handle_crash(iris_runtime_t *runtime,
         const uint32_t offset = iris_get_le32(frame->payload);
         const uint16_t maximum = iris_get_le16(frame->payload + 4);
         size_t chunk_size = 0;
-        esp_err_t err = iris_crash_read(runtime, offset, maximum,
+        esp_err_t err = iris_crash_read(common, offset, maximum,
                                         runtime->rx_wire + 8,
                                         &chunk_size);
         if (err == ESP_OK) {
             iris_put_le32(runtime->rx_wire, offset);
             iris_put_le32(runtime->rx_wire + 4,
-                          runtime->core_dump_size <= UINT32_MAX
-                            ? (uint32_t)runtime->core_dump_size
+                          common->core_dump_size <= UINT32_MAX
+                            ? (uint32_t)common->core_dump_size
                             : UINT32_MAX);
             const bool finished = offset + chunk_size >=
-                                  runtime->core_dump_size;
+                                  common->core_dump_size;
             err = queue_frame(runtime, ESP_IRIS_CHANNEL_CRASH,
                               ESP_IRIS_CRASH_READ_RESPONSE,
                               ESP_IRIS_FLAG_RESPONSE |
@@ -726,9 +380,12 @@ static void handle_frame(iris_runtime_t *runtime,
     }
 }
 
+#include "esp_iris_console_dispatch.inc"
+
 static size_t feed_rx(iris_runtime_t *runtime, const uint8_t *data,
                     size_t length)
 {
+    if (!runtime->data_link) return feed_console(runtime, data, length);
     for (size_t i = 0; i < length; ++i) {
         const uint8_t value = data[i];
         if (value == 0) {
@@ -774,15 +431,21 @@ static void begin_session(iris_runtime_t *runtime)
     if (!transition_session(runtime, IRIS_SESSION_EVENT_LINK_UP)) {
         return;
     }
+    const iris_runtime_t *peer = iris_peer_runtime(runtime);
     do {
         runtime->session_id = esp_random();
-    } while (runtime->session_id == 0);
+    } while (runtime->session_id == 0 ||
+             (peer != NULL && runtime->session_id == peer->session_id));
     memset(runtime->sequence, 0, sizeof(runtime->sequence));
     memset(runtime->rx_sequence_seen, 0, sizeof(runtime->rx_sequence_seen));
     taskENTER_CRITICAL(&runtime->event_lock);
     runtime->pending_events = 0;
     taskEXIT_CRITICAL(&runtime->event_lock);
     runtime->log_credit = 0;
+    runtime->last_rpc_request_id = 0;
+    runtime->rpc_request_seen = false;
+    memset(runtime->owner_id, 0, sizeof(runtime->owner_id));
+    esp_fill_random(runtime->auth_challenge, sizeof(runtime->auth_challenge));
     runtime->next_hello_us = 0;
     runtime->rx_wire_length = 0;
     runtime->rx_pending_length = 0;
@@ -797,6 +460,12 @@ static void begin_session(iris_runtime_t *runtime)
 
 static void end_session(iris_runtime_t *runtime)
 {
+    iris_log_console_frame_end(runtime);
+    if (!runtime->data_link) {
+        iris_log_record_t record;
+        while (iris_log_pop(runtime, UINT32_MAX, &record))
+            iris_log_forward_deferred(&record);
+    }
     /* A provisional multi-transport candidate cannot reach services before a
      * valid HELLO_ACK. Do not let a handshake timeout cancel product jobs or
      * tear down media/file state that no client was allowed to create. */
@@ -808,6 +477,7 @@ static void end_session(iris_runtime_t *runtime)
     runtime->pending_events = 0;
     taskEXIT_CRITICAL(&runtime->event_lock);
     runtime->session_id = 0;
+    memset(runtime->owner_id, 0, sizeof(runtime->owner_id));
     runtime->log_credit = 0;
     runtime->rx_wire_length = 0;
     runtime->rx_pending_length = 0;
@@ -823,6 +493,7 @@ static bool flush_tx(iris_runtime_t *runtime)
     if (runtime->tx_wire_length == 0) {
         return false;
     }
+    if (runtime->tx_wire_offset == 0) iris_log_console_frame_begin(runtime);
     const int sent = iris_transport_write(
         runtime, runtime->tx_wire + runtime->tx_wire_offset,
         runtime->tx_wire_length - runtime->tx_wire_offset);
@@ -834,17 +505,30 @@ static bool flush_tx(iris_runtime_t *runtime)
         runtime->tx_wire_length = 0;
         runtime->tx_wire_offset = 0;
         ++runtime->tx_frames;
+        iris_log_console_frame_end(runtime);
     }
     return true;
 }
 
 static void queue_next_log(iris_runtime_t *runtime)
 {
-    if (runtime->log_credit < IRIS_LOG_PAYLOAD_HEADER_SIZE) {
+    if (runtime->data_link && runtime->log_credit < IRIS_LOG_PAYLOAD_HEADER_SIZE) {
         return;
     }
     iris_log_record_t record;
-    if (!iris_log_pop(runtime, runtime->log_credit, &record)) {
+    if (!iris_log_pop(runtime, runtime->data_link ? runtime->log_credit
+                                                : UINT32_MAX, &record)) {
+        return;
+    }
+    if (!runtime->data_link) {
+        /* Native UART/Serial-JTAG output is already forwarded by the log tap.
+         * Network and application USB consoles receive the same plain bytes. */
+        iris_log_forward_deferred(&record);
+        if (!iris_log_uses_native_console(runtime)) {
+            memcpy(runtime->tx_wire, record.data, record.length);
+            runtime->tx_wire_length = record.length;
+            runtime->tx_wire_offset = 0;
+        }
         return;
     }
     uint8_t payload[IRIS_LOG_PAYLOAD_HEADER_SIZE + IRIS_LOG_RECORD_DATA_MAX];
@@ -897,10 +581,7 @@ static bool pump_link(iris_runtime_t *runtime)
 
     if (runtime->tx_wire_length == 0) {
         const int64_t now = esp_timer_get_time();
-        const bool replay_hello =
-            iris_transport_kind() ==
-                ESP_IRIS_TRANSPORT_KIND_USB_SERIAL_JTAG;
-        if ((!runtime->hello_acked || replay_hello) &&
+        if (runtime->data_link && !runtime->hello_acked &&
                 now >= runtime->next_hello_us) {
             if (queue_hello(runtime) == ESP_OK) {
                 runtime->next_hello_us = now + IRIS_HELLO_INTERVAL_US;
@@ -911,8 +592,8 @@ static bool pump_link(iris_runtime_t *runtime)
         } else if (runtime->hello_acked &&
                    iris_services_queue_next(runtime)) {
             /* A service event or media chunk now owns TX. */
-        } else if (runtime->hello_acked) {
-            queue_next_log(runtime);
+        } else if (runtime->hello_acked || !runtime->data_link) {
+            if (!runtime->data_link) queue_next_log(runtime);
         }
     }
 
@@ -928,6 +609,20 @@ static bool pump_link(iris_runtime_t *runtime)
     return progressed;
 }
 
+static bool service_link(iris_runtime_t *runtime)
+{
+    const iris_link_event_t event = iris_transport_poll(runtime);
+    if (event == IRIS_LINK_EVENT_CONNECTED) begin_session(runtime);
+    else if (event == IRIS_LINK_EVENT_DISCONNECTED) end_session(runtime);
+    bool progressed = false;
+    for (size_t burst = 0; runtime->link_connected && burst < 8; ++burst) {
+        const bool step = pump_link(runtime);
+        progressed |= step;
+        if (!step || runtime->tx_wire_length != 0) break;
+    }
+    return progressed;
+}
+
 static void iris_worker(void *argument)
 {
     iris_runtime_t *runtime = argument;
@@ -937,25 +632,12 @@ static void iris_worker(void *argument)
     while (runtime->running) {
         const int64_t active_start_us = esp_timer_get_time();
         iris_crash_recovery_poll(runtime, active_start_us);
-        const iris_link_event_t event = iris_transport_poll(runtime);
-        if (event == IRIS_LINK_EVENT_CONNECTED) {
-            begin_session(runtime);
-        } else if (event == IRIS_LINK_EVENT_DISCONNECTED) {
-            end_session(runtime);
-        }
-        bool progressed = false;
-        if (runtime->link_connected) {
-            /* Fill the enlarged TinyUSB FIFO in bounded bursts. The limit
-             * preserves CONTROL/EVENT responsiveness and prevents a mirror
-             * stream from monopolizing this task. */
-            for (size_t burst = 0; burst < 8; ++burst) {
-                const bool step = pump_link(runtime);
-                progressed = progressed || step;
-                if (!step || runtime->tx_wire_length != 0) {
-                    break;
-                }
-            }
-        }
+        iris_services_poll(runtime);
+        bool progressed = service_link(runtime);
+#if CONFIG_ESP_IRIS_DATA_LINK
+        g_iris_data.task = runtime->task;
+        progressed |= service_link(&g_iris_data);
+#endif
         const int64_t active_time_us = esp_timer_get_time() - active_start_us;
         if (active_time_us > 0 &&
                 (uint64_t)active_time_us > runtime->worker_active_max_us) {
@@ -984,6 +666,11 @@ static void iris_worker(void *argument)
             yield_deadline_us = esp_timer_get_time() + IRIS_WORKER_RUN_BUDGET_US;
         }
     }
+#if CONFIG_ESP_IRIS_DATA_LINK
+    end_session(&g_iris_data);
+    iris_transport_stop(&g_iris_data);
+    g_iris_data.task = NULL;
+#endif
     end_session(runtime);
     iris_transport_stop(runtime);
     taskENTER_CRITICAL(&s_start_lock);
@@ -1035,6 +722,15 @@ esp_err_t esp_iris_start(void)
     if (err == ESP_OK) {
         err = iris_transport_start(&g_iris);
     }
+#if CONFIG_ESP_IRIS_DATA_LINK
+    if (err == ESP_OK) {
+        memcpy(g_iris_data.device_id, g_iris.device_id, sizeof(g_iris.device_id));
+        memcpy(g_iris_data.hardware_mac, g_iris.hardware_mac, sizeof(g_iris.hardware_mac));
+        g_iris_data.boot_id = g_iris.boot_id;
+        err = iris_runtime_wire_init(&g_iris_data);
+        if (err == ESP_OK) err = iris_transport_start(&g_iris_data);
+    }
+#endif
     if (err == ESP_OK) {
         err = iris_log_vfs_init(&g_iris);
         g_iris.vfs_registered = err == ESP_OK;
@@ -1063,6 +759,10 @@ esp_err_t esp_iris_start(void)
             (void)iris_log_vfs_deinit();
             g_iris.vfs_registered = false;
         }
+#if CONFIG_ESP_IRIS_DATA_LINK
+        iris_transport_stop(&g_iris_data);
+        iris_runtime_wire_deinit(&g_iris_data);
+#endif
         iris_transport_stop(&g_iris);
         iris_runtime_wire_deinit(&g_iris);
     }
@@ -1152,6 +852,9 @@ esp_err_t esp_iris_stop(void)
     g_iris.log_tail = 0;
     g_iris.log_used = 0;
     taskEXIT_CRITICAL(&g_iris.log_lock);
+#if CONFIG_ESP_IRIS_DATA_LINK
+    iris_runtime_wire_deinit(&g_iris_data);
+#endif
     iris_runtime_wire_deinit(&g_iris);
     (void)transition_lifecycle(
         &g_iris, result == ESP_OK ? ESP_IRIS_LIFECYCLE_STOPPED
@@ -1203,8 +906,7 @@ esp_err_t esp_iris_get_status(esp_iris_status_t *out_status)
             (iris_services_allocated_bytes() > g_iris.service_bytes_at_start
                 ? iris_services_allocated_bytes() -
                   g_iris.service_bytes_at_start : 0),
-        .static_internal_bytes = sizeof(g_iris) + IRIS_STDIO_STATIC_BYTES +
-                                 iris_services_static_bytes(),
+        .static_internal_bytes = runtime_static_bytes(),
         .core_dump_size = g_iris.core_dump_size <= UINT32_MAX
             ? (uint32_t)g_iris.core_dump_size : UINT32_MAX,
         .reset_reason = (uint32_t)esp_reset_reason(),
@@ -1261,6 +963,9 @@ esp_err_t esp_iris_mark_planned_restart(void)
     err = iris_crash_recovery_mark_planned(&g_iris);
     if (err == ESP_OK && g_iris.hello_acked) {
         schedule_event(&g_iris, ESP_IRIS_EVENT_PLANNED_RESTART);
+#if CONFIG_ESP_IRIS_DATA_LINK
+        if (g_iris_data.hello_acked) schedule_event(&g_iris_data, ESP_IRIS_EVENT_PLANNED_RESTART);
+#endif
     }
     return err;
 }
@@ -1277,6 +982,9 @@ esp_err_t esp_iris_mark_healthy(void)
     g_iris.healthy = true;
     if (g_iris.hello_acked) {
         schedule_event(&g_iris, ESP_IRIS_EVENT_HEALTHY);
+#if CONFIG_ESP_IRIS_DATA_LINK
+        if (g_iris_data.hello_acked) schedule_event(&g_iris_data, ESP_IRIS_EVENT_HEALTHY);
+#endif
     }
     return ESP_OK;
 }

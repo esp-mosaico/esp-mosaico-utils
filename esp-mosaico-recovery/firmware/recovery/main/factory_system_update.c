@@ -1,5 +1,6 @@
 #include "esp_attr.h"
 #include "factory_system_update.h"
+#include "mosaico_boot.h"
 #include "factory_recovery_version.h"
 
 #include <stdbool.h>
@@ -38,7 +39,7 @@
 
 #define FACTORY_SYSTEM_MAX_COMPONENTS 96U
 #define FACTORY_SOURCE_MANIFEST_BYTES 32768U
-#define FACTORY_SYSTEM_SCHEMA "esp-iris-system-update/v1"
+#define FACTORY_SYSTEM_SCHEMA "esp-iris-system-update/0.2"
 #define FACTORY_SYSTEM_HASH_CHUNK_BYTES 1024U
 #define FACTORY_SYSTEM_RESTART_DELAY_MS 1800U
 #define FACTORY_SYSTEM_ESP32S31_CHIP_ID 0x20U
@@ -620,11 +621,11 @@ static esp_err_t parse_manifest_root(
         const esp_partition_t *running = esp_ota_get_running_partition();
         if (running == NULL ||
             running->type != ESP_PARTITION_TYPE_APP ||
-            running->subtype != ESP_PARTITION_SUBTYPE_APP_FACTORY ||
+            running->subtype != ESP_PARTITION_SUBTYPE_APP_TEST ||
             running->address != FACTORY_SYSTEM_RECOVERY_OFFSET ||
             running->size != FACTORY_SYSTEM_RECOVERY_SIZE) {
             ESP_LOGE(TAG,
-                     "recovery self-update requires the running factory slot");
+                     "recovery self-update requires the running Vibe Mode test slot");
             err = ESP_ERR_INVALID_STATE;
             goto done;
         }
@@ -976,7 +977,7 @@ static const immutable_partition_contract_t s_immutable_partitions[] = {
      0xb000, 0x1000},
     {ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_NVS, "sysmeta",
      0xc000, 0x14000},
-    {ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, "factory",
+    {ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_TEST, MOSAICO_RECOVERY_PARTITION,
      FACTORY_SYSTEM_RECOVERY_OFFSET, FACTORY_SYSTEM_RECOVERY_SIZE},
     {ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_COREDUMP, "coredump",
      0x1e0000, 0x20000},
@@ -1082,7 +1083,7 @@ static esp_err_t resolve_component_targets(
                     ? find_partition_entry_at_offset(entries, count,
                                                      component->target_offset)
                     : find_partition_entry(entries, count, ESP_PARTITION_TYPE_APP,
-                                           ESP_PARTITION_SUBTYPE_APP_OTA_0, "ota_0");
+                                           ESP_PARTITION_SUBTYPE_APP_OTA_0, "main_app");
             ESP_RETURN_ON_FALSE(
                 target != NULL && target->type == ESP_PARTITION_TYPE_APP &&
                     (!s_update.remote_bridge || target->pos.offset >= 0x200000U) &&
@@ -1182,7 +1183,9 @@ static esp_err_t bridge_geometry(const esp_partition_info_t *entries, int count)
                     0 &&
                 (p->type == ESP_PARTITION_TYPE_APP ||
                  p->type == ESP_PARTITION_TYPE_DATA) &&
-                (p->type != ESP_PARTITION_TYPE_APP || p->subtype == 0 ||
+                (p->type != ESP_PARTITION_TYPE_APP ||
+                 (p->subtype == ESP_PARTITION_SUBTYPE_APP_TEST &&
+                  partition_entry_is_immutable(p)) ||
                  (p->subtype >= 0x10 && p->subtype <= 0x1f)) &&
                 (p->pos.offset >= 0x200000U || partition_entry_is_immutable(p)),
             ESP_ERR_INVALID_ARG, TAG, "remote partition geometry");
@@ -1460,10 +1463,10 @@ static esp_err_t commit_update(
 
     if (s_update.remote_bridge) {
         const esp_partition_t *factory = esp_partition_find_first(
-            ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, "factory");
+            ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_TEST, MOSAICO_RECOVERY_PARTITION);
         ESP_RETURN_ON_FALSE(factory != NULL, ESP_ERR_NOT_FOUND, TAG,
                             "Recovery partition missing before commit");
-        ESP_RETURN_ON_ERROR(esp_ota_set_boot_partition(factory), TAG,
+        ESP_RETURN_ON_ERROR(mosaico_boot_request_recovery(), TAG,
                             "select Recovery before critical commit");
         s_update.commit_started = true;
     }
@@ -1529,7 +1532,7 @@ static esp_err_t commit_update(
             &application->target_partition;
         ESP_LOGI(TAG, "selecting ota_0 for next boot: label=%s offset=0x%08" PRIx32,
                  ota_partition->label, ota_partition->address);
-        ESP_RETURN_ON_ERROR(esp_ota_set_boot_partition(ota_partition),
+        ESP_RETURN_ON_ERROR(mosaico_boot_select(ota_partition->address),
                             TAG, "select ota_0");
         const esp_partition_t *configured = esp_ota_get_boot_partition();
         ESP_RETURN_ON_FALSE(configured != NULL, ESP_ERR_NOT_FOUND, TAG,
@@ -1544,16 +1547,17 @@ static esp_err_t commit_update(
     }
     if (recovery != NULL || s_update.remote_bridge) {
         const esp_partition_t *factory_partition = esp_partition_find_first(
-            ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY,
-            "factory");
+            ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_TEST,
+            MOSAICO_RECOVERY_PARTITION);
         ESP_RETURN_ON_FALSE(factory_partition != NULL, ESP_ERR_NOT_FOUND, TAG,
                             "factory partition missing after self-update");
-        ESP_RETURN_ON_ERROR(esp_ota_set_boot_partition(factory_partition), TAG,
+        ESP_RETURN_ON_ERROR(mosaico_boot_request_recovery(), TAG,
                             "select updated recovery");
-        const esp_partition_t *configured = esp_ota_get_boot_partition();
+        bool recovery_requested = false;
+        ESP_RETURN_ON_ERROR(mosaico_boot_recovery_requested(&recovery_requested), TAG,
+                            "read committed Vibe Mode boot intent");
         ESP_RETURN_ON_FALSE(
-            configured != NULL &&
-                configured->subtype == ESP_PARTITION_SUBTYPE_APP_FACTORY,
+            recovery_requested,
             ESP_ERR_INVALID_STATE, TAG,
             "configured boot partition does not match recovery");
     }

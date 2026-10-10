@@ -14,7 +14,7 @@ int mock_create_fail, mock_alloc_fail, mock_commit_error, mock_writes, mock_comm
     mock_reserved, mock_abort;
 void (*mock_worker)(void *);
 esp_partition_t mock_factory = {
-    .address = 0x20000, .size = 0x1c0000, .label = "factory"};
+    .address = 0x20000, .size = 0x1c0000, .subtype = ESP_PARTITION_SUBTYPE_APP_TEST, .label = "vibe_mode"};
 static esp_partition_t app = {
     .address = 0x210000, .size = 0x100000, .subtype = 16, .label = "ota_0"};
 static jmp_buf worker_exit;
@@ -160,7 +160,7 @@ const esp_partition_t *esp_partition_find_first(int type, int subtype,
 {
     (void)type;
     (void)subtype;
-    return !strcmp(label, "factory") ? &mock_factory : &app;
+    return !strcmp(label, "vibe_mode") ? &mock_factory : &app;
 }
 esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *config)
 {
@@ -424,7 +424,7 @@ static unsigned erased_boot_records;
 esp_err_t nvs_open_from_partition(const char *partition, const char *ns, int mode,
                                   nvs_handle_t *n)
 {
-    assert(!strcmp(partition, "sysmeta") && !strcmp(ns, "iris_bridge"));
+    assert(!strcmp(partition, "sysmeta") && !strcmp(ns, "iris_bridge_v2"));
     (void)mode;
     *n = 1;
     return ESP_OK;
@@ -490,7 +490,6 @@ static void reset(void)
     block_result = false;
     atomic_store(&release_result, false);
     write_deadline = 0;
-    separate_authorization = false;
     atomic_store(&telemetry_revision, 0);
     atomic_store(&report_running, false);
     http_allocations = 0;
@@ -542,7 +541,7 @@ static void run_worker(void)
 }
 static const char *registration =
     "{\"session_id\":\"12345678901234567890123456789012\",\"auth_token\":\"SECRET\","
-    "\"device_code\":\"ABCDE-12345\",\"expires_at\":\"" TEST_PAIRING_EXPIRY "\"}";
+    "\"control_protocol\":2,\"device_code\":\"ABCDE-12345\",\"expires_at\":\"" TEST_PAIRING_EXPIRY "\"}";
 static cJSON *plan(const char *mode)
 {
     cJSON *p = cJSON_CreateObject();
@@ -551,11 +550,11 @@ static cJSON *plan(const char *mode)
     cJSON_AddStringToObject(p, "mode", mode);
     cJSON_AddStringToObject(p, "source_table_sha256", hash);
     cJSON_AddStringToObject(p, "target_table_sha256", hash);
-    cJSON_AddStringToObject(p, "boot_partition", "factory");
+    cJSON_AddStringToObject(p, "boot_partition", "vibe_mode");
     cJSON *images = cJSON_AddArrayToObject(p, "images"), *im = cJSON_CreateObject();
     cJSON_AddItemToArray(images, im);
     cJSON_AddStringToObject(im, "partition",
-                            !strcmp(mode, "factory") ? "factory" : "data");
+                            !strcmp(mode, "factory") ? "vibe_mode" : "data");
     cJSON_AddStringToObject(im, "upload_id", "image");
     cJSON_AddNumberToObject(im, "offset", 0x210000);
     cJSON_AddNumberToObject(im, "size", 4);
@@ -565,9 +564,9 @@ static cJSON *plan(const char *mode)
     cJSON_AddStringToObject(im, "sha256", hash);
     cJSON *m = cJSON_AddObjectToObject(p, "factory_manifest");
     cJSON_AddStringToObject(m, "board_id", "test-s31");
-    cJSON_AddStringToObject(m, "profile_id", "iris-s31-layout-v1");
+    cJSON_AddStringToObject(m, "profile_id", "iris-s31-test-layout-v2");
     cJSON_AddStringToObject(m, "recovery_version", "3.0");
-    cJSON_AddNumberToObject(m, "protocol_version", 1);
+    cJSON_AddNumberToObject(m, "protocol_version", 2);
     return p;
 }
 
@@ -578,7 +577,7 @@ static cJSON *system_plan(void)
     cJSON_AddNumberToObject(im, "component_id", 1);
     cJSON_AddStringToObject(im, "kind", "data");
     cJSON *manifest = cJSON_AddObjectToObject(p, "system_manifest");
-    cJSON_AddStringToObject(manifest, "schema", "esp-iris-system-update/v1");
+    cJSON_AddStringToObject(manifest, "schema", "esp-iris-system-update/0.2");
     cJSON_AddStringToObject(manifest, "target_layout_sha256", str(p, "target_table_sha256"));
     cJSON_AddBoolToObject(manifest, "preserve_layout", true);
     cJSON *components = cJSON_AddArrayToObject(manifest, "components");
@@ -676,7 +675,6 @@ static void test_authorization_and_result(void)
 {
     /* Dropped/coalesced telemetry cannot block a protocol-2 commit. */
     reset();
-    separate_authorization = true;
     mock_keep_alive = true;
     cJSON *p = plan("partitions");
     reply("/files/", 200, "data", false);
@@ -694,7 +692,7 @@ static void test_authorization_and_result(void)
     cJSON_AddNumberToObject(p, "write_authorization_ttl_ms", 60000);
     char *accepted = cJSON_PrintUnformatted(p);
     cJSON *reg = cJSON_Parse(registration);
-    cJSON_AddNumberToObject(reg, "control_protocol", 2);
+    cJSON_ReplaceItemInObject(reg, "control_protocol", cJSON_CreateNumber(2));
     char *registered = cJSON_PrintUnformatted(reg);
     cJSON_Delete(reg);
     mock_keep_alive = true;
@@ -723,7 +721,6 @@ static void test_authorization_and_result(void)
 
     /* HTTP 200 alone does not grant critical write permission. */
     reset();
-    separate_authorization = true;
     p = plan("partitions");
     reply("/files/", 200, "data", false);
     reply("/authorize", 200, "{}", false);
@@ -733,7 +730,6 @@ static void test_authorization_and_result(void)
 
     /* A stalled final HTTPS body cannot postpone reboot beyond 2 seconds. */
     reset();
-    separate_authorization = true;
     block_result = true;
     p = plan("partitions");
     reply("/files/", 200, "data", false);
@@ -895,9 +891,7 @@ int main(void)
     reset();
     p = plan("partitions");
     reply("/files/", 200, "data", false);
-    reply("/progress", 200, "{\"phase\":\"WRITING\"}", false);
-    reply("/progress", 200, "{\"phase\":\"VERIFYING\"}", false);
-    reply("/progress", 409, "{}", false);
+    reply("/authorize", 409, "{}", false);
     assert(execute("12345678901234567890123456789012", p) != 0);
     assert(mock_writes == 1 && !mock_commits && !mock_reserved);
     cJSON_Delete(p);
@@ -905,9 +899,7 @@ int main(void)
     reset();
     p = plan("partitions");
     reply("/files/", 200, "data", false);
-    reply("/progress", 200, "{\"phase\":\"WRITING\"}", false);
-    reply("/progress", 200, "{\"phase\":\"VERIFYING\"}", false);
-    reply("/progress", 200, "{\"phase\":\"COMMITTING\"}", true);
+    reply("/authorize", 200, "{\"phase\":\"COMMITTING\",\"authorized\":true}", true);
     reply("/progress", 401, "{}", false);
     if (!setjmp(worker_exit))
         execute("12345678901234567890123456789012", p);
@@ -917,9 +909,7 @@ int main(void)
     p = plan("partitions");
     mock_commit_error = ESP_FAIL;
     reply("/files/", 200, "data", false);
-    reply("/progress", 200, "{\"phase\":\"WRITING\"}", false);
-    reply("/progress", 200, "{\"phase\":\"VERIFYING\"}", false);
-    reply("/progress", 200, "{\"phase\":\"COMMITTING\"}", false);
+    reply("/authorize", 200, "{\"phase\":\"COMMITTING\",\"authorized\":true}", false);
     reply("/progress", 200, "{\"phase\":\"DONE\"}", false);
     if (!setjmp(worker_exit))
         execute("12345678901234567890123456789012", p);
@@ -993,9 +983,7 @@ int main(void)
     cfg.enable_bootloader_update = true;
     p = system_plan();
     reply("/files/", 200, "data", false);
-    reply("/progress", 200, "{\"phase\":\"WRITING\"}", false);
-    reply("/progress", 200, "{\"phase\":\"VERIFYING\"}", false);
-    reply("/progress", 200, "{\"phase\":\"COMMITTING\"}", false);
+    reply("/authorize", 200, "{\"phase\":\"COMMITTING\",\"authorized\":true}", false);
     reply("/progress", 200, "{\"phase\":\"DONE\"}", false);
     if (!setjmp(worker_exit))
         execute("12345678901234567890123456789012", p);
@@ -1006,3 +994,5 @@ int main(void)
     test_authorization_and_result();
     puts("Bridge worker, cancellation and transaction gates passed");
 }
+
+esp_err_t mosaico_boot_select(uint32_t address) { assert(address >= 0x200000); return ESP_OK; }

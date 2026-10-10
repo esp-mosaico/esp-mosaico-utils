@@ -7,6 +7,8 @@ if(NOT DEFINED EXTRA_COMPONENT_DIRS AND DEFINED ENV{EXTRA_COMPONENT_DIRS})
     set(EXTRA_COMPONENT_DIRS "$ENV{EXTRA_COMPONENT_DIRS}")
 endif()
 
+list(APPEND EXTRA_COMPONENT_DIRS "${CMAKE_CURRENT_LIST_DIR}/../../components/esp_mosaico_boot")
+
 set(RECOVERY_PREBUILT_DIR
     "${CMAKE_CURRENT_LIST_DIR}/prebuilt/recovery" CACHE PATH
     "Directory containing the checked-in recovery image and manifest")
@@ -27,5 +29,9 @@ set(MOSAICO_GSPC_VERSION "0.5.0")
 include("${CMAKE_CURRENT_LIST_DIR}/../../../mosaico-tools/cmake/gsp_compiler.cmake")
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(factory)
+
+if(NOT CONFIG_ESPTOOLPY_FLASHMODE_QIO)
+    message(FATAL_ERROR "Vibe Mode requires CONFIG_ESPTOOLPY_FLASHMODE_QIO=y; update sdkconfig and rebuild")
+endif()
 
 include(cmake/recovery_image.cmake)

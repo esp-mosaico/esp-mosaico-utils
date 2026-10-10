@@ -70,6 +70,9 @@ def test_screenshot_and_pointer_are_observed_on_device(
                     stream_id=1,
                 )
 
+            before = FixtureState.decode(
+                await raw.session.rpc(TEST_SERVICE_ID, STATE_METHOD)
+            )
             begin = POINTER_V1.pack(0, 0, -100, 900, 0, 1)
             moved = POINTER_V1.pack(1, 0, 100, 200, 0, 2)
             end = POINTER_V1.pack(2, 0, 700, -5, 0, 3)
@@ -83,7 +86,7 @@ def test_screenshot_and_pointer_are_observed_on_device(
             state = FixtureState.decode(
                 await raw.session.rpc(TEST_SERVICE_ID, STATE_METHOD)
             )
-            assert state.pointer_count == 3
+            assert state.pointer_count == before.pointer_count + 3
             assert state.last_pointer == normalized_end
         finally:
             await raw.close()

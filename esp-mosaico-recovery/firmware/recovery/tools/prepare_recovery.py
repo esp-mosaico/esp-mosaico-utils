@@ -12,8 +12,13 @@ import subprocess
 import sys
 from typing import Any
 
+from boot_intent import bootstrap_image
 
-SCHEMA_VERSION = 2
+
+SCHEMA_VERSION = 3
+PRODUCT_CONTRACT = json.loads(
+    (Path(__file__).resolve().parents[3] / "product_contract.json").read_text()
+)
 PROJECT_NAME = "factory"
 ESP_IMAGE_MAGIC = 0xE9
 IMAGE_FILES = {
@@ -26,11 +31,17 @@ RECOVERY_SOURCE_PATHS = (
     "CMakeLists.txt",
     "bootloader_components",
     "cmake",
+    "components",
     "main",
     "partitions.csv",
     "sdkconfig.defaults",
     "sdkconfig.recovery.defaults",
     "tools",
+    "../../cmake",
+    "../../components",
+    "../../include",
+    "../../product_contract.json",
+    "../../../ESP-Iris/components/esp_iris",
 )
 
 
@@ -119,9 +130,16 @@ def build_manifest(
         ) from error
     if not enabled_config(config, "CONFIG_FACTORY_RECOVERY_FIRMWARE"):
         raise RecoveryImageError("bundle was not produced by the factory Recovery project")
+    values = dict(line.split("=", 1) for line in config.splitlines()
+                  if line.startswith("CONFIG_") and "=" in line)
+    for key, expected in PRODUCT_CONTRACT["compatibility"].items():
+        config_key = "CONFIG_IDF_TARGET" if key == "chip_target" else "CONFIG_ESP_IRIS_" + key.upper()
+        if values.get(config_key) != json.dumps(expected):
+            raise RecoveryImageError(f"Recovery build does not satisfy {config_key}")
     source_commit, source_dirty = source_state(source_root)
     return {
         "schema_version": SCHEMA_VERSION,
+        "compatibility": PRODUCT_CONTRACT["compatibility"],
         "project": description.get("project_name", ""),
         "profile": "recovery",
         "version": description.get("project_version", ""),
@@ -130,17 +148,19 @@ def build_manifest(
         "source": {"commit": source_commit, "dirty": source_dirty},
         "layout": {
             "recovery_partition": {
-                "name": "factory",
+                "name": "vibe_mode",
+                "subtype": "test",
                 "offset": f"0x{offsets['recovery']:x}",
                 "size": f"0x{partition_size:x}",
             },
             "application_partition": {
-                "name": "ota_0",
+                "name": "main_app",
+                "subtype": "ota_0",
                 "offset": f"0x{normal_offset:x}",
             },
         },
         "initial_boot": {
-            "partition": "factory",
+            "partition": "vibe_mode",
             "ota_data_image": IMAGE_FILES["ota_data"],
             "expected_mode": "recovery",
         },
@@ -187,16 +207,18 @@ def validate(
         raise RecoveryImageError(
             f"recovery target mismatch: expected {target!r}, got {manifest.get('target')!r}"
         )
+    if manifest.get("compatibility") != PRODUCT_CONTRACT["compatibility"]:
+        raise RecoveryImageError("Recovery bundle requires the matching 0.2 product contract")
     layout = require_mapping(manifest, "layout")
     recovery_partition = require_mapping(layout, "recovery_partition")
     application_partition = require_mapping(layout, "application_partition")
-    if recovery_partition.get("name") != "factory":
-        raise RecoveryImageError("recovery partition must be named factory")
+    if recovery_partition.get("name") != "vibe_mode" or recovery_partition.get("subtype") != "test":
+        raise RecoveryImageError("recovery partition must be named vibe_mode with subtype test")
     if parse_int(recovery_partition.get("offset", "")) != offsets["recovery"]:
-        raise RecoveryImageError("factory partition offset changed; rebuild recovery bundle")
+        raise RecoveryImageError("Vibe Mode partition offset changed; rebuild recovery bundle")
     if parse_int(recovery_partition.get("size", "")) != partition_size:
-        raise RecoveryImageError("factory partition size changed; rebuild recovery bundle")
-    if application_partition.get("name") != "ota_0" or parse_int(
+        raise RecoveryImageError("Vibe Mode partition size changed; rebuild recovery bundle")
+    if application_partition.get("name") != "main_app" or application_partition.get("subtype") != "ota_0" or parse_int(
         application_partition.get("offset", "")
     ) != normal_offset:
         raise RecoveryImageError("normal application partition layout changed")
@@ -218,13 +240,15 @@ def validate(
         if item.get("size") != path.stat().st_size or item.get("sha256") != sha256(path):
             raise RecoveryImageError(f"size or SHA-256 mismatch for {name}")
     if images["recovery"].stat().st_size > partition_size:
-        raise RecoveryImageError("recovery application is larger than the factory partition")
+        raise RecoveryImageError("recovery application is larger than the Vibe Mode partition")
     for name in ("bootloader", "recovery"):
         with images[name].open("rb") as stream:
             if stream.read(1) != bytes([ESP_IMAGE_MAGIC]):
                 raise RecoveryImageError(f"invalid ESP image magic: {images[name]}")
+    if images["ota_data"].read_bytes() != bootstrap_image():
+        raise RecoveryImageError("otadata must contain the 0.2 one-shot Vibe Mode bootstrap")
     initial = require_mapping(manifest, "initial_boot")
-    if initial.get("partition") != "factory" or initial.get("expected_mode") != "recovery":
+    if initial.get("partition") != "vibe_mode" or initial.get("expected_mode") != "recovery":
         raise RecoveryImageError("bundle does not initialize into Recovery")
 
 

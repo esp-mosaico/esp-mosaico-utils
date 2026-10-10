@@ -16,6 +16,7 @@
 #include "esp_iris_service_profiles.h"
 #include "esp_iris_system_inventory.h"
 #include "mosaico_recovery_contract.h"
+#include "mosaico_boot.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
@@ -60,7 +61,7 @@ static bool is_ota_partition(const esp_partition_t *partition)
 {
     return partition != NULL &&
            partition->subtype >= ESP_PARTITION_SUBTYPE_APP_OTA_0 &&
-           partition->subtype <= ESP_PARTITION_SUBTYPE_APP_OTA_MAX;
+           partition->subtype < ESP_PARTITION_SUBTYPE_APP_OTA_MAX;
 }
 
 static esp_err_t recovery_write(uint32_t last_good, uint32_t target)
@@ -277,18 +278,11 @@ static esp_err_t accept_rpc(const esp_iris_rpc_request_t *request,
     return esp_iris_mark_healthy();
 }
 
-static void enter_recovery_task(void *arg)
-{
-    (void)arg;
-    vTaskDelay(pdMS_TO_TICKS(500));
-    esp_restart();
-}
-
 esp_err_t iris_ota_support_enter_recovery(void)
 {
     const esp_partition_t *running = esp_ota_get_running_partition();
     const esp_partition_t *factory = esp_partition_find_first(
-        ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_FACTORY, NULL);
+        ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_TEST, MOSAICO_RECOVERY_PARTITION);
     if (running == NULL || factory == NULL ||
         running->address == factory->address) {
         return ESP_ERR_INVALID_STATE;
@@ -296,12 +290,12 @@ esp_err_t iris_ota_support_enter_recovery(void)
 
     ESP_RETURN_ON_ERROR(esp_iris_mark_planned_restart(), TAG,
                         "record recovery restart");
-    ESP_RETURN_ON_ERROR(esp_ota_set_boot_partition(factory), TAG,
-                        "select factory recovery");
-    if (xTaskCreate(enter_recovery_task, "enter_recovery", 2048, NULL, 5,
-                    NULL) != pdPASS) {
-        (void)esp_ota_set_boot_partition(running);
-        return ESP_ERR_NO_MEM;
+    ESP_RETURN_ON_ERROR(mosaico_boot_request_recovery(), TAG,
+                        "persist Vibe Mode boot intent");
+    const esp_err_t err = esp_iris_schedule_restart(500);
+    if (err != ESP_OK) {
+        (void)mosaico_boot_select(running->address);
+        return err;
     }
 
     return ESP_OK;

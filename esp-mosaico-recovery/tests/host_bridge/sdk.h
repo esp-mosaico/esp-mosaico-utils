@@ -49,6 +49,7 @@ static inline esp_err_t esp_wifi_set_ps(wifi_ps_type_t mode) { mock_wifi_ps = mo
 #define ESP_PARTITION_TYPE_ANY 255
 #define ESP_PARTITION_SUBTYPE_ANY 255
 #define ESP_PARTITION_SUBTYPE_APP_FACTORY 0
+#define ESP_PARTITION_SUBTYPE_APP_TEST 32
 #define ESP_PARTITION_SUBTYPE_APP_OTA_0 16
 #define ESP_PARTITION_SUBTYPE_APP_OTA_15 31
 #define HTTP_EVENT_ON_HEADER 1
@@ -309,3 +310,7 @@ static inline int xTaskCreateWithCaps(void (*fn)(void *), const char *name, int 
     return xTaskCreate(fn, name, stack, arg, pri, task);
 }
 static inline void vTaskDeleteWithCaps(void *task) { vTaskDelete(task); }
+
+esp_err_t mosaico_boot_select(uint32_t address);
+esp_err_t mosaico_boot_request_recovery(void);
+esp_err_t mosaico_boot_recovery_requested(bool *requested);

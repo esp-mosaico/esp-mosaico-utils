@@ -16,6 +16,9 @@ static const iris_transport_ops_t *const s_transports[] = {
 #if CONFIG_ESP_IRIS_TRANSPORT_USB_SERIAL_JTAG
     &g_iris_usb_serial_jtag_transport_ops,
 #endif
+#if CONFIG_ESP_IRIS_TRANSPORT_UART
+    &g_iris_uart_transport_ops,
+#endif
 };
 
 #define IRIS_TRANSPORT_COUNT \
@@ -31,9 +34,18 @@ static iris_transport_state_t *state_for(iris_runtime_t *runtime,
         return &runtime->transport.tcp;
     case ESP_IRIS_TRANSPORT_KIND_USB_SERIAL_JTAG:
         return &runtime->transport.usb_serial_jtag;
+    case ESP_IRIS_TRANSPORT_KIND_UART:
+        return &runtime->transport.uart;
     default:
         return NULL;
     }
+}
+
+static bool supports_runtime(const iris_runtime_t *runtime,
+                             const iris_transport_ops_t *ops)
+{
+    return !runtime->data_link || ops->kind == ESP_IRIS_TRANSPORT_KIND_USB ||
+           ops->kind == ESP_IRIS_TRANSPORT_KIND_TCP;
 }
 
 static void clear_active(iris_transport_manager_t *manager)
@@ -52,6 +64,7 @@ static void stop_losers(iris_runtime_t *runtime)
         if (ops == manager->active_ops) {
             continue;
         }
+        if (!supports_runtime(runtime, ops)) continue;
         iris_transport_state_t *state = state_for(runtime, ops->kind);
         if (state != NULL && state->driver_started) {
             ops->stop(runtime, state);
@@ -63,6 +76,7 @@ static void start_missing(iris_runtime_t *runtime)
 {
     for (size_t i = 0; i < IRIS_TRANSPORT_COUNT; ++i) {
         const iris_transport_ops_t *ops = s_transports[i];
+        if (!supports_runtime(runtime, ops)) continue;
         iris_transport_state_t *state = state_for(runtime, ops->kind);
         if (state != NULL && !state->driver_started) {
             (void)ops->start(runtime, state);
@@ -85,6 +99,7 @@ esp_err_t iris_transport_start(iris_runtime_t *runtime)
 
     for (size_t i = 0; i < IRIS_TRANSPORT_COUNT; ++i) {
         const iris_transport_ops_t *ops = s_transports[i];
+        if (!supports_runtime(runtime, ops)) continue;
         iris_transport_state_t *state = state_for(runtime, ops->kind);
         esp_err_t err = ops->start(runtime, state);
         if (err != ESP_OK) {
@@ -93,7 +108,8 @@ esp_err_t iris_transport_start(iris_runtime_t *runtime)
                     s_transports[started];
                 iris_transport_state_t *started_state =
                     state_for(runtime, started_ops->kind);
-                started_ops->stop(runtime, started_state);
+                if (supports_runtime(runtime, started_ops) && started_state->driver_started)
+                    started_ops->stop(runtime, started_state);
             }
             return err;
         }
@@ -108,6 +124,7 @@ void iris_transport_stop(iris_runtime_t *runtime)
     }
     for (size_t i = 0; i < IRIS_TRANSPORT_COUNT; ++i) {
         const iris_transport_ops_t *ops = s_transports[i];
+        if (!supports_runtime(runtime, ops)) continue;
         iris_transport_state_t *state = state_for(runtime, ops->kind);
         if (state != NULL && state->driver_started) {
             ops->stop(runtime, state);
@@ -132,7 +149,16 @@ iris_link_event_t iris_transport_poll(iris_runtime_t *runtime)
         if (!manager->committed && now >= manager->claim_deadline_us) {
             const esp_iris_transport_kind_t rejected_kind =
                 manager->active_ops->kind;
-            manager->active_ops->stop(runtime, manager->active_state);
+            if (runtime->data_link) {
+                manager->active_ops->stop(runtime, manager->active_state);
+            } else {
+                /* A console probe timing out must not uninstall a driver or
+                 * re-enumerate USB. Leave standard output alive. */
+                if (manager->active_ops->disconnect != NULL)
+                    manager->active_ops->disconnect(runtime, manager->active_state);
+                manager->active_state->link_up = false;
+                manager->active_state->reported_link_up = false;
+            }
             if (rejected_kind == ESP_IRIS_TRANSPORT_KIND_USB_SERIAL_JTAG) {
                 manager->retry_after_us[rejected_kind] =
                     now + IRIS_CLAIM_TIMEOUT_US;
@@ -152,6 +178,7 @@ iris_link_event_t iris_transport_poll(iris_runtime_t *runtime)
         if (manager->retry_after_us[ops->kind] > now) {
             continue;
         }
+        if (!supports_runtime(runtime, ops)) continue;
         iris_transport_state_t *state = state_for(runtime, ops->kind);
         if (state == NULL || !state->driver_started) {
             continue;
@@ -193,14 +220,19 @@ int iris_transport_write(iris_runtime_t *runtime, const uint8_t *buffer,
                                       buffer, length);
 }
 
-esp_iris_transport_kind_t iris_transport_kind(void)
+esp_iris_transport_kind_t iris_runtime_transport_kind(const iris_runtime_t *runtime)
 {
-    const iris_transport_manager_t *manager = &g_iris.transport;
+    const iris_transport_manager_t *manager = &runtime->transport;
     if (manager->active_ops != NULL) {
         return manager->active_ops->kind;
     }
     return IRIS_TRANSPORT_COUNT == 1U ? s_transports[0]->kind
                                      : ESP_IRIS_TRANSPORT_KIND_NONE;
+}
+
+esp_iris_transport_kind_t iris_transport_kind(void)
+{
+    return iris_runtime_transport_kind(&g_iris);
 }
 
 const char *iris_transport_name(void)
@@ -229,7 +261,7 @@ void iris_transport_commit(iris_runtime_t *runtime)
     }
     runtime->transport.committed = true;
     runtime->transport.claim_deadline_us = 0;
-    stop_losers(runtime);
+    if (runtime->data_link) stop_losers(runtime);
 }
 
 void iris_transport_disconnect(iris_runtime_t *runtime)

@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import struct
 import time
+import zlib
 from types import SimpleNamespace
 
 import pytest
@@ -122,6 +123,11 @@ class FakeLink:
 
     async def write(self, data: bytes) -> None:
         self.writes.append(data)
+        frame = decode_frame(data[:-1])
+        if frame.channel == Channel.CONTROL and frame.type == ControlType.HELLO_ACK and len(frame.payload) == 17 and not frame.flags & (1 << 5):
+            await self.incoming.put(encode_frame(Frame(
+                channel=Channel.CONTROL, type=ControlType.AUTH_RESULT,
+                session_id=frame.session_id, sequence=0, payload=b"\x01")))
 
     async def close(self) -> None:
         self.closed = True
@@ -288,7 +294,8 @@ def test_session_hello_credit_and_log_event() -> None:
             [
                 (TlvTag.DEVICE_ID, bytes.fromhex("00112233445566778899aabbccddeeff")),
                 (TlvTag.BOOT_ID, struct.pack("<Q", 7)),
-                (TlvTag.PROTOCOL_VERSION, struct.pack("<H", 1)),
+                (TlvTag.PROTOCOL_VERSION, struct.pack("<H", 2)),
+                (TlvTag.LINK_ROLE, b"\x01"),
                 (TlvTag.CAPABILITIES, struct.pack("<Q", 0x400F)),
                 (TlvTag.TRANSPORT, b"\x01"),
                 (TlvTag.AUTH_MODE, b"\x00"),
@@ -364,6 +371,7 @@ def test_session_hello_credit_and_log_event() -> None:
 def test_ota_end_timeout_is_reconciled_with_device_job() -> None:
     async def scenario() -> None:
         session = object.__new__(DeviceSession)
+        session._console = False
         calls = 0
 
         async def request(channel, type_, payload=b"", timeout=10.0):
@@ -404,9 +412,10 @@ def test_ota_end_timeout_is_reconciled_with_device_job() -> None:
     asyncio.run(scenario())
 
 
-def test_ota_begin_uses_extended_timeout_for_legacy_recovery() -> None:
+def test_ota_begin_uses_extended_timeout_for_full_partition_erase() -> None:
     async def scenario() -> None:
         session = object.__new__(DeviceSession)
+        session._console = False
         session._request_lock = asyncio.Lock()
         calls: list[tuple[int, int, float]] = []
 
@@ -453,6 +462,7 @@ def test_ota_begin_uses_extended_timeout_for_legacy_recovery() -> None:
 def test_ota_end_session_close_is_deferred_to_gateway_reconnect_validation() -> None:
     async def scenario() -> None:
         session = object.__new__(DeviceSession)
+        session._console = False
         calls = 0
 
         async def request(channel, type_, payload=b"", timeout=10.0):
@@ -484,11 +494,13 @@ def test_ota_end_session_close_is_deferred_to_gateway_reconnect_validation() -> 
     asyncio.run(scenario())
 
 
-def test_ota_data_window_resumes_from_a_confirmed_batch_boundary() -> None:
+def test_ota_waits_for_flash_ack_and_resumes_from_confirmed_offset() -> None:
     async def scenario() -> None:
         session = object.__new__(DeviceSession)
+        session._console = False
         session._request_lock = asyncio.Lock()
         attempts: dict[int, int] = {}
+        in_flight = 0
 
         async def request(channel, type_, payload=b"", timeout=10.0):
             del payload, timeout
@@ -512,15 +524,19 @@ def test_ota_data_window_resumes_from_a_confirmed_batch_boundary() -> None:
             )
 
         async def request_unlocked(channel, type_, payload=b"", timeout=10.0):
+            nonlocal in_flight
             del timeout
             assert (channel, type_) == (Channel.OTA, OtaType.DATA)
+            in_flight += 1
+            # Real firmware rejects another write while its executor is busy.
+            assert in_flight == 1
+            await asyncio.sleep(0)
+            in_flight -= 1
             offset = struct.unpack_from("<I", payload)[0]
             attempts[offset] = attempts.get(offset, 0) + 1
             if offset == 1 and attempts[offset] == 1:
                 await asyncio.sleep(0)
                 raise TimeoutError
-            if offset > 1 and attempts[offset] == 1:
-                await asyncio.sleep(10)
             return Frame(
                 channel=channel,
                 type=OtaType.DATA_RESPONSE,
@@ -531,7 +547,7 @@ def test_ota_data_window_resumes_from_a_confirmed_batch_boundary() -> None:
         session._request_unlocked = request_unlocked
         result = await session.ota_update(b"abcd", timeout=0.01)
         assert result["job_id"] == 79
-        assert attempts == {0: 1, 1: 2, 2: 2, 3: 2}
+        assert attempts == {0: 1, 1: 2, 2: 1, 3: 1}
 
     asyncio.run(scenario())
 
@@ -539,6 +555,7 @@ def test_ota_data_window_resumes_from_a_confirmed_batch_boundary() -> None:
 def test_ota_data_window_rejects_a_truncated_response_batch(monkeypatch) -> None:
     async def scenario() -> None:
         session = object.__new__(DeviceSession)
+        session._console = False
         session._request_lock = asyncio.Lock()
 
         async def request(channel, type_, payload=b"", timeout=10.0):
@@ -591,7 +608,8 @@ def test_event_time_fields_crash_metadata_and_chunk_download() -> None:
             [
                 (TlvTag.DEVICE_ID, device_id),
                 (TlvTag.BOOT_ID, struct.pack("<Q", 77)),
-                (TlvTag.PROTOCOL_VERSION, struct.pack("<H", 1)),
+                (TlvTag.PROTOCOL_VERSION, struct.pack("<H", 2)),
+                (TlvTag.LINK_ROLE, b"\x01"),
                 (TlvTag.CAPABILITIES, struct.pack("<Q", 0x4F)),
                 (TlvTag.TRANSPORT, b"\x01"),
                 (TlvTag.AUTH_MODE, b"\x00"),
@@ -765,7 +783,8 @@ def test_pairing_challenge_hmac_gates_session_ready() -> None:
             [
                 (TlvTag.DEVICE_ID, device_id),
                 (TlvTag.BOOT_ID, struct.pack("<Q", boot_id)),
-                (TlvTag.PROTOCOL_VERSION, struct.pack("<H", 1)),
+                (TlvTag.PROTOCOL_VERSION, struct.pack("<H", 2)),
+                (TlvTag.LINK_ROLE, b"\x01"),
                 (TlvTag.CAPABILITIES, struct.pack("<Q", 0x1FF)),
                 (TlvTag.TRANSPORT, b"\x02"),
                 (TlvTag.AUTH_MODE, b"\x01"),
@@ -787,18 +806,21 @@ def test_pairing_challenge_hmac_gates_session_ready() -> None:
         _, proof_frame = await wait_for_request(
             link, Channel.CONTROL, ControlType.HELLO_ACK
         )
-        assert len(proof_frame.payload) == 48
-        nonce = proof_frame.payload[:16]
+        assert len(proof_frame.payload) == 65
+        binding = proof_frame.payload[:17]
+        assert binding == b"\x01" + session.owner_id
+        nonce = proof_frame.payload[17:33]
         expected = hmac.new(
             token,
-            b"ESP-Iris-auth-v1"
+            b"ESP-Iris-auth-0.2"
             + device_id
             + struct.pack("<QI", boot_id, session_id)
             + challenge
-            + nonce,
+            + nonce
+            + binding,
             hashlib.sha256,
         ).digest()
-        assert hmac.compare_digest(proof_frame.payload[16:], expected)
+        assert hmac.compare_digest(proof_frame.payload[33:], expected)
         assert not session._ready.is_set()
         await link.incoming.put(
             encode_frame(
@@ -853,7 +875,8 @@ def test_missing_pairing_token_has_the_same_minimum_failure_delay() -> None:
                                 ),
                             ),
                             (TlvTag.BOOT_ID, struct.pack("<Q", 9)),
-                            (TlvTag.PROTOCOL_VERSION, struct.pack("<H", 1)),
+                            (TlvTag.PROTOCOL_VERSION, struct.pack("<H", 2)),
+                            (TlvTag.LINK_ROLE, b"\x01"),
                             (TlvTag.CAPABILITIES, struct.pack("<Q", 0x1FF)),
                             (TlvTag.TRANSPORT, b"\x02"),
                             (TlvTag.AUTH_MODE, b"\x01"),
@@ -908,8 +931,9 @@ def test_unanswered_clock_probe_closes_stale_live_session() -> None:
                             (TlvTag.BOOT_ID, struct.pack("<Q", 7)),
                             (
                                 TlvTag.PROTOCOL_VERSION,
-                                struct.pack("<H", 1),
+                                struct.pack("<H", 2),
                             ),
+                            (TlvTag.LINK_ROLE, b"\x01"),
                             (TlvTag.CAPABILITIES, struct.pack("<Q", 0x0F)),
                             (TlvTag.TRANSPORT, b"\x01"),
                             (TlvTag.AUTH_MODE, b"\x00"),
@@ -939,8 +963,23 @@ def test_unanswered_clock_probe_closes_stale_live_session() -> None:
 
 
 def test_usb_serial_jtag_keeps_link_after_unanswered_clock_probes() -> None:
+    from iris_gateway.console_protocol import decode_record, encode_record
+
+    class ConsoleLink(FakeLink):
+        console = True
+
+        async def write(self, data):
+            if data == b"iris hello\n":
+                return
+            frame = decode_record(data, request=True)
+            self.writes.append(data)
+            if frame.type == ControlType.HELLO_ACK:
+                await self.incoming.put(encode_record(Frame(channel=Channel.CONTROL,
+                    type=ControlType.AUTH_RESULT, session_id=frame.session_id,
+                    payload=b"\x01"), request=False))
+
     async def scenario() -> None:
-        link = FakeLink()
+        link = ConsoleLink()
 
         async def on_ready(session: DeviceSession) -> None:
             pass
@@ -957,7 +996,7 @@ def test_usb_serial_jtag_keeps_link_after_unanswered_clock_probes() -> None:
         )
         task = asyncio.create_task(session.run())
         await link.incoming.put(
-            encode_frame(
+            encode_record(
                 Frame(
                     channel=Channel.CONTROL,
                     type=ControlType.HELLO,
@@ -974,23 +1013,24 @@ def test_usb_serial_jtag_keeps_link_after_unanswered_clock_probes() -> None:
                             (TlvTag.BOOT_ID, struct.pack("<Q", 7)),
                             (
                                 TlvTag.PROTOCOL_VERSION,
-                                struct.pack("<H", 1),
+                                struct.pack("<H", 2),
                             ),
+                            (TlvTag.LINK_ROLE, b"\x00"),
                             (TlvTag.CAPABILITIES, struct.pack("<Q", 0x0F)),
                             (TlvTag.TRANSPORT, b"\x03"),
                             (TlvTag.AUTH_MODE, b"\x00"),
                             (TlvTag.MAX_PAYLOAD, struct.pack("<I", 4000)),
                         ]
                     ),
-                )
+                ), request=False
             )
         )
         await session.wait_ready()
         for _ in range(100):
             probe_types = [
-                decode_frame(wire[:-1]).type
+                decode_record(wire, request=True).type
                 for wire in link.writes
-                if decode_frame(wire[:-1]).channel == Channel.CONTROL
+                if decode_record(wire, request=True).channel == Channel.CONTROL
             ]
             if probe_types.count(ControlType.TIME_SYNC_REQUEST) >= 2:
                 break
@@ -1041,8 +1081,9 @@ def test_rpc_jobs_screenshot_media_ota_and_restart() -> None:
                             (TlvTag.BOOT_ID, struct.pack("<Q", 12)),
                             (
                                 TlvTag.PROTOCOL_VERSION,
-                                struct.pack("<H", 1),
+                                struct.pack("<H", 2),
                             ),
+                            (TlvTag.LINK_ROLE, b"\x01"),
                             (TlvTag.CAPABILITIES, struct.pack("<Q", 0x1FFF)),
                             (TlvTag.TRANSPORT, b"\x01"),
                             (TlvTag.AUTH_MODE, b"\x00"),
@@ -1145,7 +1186,7 @@ def test_rpc_jobs_screenshot_media_ota_and_restart() -> None:
                     request_id=read_request.request_id,
                     stream_id=55,
                     sequence=2,
-                    payload=struct.pack("<II", 0, 4) + b"shot",
+                    payload=struct.pack("<II", 0, 4) + b"shot" + struct.pack("<I", zlib.crc32(b"shot")),
                 )
             )
         )
@@ -1214,6 +1255,19 @@ def test_rpc_jobs_screenshot_media_ota_and_restart() -> None:
             await asyncio.sleep(0)
         assert media_events[0]["data"] == b"img"
 
+        credit_frames = [decode_frame(item[:-1]) for item in link.writes]
+        assert any(item.type == ControlType.CREDIT and item.stream_id == 66
+                   for item in credit_frames)
+        stop_task = asyncio.create_task(session.mirror_stop(Channel.IMAGE))
+        _, stop_request = await wait_for_request(link, Channel.IMAGE, MediaType.MIRROR_STOP)
+        assert stop_request.stream_id == 66
+        await link.incoming.put(encode_frame(Frame(
+            channel=Channel.IMAGE, type=MediaType.MIRROR_STATE, flags=1 | 16,
+            session_id=session_id, request_id=stop_request.request_id,
+            stream_id=66, sequence=3,
+        )))
+        await stop_task
+
         image = b"abc"
         ota_progress = []
 
@@ -1250,9 +1304,6 @@ def test_rpc_jobs_screenshot_media_ota_and_restart() -> None:
         data_index, data_request = await wait_for_request(
             link, Channel.OTA, OtaType.DATA, ota_index + 1
         )
-        data2_index, data2_request = await wait_for_request(
-            link, Channel.OTA, OtaType.DATA, data_index + 1
-        )
         await link.incoming.put(
             encode_frame(
                 Frame(
@@ -1266,6 +1317,9 @@ def test_rpc_jobs_screenshot_media_ota_and_restart() -> None:
                     payload=struct.pack("<IHH", 2, 600, 0),
                 )
             )
+        )
+        data2_index, data2_request = await wait_for_request(
+            link, Channel.OTA, OtaType.DATA, data_index + 1
         )
         await link.incoming.put(
             encode_frame(

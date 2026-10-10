@@ -67,6 +67,10 @@ esp_err_t esp_iris_mdns_register(const esp_iris_mdns_config_t *config)
     char port[6];
     snprintf(protocol, sizeof(protocol), "%u", ESP_IRIS_PROTOCOL_VERSION);
     snprintf(port, sizeof(port), "%u", CONFIG_ESP_IRIS_TCP_PORT);
+#if CONFIG_ESP_IRIS_DATA_LINK
+    char data_port[6];
+    snprintf(data_port, sizeof(data_port), "%u", CONFIG_ESP_IRIS_TCP_DATA_PORT);
+#endif
     mdns_txt_item_t txt[] = {
         {.key = "device_id", .value = device_id},
         {.key = "protocol", .value = protocol},
@@ -78,6 +82,9 @@ esp_err_t esp_iris_mdns_register(const esp_iris_mdns_config_t *config)
 #endif
         {.key = "mode", .value = mode},
         {.key = "port", .value = port},
+#if CONFIG_ESP_IRIS_DATA_LINK
+        {.key = "data_port", .value = data_port},
+#endif
     };
     err = mdns_service_add(instance, IRIS_MDNS_SERVICE, IRIS_MDNS_PROTO,
                            CONFIG_ESP_IRIS_TCP_PORT, txt,

@@ -18,7 +18,7 @@ from typing import Any
 
 from .link import EndpointLock
 
-CAPABILITY = "project-device-ownership/v1"
+CAPABILITY = "project-device-ownership/v2"
 
 
 class OwnershipConflict(RuntimeError):
@@ -33,7 +33,8 @@ class OwnershipRegistry:
         self.db.row_factory = sqlite3.Row
         self.db.execute("PRAGMA busy_timeout=10000")
         version = self.db.execute("PRAGMA user_version").fetchone()[0]
-        if version not in (0, 1):
+        tables = self.db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        if version not in (0, 200) or (version == 0 and tables):
             self.db.close()
             raise RuntimeError("unsupported ownership database version")
         self.db.executescript("""
@@ -60,7 +61,7 @@ class OwnershipRegistry:
             CREATE TABLE IF NOT EXISTS session_metadata (
                 session_id TEXT PRIMARY KEY, workspace_path TEXT NOT NULL,
                 lifecycle_capability TEXT NOT NULL, source_revision TEXT NOT NULL);
-            PRAGMA user_version=1;
+            PRAGMA user_version=200;
         """)
         self.session_id = ""
         self._live_lock: EndpointLock | None = None

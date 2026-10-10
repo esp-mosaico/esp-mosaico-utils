@@ -46,6 +46,25 @@ def collect_evidence(arguments: Any, context: RunContext) -> dict[str, Any]:
     if command == "device-status":
         return result
 
+    if command == "restart":
+        # Send exactly once. The Gateway owns restart/reconnect operation tracking.
+        response = gateway_json(context, session, "restart", device_id, timeout=45)
+        operation = response.get("operation", {}) if isinstance(response, dict) else {}
+        restart = response.get("restart", {}) if isinstance(response, dict) else {}
+        if (operation.get("device_id") != device_id or not operation.get("operation_id")
+                or operation.get("status") != "succeeded" or not isinstance(restart, dict)
+                or restart.get("reconnected") is not True):
+            raise OperationError("Device restart was not verified.", details={"response": response})
+        after = _live_status(context, session, device_id)
+        if (after["boot_id"] == before["boot_id"]
+                or restart.get("previous_boot_id") != before["boot_id"]
+                or restart.get("boot_id") != after["boot_id"]):
+            raise DeviceError("Restart Boot ID evidence does not match.",
+                              details={"before": before, "after": after, "response": response})
+        return {**result, "previous_boot_id": before["boot_id"],
+                "boot_id": after["boot_id"], "device": after,
+                "operation": operation, "restart": restart}
+
     output = arguments.output.expanduser().resolve()
     capture = gateway_json(context, session, "screenshot", device_id, str(output), timeout=60)
     if (not isinstance(capture, dict) or capture.get("device_id") != device_id

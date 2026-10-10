@@ -1,5 +1,5 @@
-version: "0.1.0"
-description: Low-overhead ESP-Iris binary observability and control link
+version: "0.2.0"
+description: ESP-IDF console extensions and independent observability data links
 license: Apache-2.0
 maintainers:
   - Li Shenhang <lishenhang@espressif.com>

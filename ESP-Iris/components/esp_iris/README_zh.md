@@ -6,9 +6,10 @@ ESP-Iris 减少嵌入式开发中不必要的编译和烧录时间，让设备�
 状态和操作结果更容易被开发者与 AI Agent 同时理解、控制和追踪。把
 零散的串口调试，变成一个统一、结构化、可恢复的设备开发流程。
 
-ESP-Iris 将调试和控制的 Web plane 移到 PC。每台 ESP32 只运行一条
-有界二进制链路和一个 worker task，通过 USB 或 TCP 提供日志、状态，
-以及可选的 RPC、媒体、崩溃证据、配对、OTA 和有界文件服务。设备侧不运行
+ESP-Iris 0.2 在标准 ESP-IDF 控制台上增加命令和有界、可打印的 API 记录。
+不安装主机扩展、不启动 Gateway，也能使用原版 `idf.py flash monitor`。
+单个 worker 服务控制链路与可选的独立数据链路，后者承载连续媒体、文件和固件。
+设备侧不运行
 HTTP server、WebSocket server、JSON parser、framebuffer mirror，也不进行
 媒体规模的内存分配。
 
@@ -26,8 +27,9 @@ ESP32 C -- TCP/Wi-Fi --------/                                  +--> CLI 客户�
 ESP32 D -- TCP/Ethernet -----/                                  +--> 外部 Agent
 ```
 
-每个固件镜像只选择一种设备传输，每台物理设备同时最多只有一个 Gateway
-会话。这不会限制设备集群：一个 Gateway 可以并发监督多个设备端点。
+每台设备有一个 Gateway 所有者，控制和数据会话独立建立、断开。
+Gateway 与原版 monitor 互斥占用控制台，无需切换设备模式。
+一个 Gateway 可以并发监督多个设备端点。
 Workbench、CLI 和 Agent 连接分别接收独立的事件流；修改设备的操作会按
 设备串行化。
 
@@ -48,16 +50,17 @@ Workbench、CLI 和 Agent 连接分别接收独立的事件流；修改设备的
 | 范围 | 要求 |
 | --- | --- |
 | ESP-IDF | 5.5 或更高版本 |
-| Raw TCP | 可移植的默认传输；Wi-Fi/Ethernet 和地址配置由应用负责 |
-| Application USB CDC0 | ESP32-S31；ESP-Iris 独占 TinyUSB CDC0 |
-| USB Serial/JTAG | 具有 `SOC_USB_SERIAL_JTAG_SUPPORTED` 的 target；串口不能同时作为控制台 |
+| TCP | 默认控制端口 19772、数据端口 19773；网络由应用负责 |
+| Application USB | ESP32-S31；CDC0 文本控制台、CDC1 独立数据接口 |
+| USB Serial/JTAG | 保留标准控制台、硬件复位和 JTAG；支持控制服务和按需截图 |
+| UART | 标准文本控制台、RPC 和截图；保留 IDF 控制台波特率 |
 | Gateway | Python 3.8 或更高版本；当前真实设备主要在 Linux 验证 |
 | Workbench | 构建随组件发布的 React 源码需要当前 Node.js/npm 环境 |
 
 每个固件可以编译一种或多种设备传输。启用多种传输时，物理连接按有界窗口
-协商；首个返回合法 HELLO_ACK（需要 TCP 配对时还须认证通过）的传输独占
-活动 session。仅打开端口不会取得所有权。其余传输暂停，winner 断开后全部
-配置的传输重新等待。
+协商；合法 HELLO_ACK（TCP 配对时须认证）取得对应链路角色的所有权。
+控制与数据链路校验相同设备、启动与所有者，允许数据先连接；一条链路断开
+不关闭另一条。仅打开端口不会取得所有权。
 
 ## 快速开始
 
@@ -67,7 +70,7 @@ Workbench、CLI 和 Agent 连接分别接收独立的事件流；修改设备的
 
 ```yaml
 dependencies:
-  lisir233/esp_iris: "^0.1.0"
+  lisir233/esp_iris: "^0.2.0"
 ```
 
 新增或修改 managed dependency 后运行 `idf.py reconfigure`。
@@ -80,11 +83,14 @@ dependencies:
 Component config > ESP-Iris device link > Device transports
 ```
 
-- **Raw TCP** 默认监听 `19772` 端口。网络接口的创建和重连由应用负责。
-- **USB CDC0** 独占应用 TinyUSB CDC 端口。该端口只承载 ESP-Iris 二进制协议，
-  不是文本控制台或自动下载端口。
-- **USB Serial/JTAG** 独占固定串口但保留 JTAG。Gateway 与下载/监视工具不能
-  同时打开同一个串口端点。
+- **TCP** 提供可打印控制台及独立、经过认证的数据端口。
+- **USB** 使用 CDC0 文本/控制接口和 CDC1 数据接口，配置
+  `CONFIG_TINYUSB_CDC_COUNT=2`，通过接口描述符发现角色。
+- **USB Serial/JTAG / UART** 保留原生控制台和复位。Gateway 与 monitor、
+  烧录工具互斥占用同一端口；没有数据链路也能 RPC、Job、输入及按需截图。
+- 已有 ESP-IDF REPL 的产品启用 `CONFIG_ESP_IRIS_CONSOLE_EXTERNAL_INPUT`，
+  使用 [esp_iris_console.h](include/esp_iris_console.h) 注册 `iris` 命令。
+  产品保留输入驱动所有权，并配置至少容纳两条完整协议记录的接收队列。
 
 可以选择任意兼容组合。启用多种传输时，候选连接受可配置握手超时约束；没有
 候选正在协商或活动时，`esp_iris_status_t` 的 transport 为 `NONE`。
@@ -174,6 +180,20 @@ USB/TCP 选择、认证、TLS、CLI、数据保留和开发命令参见
 
 媒体 channel 使用 credit 和 latest-chunk 策略，慢速主机不会在设备侧产生无界队列。
 
+启用 PSRAM XIP 和外部协议缓冲的普通固件可使用
+`CONFIG_ESP_IRIS_USB_FIFO_PSRAM`（满足依赖时默认启用）。仅 CDC 软件 FIFO 的字节
+存储移入外部 BSS；容量、USB endpoint DMA 缓冲、流状态和 FreeRTOS 锁位置不变。
+构建时对 TinyUSB 0.21.0~2 生成经过源哈希检查的适配副本，不修改 managed 源码；
+未知 CDC 源码版本会明确使配置失败，需审查适配或关闭该选项。开启外部 BSS 时，
+`CONFIG_ESP_IRIS_SERVICE_STATE_PSRAM` 也迁移固定大小的文件卷注册表。
+写入固件仍使用独立的内部内存配置。
+
+`esp_iris_schedule_restart(delay_ms)` 复用协议任务，不另建任务或定时器。
+任务/RPC 调用方负责选择启动目标并记录计划重启。调度不依赖连接存活，等待当前
+服务回调完成，并在指定延迟后为两条 TX 队列提供最多 100 ms 的排空宽限；显式
+调用 `esp_iris_stop()` 会取消它。
+
+
 应用必须在 `esp_iris_start()` 前只注册产品明确允许导出的目录：
 
 ```c
@@ -241,17 +261,17 @@ ESP_ERROR_CHECK(esp_iris_mdns_register(NULL));
 
 | 示例 | 传输 | 适用场景 |
 | --- | --- | --- |
-| [`minimal`](examples/minimal/README.md) | TCP、USB CDC0、USB Serial/JTAG 或三者同时 | 身份、生命周期、状态、日志和传输仲裁 |
+| [`minimal`](examples/minimal/README.md) | TCP、USB CDC0 + CDC1、USB Serial/JTAG 或三者同时 | 身份、生命周期、状态、日志和传输仲裁 |
 | [`tcp_wifi`](examples/tcp_wifi/README.md) | TCP | 应用管理 Wi-Fi 和 DHCP |
 | [`tcp_pairing`](examples/tcp_pairing/README.md) | TCP | Challenge-HMAC 配对和 token 配置 |
-| [`rpc_jobs`](examples/rpc_jobs/README.md) | USB CDC0 | RPC handler 和可取消 Job |
-| [`display_input`](examples/display_input/README.md) | USB CDC0 | 截图、屏幕镜像和指针输入 |
-| [`media_streams`](examples/media_streams/README.md) | USB CDC0 | 合成图像和 PCM 音频流 |
-| [`file_transfer`](examples/file_transfer/README.md) | USB CDC0 | 流式文件上传/下载和元数据操作 |
-| [`ota`](examples/ota/README.md) | USB CDC0 | Recovery-first/直接 OTA、验收和回滚 |
-| [`file_service`](examples/file_service/README.md) | USB CDC0 | FATFS 逻辑卷和有界文件操作 |
-| [`crash_recovery`](examples/crash_recovery/README.md) | USB CDC0 | 保留 Core Dump，并在连续崩溃后进入 factory recovery |
-| [`lifecycle`](examples/lifecycle/README.md) | USB CDC0 | 停止、注销、重启和重连 |
+| [`rpc_jobs`](examples/rpc_jobs/README.md) | USB CDC0 + CDC1 | RPC handler 和可取消 Job |
+| [`display_input`](examples/display_input/README.md) | USB CDC0 + CDC1 | 截图、屏幕镜像和指针输入 |
+| [`media_streams`](examples/media_streams/README.md) | USB CDC0 + CDC1 | 合成图像和 PCM 音频流 |
+| [`file_transfer`](examples/file_transfer/README.md) | USB CDC0 + CDC1 | 流式文件上传/下载和元数据操作 |
+| [`ota`](examples/ota/README.md) | USB CDC0 + CDC1 | Recovery-first/直接 OTA、验收和回滚 |
+| [`file_service`](examples/file_service/README.md) | USB CDC0 + CDC1 | FATFS 逻辑卷和有界文件操作 |
+| [`crash_recovery`](examples/crash_recovery/README.md) | USB CDC0 + CDC1 | 保留 Core Dump，并在连续崩溃后进入 factory recovery |
+| [`lifecycle`](examples/lifecycle/README.md) | USB CDC0 + CDC1 | 停止、注销、重启和重连 |
 
 硬件内部 fixture 保留在 `test_apps/`，不进入发布归档。
 
@@ -261,7 +281,8 @@ ESP_ERROR_CHECK(esp_iris_mdns_register(NULL));
 - [System Inventory provider API](include/esp_iris_system_inventory.h)
 - [System Update backend API](include/esp_iris_system_update.h)
 - [协议常量](include/esp_iris_protocol.h)
-- [Wire protocol v1](protocol/spec.md)
+- [Wire protocol 0.2](protocol/spec.md)
+- [0.1 → 0.2 迁移指南](protocol/migration-0.2.md)
 - [Golden vectors](protocol/golden_vectors.json)
 - [Gateway 与 Workbench](tools/README.md)
 - [示例索引](examples/README.md)
@@ -270,5 +291,6 @@ ESP_ERROR_CHECK(esp_iris_mdns_register(NULL));
 
 ## 版本与许可证
 
-当前组件版本为 `0.1.0`，对应 Git tag `v0.1.0`。ESP-Iris 使用
+当前源码目标版本为 `0.2.0`；发布前请使用本仓库源码。设备、Gateway 和主机
+API 必须配套升级，不兼容 0.1。ESP-Iris 使用
 [Apache-2.0](LICENSE) 许可证。

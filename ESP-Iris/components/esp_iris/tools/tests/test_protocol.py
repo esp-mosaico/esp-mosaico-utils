@@ -103,7 +103,7 @@ def _mutate_plain(wire: bytes, offset: int, value: int) -> bytes:
 
 @pytest.mark.parametrize(
     ("offset", "value"),
-    [(0, ord("X")), (4, 2), (5, 31), (6, 10), (10, 1), (28, 1)],
+    [(0, ord("X")), (4, 1), (5, 31), (6, 10), (10, 1), (28, 1)],
 )
 def test_invalid_header_fields_are_rejected(offset: int, value: int) -> None:
     wire = encode_frame(Frame(channel=0, type=3))

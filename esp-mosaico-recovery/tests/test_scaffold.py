@@ -12,7 +12,7 @@ import unittest
 from unittest import mock
 
 
-TOOL_ROOT = Path(__file__).resolve().parents[1]
+TOOL_ROOT = Path(__file__).resolve().parents[2] / "mosaico-tools"
 sys.path.insert(0, str(TOOL_ROOT / "tools"))
 
 from mosaico_cli.cli import main
@@ -29,7 +29,7 @@ class ScaffoldTests(unittest.TestCase):
         self.template = self.root / "templates" / "basic"
         self.template.mkdir(parents=True)
         config = {
-            "schema_version": 1,
+            "schema_version": 2,
             "workspace": {
                 "projects_dir": "apps/nested", "default_project": "apps/existing",
                 "init_template": "templates/basic/description.json",
@@ -118,7 +118,7 @@ class ScaffoldTests(unittest.TestCase):
         before = self.snapshot()
         output = io.StringIO()
         with mock.patch("mosaico_cli.cli.RunContext", side_effect=AssertionError("runtime started")), redirect_stdout(output):
-            code = main(["init", "demo", "--dry-run", "--json", "--verbose", "--workspace", str(self.root)])
+            code = main(["project", "init", "demo", "--dry-run", "--json", "--verbose", "--workspace", str(self.root)])
         self.assertEqual(code, 0)
         result = json.loads(output.getvalue())
         self.assertTrue(result["ok"])
@@ -290,7 +290,7 @@ class ScaffoldTests(unittest.TestCase):
         for name, expected in (("demo", 0), ("demo", 2), ("../outside", 2)):
             out, err = io.StringIO(), io.StringIO()
             with redirect_stdout(out), redirect_stderr(err):
-                code = main(["--workspace", str(self.root), "init", name, "--json"])
+                code = main(["--workspace", str(self.root), "project", "init", name, "--json"])
             self.assertEqual(code, expected)
             result = json.loads(out.getvalue() if code == 0 else err.getvalue())
             self.assertEqual(result["ok"], code == 0)

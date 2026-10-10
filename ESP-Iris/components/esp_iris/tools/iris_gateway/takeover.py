@@ -72,7 +72,7 @@ def local_session(project: Any, session_id: str) -> dict:
 
 
 async def peer_state(client: ClientSession, session: dict) -> dict:
-    async with client.get(session["url"] + "/v1/project", allow_redirects=False) as response:
+    async with client.get(session["url"] + "/v2/project", allow_redirects=False) as response:
         state = await response.json()
         if (response.status != 200 or state.get("session", {}).get("session_id") != session["session_id"]
                 or CAPABILITY not in state.get("capabilities", []) or state.get("closing")):
@@ -89,7 +89,7 @@ async def request_handoff(project: Any, source_id: str, device_id: str, transfer
             request = {"device_id": device_id, "target_session_id": project.registry.session_id,
                        "source_session_id": source_id, "transfer_id": transfer_id,
                        "force": body.get("force", False), "timeout": timeout}
-            async with client.post(source["url"] + "/v1/project/handoff/prepare", json=request,
+            async with client.post(source["url"] + "/v2/project/handoff/prepare", json=request,
                                    allow_redirects=False) as response:
                 result = await response.json()
                 if response.status != 200:
@@ -208,7 +208,7 @@ def register_routes(app: web.Application, project: Any) -> None:
         async with project.device_control[str(body["device_id"])]:
             return web.json_response({"handoff": await project.prepare(body)})
 
-    app.router.add_post("/v1/project/takeovers", start)
-    app.router.add_get("/v1/project/takeovers/{takeover_id}", record)
-    app.router.add_post("/v1/project/takeovers/{takeover_id}/{verb:resume|abort|reconcile}", record)
-    app.router.add_post("/v1/project/handoff/prepare", prepare)
+    app.router.add_post("/v2/project/takeovers", start)
+    app.router.add_get("/v2/project/takeovers/{takeover_id}", record)
+    app.router.add_post("/v2/project/takeovers/{takeover_id}/{verb:resume|abort|reconcile}", record)
+    app.router.add_post("/v2/project/handoff/prepare", prepare)

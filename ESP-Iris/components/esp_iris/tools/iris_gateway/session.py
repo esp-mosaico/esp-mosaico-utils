@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import hashlib
 import hmac
@@ -8,13 +9,17 @@ import logging
 import secrets
 import struct
 import time
+import zlib
 from typing import Any, Awaitable, Callable, Dict
 
-from . import system_update_transport
+from . import ota_transport, system_update_transport
+from .console_input import CONSOLE_WRITE_TIMEOUT_SECONDS, encode_console_line
+from .console_protocol import HELLO_COMMAND, ConsoleDecoder, encode_record
 from .device_info import DeviceInfo
 from .files import DeviceFiles
 from .link import Link
 from .protocol import (
+    VERSION,
     Capability,
     Channel,
     ControlType,
@@ -24,10 +29,8 @@ from .protocol import (
     FrameDecoder,
     JobState,
     MediaType,
-    OtaType,
     ProtocolError,
     TlvTag,
-    Transport,
     decode_tlv,
     encode_frame,
     tlv_u8,
@@ -49,11 +52,19 @@ async def _discard_media(event: dict[str, Any]) -> None:
     del event
 
 
+class DeviceError(RuntimeError):
+    def __init__(self, code: int):
+        self.code = code
+        super().__init__(f"device error 0x{code:08x}")
+
+
 class DeviceSession:
     LOG_CREDIT_GRANT = 256 * 1024
     LOG_CREDIT_LOW_WATER = 128 * 1024
     AUTH_MISSING_TOKEN_DELAY_SECONDS = 0.5
-    OTA_IN_FLIGHT_BYTES = 4096
+    # The bounded firmware service executor admits one Flash request at a
+    # time. No larger receive window is negotiated by protocol 0.2.
+    OTA_MAX_IN_FLIGHT = 1
     OTA_BEGIN_TIMEOUT_SECONDS = 120.0
 
     def __init__(
@@ -64,6 +75,7 @@ class DeviceSession:
         *,
         on_media: MediaCallback | None = None,
         pairing_token: str | bytes | None = None,
+        owner_id: bytes | None = None,
         clock_sync_interval: float = 30.0,
         clock_sync_timeout: float = 3.0,
     ) -> None:
@@ -82,9 +94,19 @@ class DeviceSession:
         if pairing_token is not None and len(pairing_token) != 32:
             raise ValueError("pairing token must contain 32 bytes")
         self._pairing_token = pairing_token
+        self.owner_id = owner_id if owner_id is not None else secrets.token_bytes(16)
+        if len(self.owner_id) != 16 or not any(self.owner_id):
+            raise ValueError("link owner ID must contain 16 nonzero random bytes")
+        self.data_session: DeviceSession | None = None
+        self.data_tcp_port: int | None = None
+        self.data_available = False
         self._clock_sync_interval = clock_sync_interval
         self._clock_sync_timeout = clock_sync_timeout
-        self._decoder = FrameDecoder()
+        self._console = getattr(link, "console", False) is True
+        self._decoder = ConsoleDecoder() if self._console else FrameDecoder()
+        self.capture_id = secrets.token_hex(16) if self._console else None
+        self._capture_offset = 0
+        self._hello_task: asyncio.Task[None] | None = None
         self.state = SessionState.NEGOTIATING
         self._write_lock = asyncio.Lock()
         self._request_lock = asyncio.Lock()
@@ -102,20 +124,68 @@ class DeviceSession:
         self._crash_chunk_max = 1024
         self._ready_announced = False
         self._media_credit = [0] * channel_count
+        self._media_streams: dict[int, int] = {}
         self._credit_tasks: dict[int, asyncio.Task[None]] = {}
-        self.files = DeviceFiles(self)
+        self._files = DeviceFiles(self)
         self.clock_offset_us: float | None = None
         self.clock_uncertainty_us: float | None = None
 
+    @property
+    def files(self) -> DeviceFiles:
+        # Selecting the service pins the transfer to one concrete data session.
+        # A reconnect must not silently move an active transfer to another link.
+        return self._require_data_link()._files if self._console else self._files
+
+    @property
+    def console_available(self) -> bool:
+        return self._console and not self._closed and self.info is not None and self.state is SessionState.READY
+
+    async def console_write(self, line: str) -> dict[str, Any]:
+        wire = encode_console_line(line)
+        async with self._write_lock:
+            if not self.console_available:
+                raise ConnectionError("a live console control link is required")
+            try:
+                await asyncio.wait_for(self.link.write(wire), CONSOLE_WRITE_TIMEOUT_SECONDS)
+            except (Exception, asyncio.CancelledError):
+                # A partial line must never be followed by a machine record or
+                # retried on a replacement session: its execution is unknown.
+                await self.close()
+                raise
+            return {"sent": True, "bytes_written": len(wire), "endpoint": self.link.endpoint,
+                    "completion": "unconfirmed"}
+
     async def run(self) -> None:
         try:
+            if self._console:
+                self._hello_task = asyncio.create_task(self._console_probe_loop())
             while not self._closed:
                 data = await self.link.read()
                 if not data:
                     raise ConnectionError(f"ESP-Iris link closed: {self.link.endpoint}")
+                if self._console:
+                    await self._on_event({
+                        "kind": "console_raw", "endpoint": self.link.endpoint,
+                        "capture_id": self.capture_id, "offset": self._capture_offset,
+                        "device_id": self.info.device_id if self.info else None,
+                        "boot_id": None,
+                        "host_receive_wall_ns": time.time_ns(),
+                        "data_base64": base64.b64encode(data).decode("ascii"),
+                    })
+                    self._capture_offset += len(data)
                 for frame in self._decoder.feed(data):
-                    await self._handle_frame(frame, time.monotonic_ns())
+                    if isinstance(frame, bytes):
+                        await self._console_log(frame)
+                    else:
+                        await self._handle_frame(frame, time.monotonic_ns())
         finally:
+            if self._hello_task is not None:
+                self._hello_task.cancel()
+                await asyncio.gather(self._hello_task, return_exceptions=True)
+            if isinstance(self._decoder, ConsoleDecoder):
+                remainder = self._decoder.finish()
+                if remainder:
+                    await self._console_log(remainder)
             self._closed = True
             if self.state is not SessionState.CLOSED:
                 self.state = session_transition(self.state, SessionEvent.CLOSE)
@@ -129,6 +199,31 @@ class DeviceSession:
                     await asyncio.gather(self._clock_task, return_exceptions=True)
             finally:
                 await self.link.close()
+
+    async def _console_probe_loop(self) -> None:
+        # The read loop starts before discovery writes. Keep capturing even
+        # when the peer runs a bootloader, a third-party app, or a slow startup.
+        await asyncio.sleep(0)
+        while not self._closed:
+            try:
+                async with self._write_lock:
+                    if self._closed or self._ready.is_set():
+                        return
+                    await self.link.write(HELLO_COMMAND)
+            except (ConnectionError, OSError):
+                await self.link.close()
+                return
+            await asyncio.sleep(2.0)
+
+    async def _console_log(self, data: bytes) -> None:
+        await self._on_event({
+            "kind": "log", "source": "console", "endpoint": self.link.endpoint,
+            "capture_id": self.capture_id,
+            "device_id": self.info.device_id if self.info else None,
+            "boot_id": None,
+            "monotonic_us": None, "host_receive_wall_ns": time.time_ns(),
+            "text": data.decode("utf-8", errors="replace"),
+        })
 
     async def close(self) -> None:
         self._closed = True
@@ -225,7 +320,7 @@ class DeviceSession:
                 sequence=self._sequence[int(channel)],
                 payload=payload,
             )
-            await self.link.write(encode_frame(frame))
+            await self.link.write(encode_record(frame) if self._console else encode_frame(frame))
 
     async def _request_unlocked(
         self,
@@ -258,6 +353,22 @@ class DeviceSession:
                 # unwinding; consume that error even if write() also failed.
                 future.exception()
 
+    @staticmethod
+    def _uses_data_link(channel: int, type_: int) -> bool:
+        if channel in (Channel.FILE, Channel.OTA, Channel.SYSTEM_UPDATE):
+            # Inventory is a bounded read-only control request.
+            return not (channel == Channel.SYSTEM_UPDATE and type_ == 0x0e)
+        return channel in (Channel.IMAGE, Channel.AUDIO) or (
+            channel == Channel.SCREEN and type_ in (MediaType.MIRROR_START, MediaType.MIRROR_STOP))
+
+    def _require_data_link(self) -> DeviceSession:
+        data = self.data_session
+        if data is None or data.info is None or self.info is None or not data._ready.is_set():
+            raise RuntimeError("operation requires an independently connected Iris 0.2 data link")
+        if data.info.device_id != self.info.device_id or data.info.boot_id != self.info.boot_id or data.owner_id != self.owner_id:
+            raise ProtocolError("data link identity/session binding changed")
+        return data
+
     async def _request(
         self,
         channel: int,
@@ -276,6 +387,9 @@ class DeviceSession:
             return await self._request_unlocked(
                 channel, type_, payload, timeout, stream_id=stream_id
             )
+        if self._console and self._uses_data_link(channel, type_):
+            data = self._require_data_link()
+            return await data._request(channel, type_, payload, timeout, stream_id=stream_id)
         async with self._request_lock:
             return await self._request_unlocked(
                 channel,
@@ -304,7 +418,7 @@ class DeviceSession:
                     "device ID does not match the factory hardware MAC"
                 )
         protocol_version = tlv_u16(fields, TlvTag.PROTOCOL_VERSION)
-        if protocol_version != 1:
+        if protocol_version != VERSION:
             raise ProtocolError(f"unsupported ESP-Iris protocol {protocol_version}")
         for tag, size in ((TlvTag.FIRMWARE_ROLE, 1), (TlvTag.RECOVERY_ABI, 2),
                           (TlvTag.REQUIRED_FEATURES, 8), (TlvTag.HEALTH_TIMEOUT_MS, 4)):
@@ -324,6 +438,11 @@ class DeviceSession:
         if not 1000 <= health_timeout_ms <= 600000:
             raise ProtocolError("health timeout must be between 1000 and 600000 ms")
 
+        expected_role = b"\x00" if self._console else b"\x01"
+        if fields.get(TlvTag.LINK_ROLE) != expected_role:
+            raise ProtocolError("HELLO link role does not match the opened endpoint")
+        self.data_available = tlv_u8(fields, TlvTag.DATA_AVAILABLE) == 1
+        self.data_tcp_port = tlv_u16(fields, TlvTag.DATA_TCP_PORT) or None
         info = DeviceInfo(
             device_id=raw_device_id.hex(),
             boot_id=tlv_u64(fields, TlvTag.BOOT_ID),
@@ -337,6 +456,7 @@ class DeviceSession:
             reset_reason=tlv_u32(fields, TlvTag.RESET_REASON),
             capabilities=tlv_u64(fields, TlvTag.CAPABILITIES),
             auth_mode=tlv_u8(fields, TlvTag.AUTH_MODE),
+            link_role="control" if self._console else "data",
             max_payload=tlv_u32(fields, TlvTag.MAX_PAYLOAD, 4000),
             firmware_mode={0: "unknown", 1: "normal", 2: "recovery"}[role],
             product_contract=self._text(fields, TlvTag.PRODUCT_CONTRACT),
@@ -365,6 +485,7 @@ class DeviceSession:
         if self.info is not None and not reopening and (
             self.info.device_id != info.device_id
             or self.info.session_id != info.session_id
+            or self.info.boot_id != info.boot_id
         ):
             raise ProtocolError("device identity/session changed on a live link")
         self.info = info
@@ -375,10 +496,9 @@ class DeviceSession:
             self._reopen_requested = True
             self._reopen_session_id = info.session_id
         ack_flags = 1 << 5 if self._reopen_session_id is not None else 0
+        binding = expected_role + self.owner_id
         if info.auth_mode == 0:
-            await self._send(Channel.CONTROL, ControlType.HELLO_ACK, flags=ack_flags)
-            if not ack_flags:
-                await self._complete_ready()
+            await self._send(Channel.CONTROL, ControlType.HELLO_ACK, binding, flags=ack_flags)
             return
         if info.auth_mode != 1:
             raise ProtocolError(f"unsupported ESP-Iris auth mode {info.auth_mode}")
@@ -390,15 +510,16 @@ class DeviceSession:
             raise ProtocolError("device requires a pairing token")
         nonce = secrets.token_bytes(16)
         message = (
-            b"ESP-Iris-auth-v1"
+            b"ESP-Iris-auth-0.2"
             + raw_device_id
             + struct.pack("<QI", info.boot_id, info.session_id)
             + challenge
             + nonce
+            + binding
         )
         proof = hmac.new(self._pairing_token, message, hashlib.sha256).digest()
         await self._send(
-            Channel.CONTROL, ControlType.HELLO_ACK, nonce + proof, flags=ack_flags
+            Channel.CONTROL, ControlType.HELLO_ACK, binding + nonce + proof, flags=ack_flags
         )
 
     async def _complete_ready(self) -> None:
@@ -408,9 +529,16 @@ class DeviceSession:
         self.state = session_transition(
             self.state, SessionEvent.AUTHENTICATED
         )
-        if self._log_credit == 0:
+        if self._log_credit == 0 and not self._console:
             await self._grant_log_credit(self.LOG_CREDIT_GRANT)
         await self._on_ready(self)
+        if self._console:
+            await self._on_event({
+                "kind": "console_binding", "capture_id": self.capture_id,
+                "endpoint": self.link.endpoint, "device_id": self.info.device_id,
+                "offset": self._capture_offset,
+                "boot_id": self.info.boot_id, "host_receive_wall_ns": time.time_ns(),
+            })
         self._ready_announced = True
         self._ready.set()
         self._clock_task = asyncio.create_task(
@@ -533,8 +661,12 @@ class DeviceSession:
         }
 
     async def _grant_media_credit(self, channel: int, amount: int) -> None:
+        if self._console:
+            await self._require_data_link()._grant_media_credit(channel, amount)
+            return
         payload = bytes([int(channel), 0, 0, 0]) + struct.pack("<I", amount)
-        await self._send(Channel.CONTROL, ControlType.CREDIT, payload)
+        await self._send(Channel.CONTROL, ControlType.CREDIT, payload,
+                         stream_id=self._media_streams.get(int(channel), 0))
         self._media_credit[int(channel)] += amount
 
     async def _handle_media(self, frame: Frame) -> None:
@@ -622,7 +754,7 @@ class DeviceSession:
             if not future.done():
                 if frame.type == ControlType.ERROR:
                     code = struct.unpack_from("<I", frame.payload + b"\0\0\0\0")[0]
-                    future.set_exception(RuntimeError(f"device error 0x{code:08x}"))
+                    future.set_exception(DeviceError(code))
                 else:
                     future.set_result(frame)
             return
@@ -811,7 +943,7 @@ class DeviceSession:
             return self._decode_media_description(frame.payload)
         finally:
             with contextlib.suppress(Exception):
-                await self._request(Channel.SCREEN, MediaType.CLOSE)
+                await self._request(Channel.SCREEN, MediaType.CLOSE, stream_id=frame.stream_id)
 
     async def screenshot(
         self, description: dict[str, int] | None = None
@@ -822,13 +954,18 @@ class DeviceSession:
             MediaType.OPEN,
             self._encode_media_description(requested),
         )
-        if frame.type != MediaType.OPENED or len(frame.payload) != 20:
-            raise ProtocolError("unexpected screenshot OPEN response")
-        actual = self._decode_media_description(frame.payload)
-        total_size = struct.unpack_from("<I", frame.payload, 16)[0]
         result = bytearray()
+        deadline = time.monotonic() + 600.0
         try:
+            if frame.type != MediaType.OPENED or len(frame.payload) != 20:
+                raise ProtocolError("unexpected screenshot OPEN response")
+            actual = self._decode_media_description(frame.payload)
+            total_size = struct.unpack_from("<I", frame.payload, 16)[0]
+            if frame.stream_id == 0 or not 0 < total_size <= 16 * 1024 * 1024:
+                raise ProtocolError("invalid screenshot ID or total size")
             while len(result) < total_size:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("screenshot exceeded its overall deadline")
                 assert self.info is not None
                 maximum = min(
                     max(self.info.max_payload - 64, 1),
@@ -839,23 +976,34 @@ class DeviceSession:
                     Channel.SCREEN,
                     MediaType.READ,
                     struct.pack("<IHH", len(result), maximum, 0),
+                    timeout=min(10.0, max(0.001, deadline - time.monotonic())),
+                    stream_id=frame.stream_id,
                 )
                 if chunk_frame.type != MediaType.DATA or len(chunk_frame.payload) < 8:
                     raise ProtocolError("unexpected screenshot DATA response")
                 offset, returned_total = struct.unpack_from(
                     "<II", chunk_frame.payload
                 )
-                chunk = chunk_frame.payload[8:]
+                finished = bool(chunk_frame.flags & (1 << 4))
+                chunk = chunk_frame.payload[8:-4] if finished else chunk_frame.payload[8:]
                 if (
                     offset != len(result)
+                    or chunk_frame.stream_id != frame.stream_id
+                    or len(chunk) > maximum
+                    or offset + len(chunk) > total_size
+                    or finished != (offset + len(chunk) == total_size)
                     or returned_total != total_size
                     or not chunk
                 ):
                     raise ProtocolError("invalid screenshot chunk")
                 result.extend(chunk)
+                if finished:
+                    expected_crc = struct.unpack_from("<I", chunk_frame.payload, len(chunk_frame.payload) - 4)[0]
+                    if zlib.crc32(result) != expected_crc:
+                        raise ProtocolError("screenshot whole-object CRC32 mismatch")
         finally:
             with contextlib.suppress(Exception):
-                await self._request(Channel.SCREEN, MediaType.CLOSE)
+                await self._request(Channel.SCREEN, MediaType.CLOSE, stream_id=frame.stream_id)
         return actual, bytes(result)
 
     async def mirror_start(
@@ -865,6 +1013,8 @@ class DeviceSession:
         *,
         fps: int = 5,
     ) -> dict[str, Any]:
+        if self._console:
+            return await self._require_data_link().mirror_start(channel, description, fps=fps)
         if channel not in (Channel.SCREEN, Channel.IMAGE, Channel.AUDIO):
             raise ValueError("invalid media channel")
         if not 1 <= fps <= 60:
@@ -873,8 +1023,9 @@ class DeviceSession:
             "<HH", fps, 0
         )
         frame = await self._request(channel, MediaType.MIRROR_START, payload)
-        if frame.type != MediaType.MIRROR_STATE:
+        if frame.type != MediaType.MIRROR_STATE or frame.stream_id == 0:
             raise ProtocolError("unexpected mirror start response")
+        self._media_streams[int(channel)] = frame.stream_id
         await self._grant_media_credit(channel, 128 * 1024)
         return {
             "channel": int(channel),
@@ -884,11 +1035,16 @@ class DeviceSession:
         }
 
     async def mirror_stop(self, channel: int) -> None:
+        if self._console:
+            await self._require_data_link().mirror_stop(channel)
+            return
         if channel not in (Channel.SCREEN, Channel.IMAGE, Channel.AUDIO):
             raise ValueError("invalid media channel")
-        frame = await self._request(channel, MediaType.MIRROR_STOP)
-        if frame.type != MediaType.MIRROR_STATE:
+        stream_id = self._media_streams.get(int(channel), 0)
+        frame = await self._request(channel, MediaType.MIRROR_STOP, stream_id=stream_id)
+        if frame.type != MediaType.MIRROR_STATE or frame.stream_id != stream_id:
             raise ProtocolError("unexpected mirror stop response")
+        self._media_streams.pop(int(channel), None)
         self._media_credit[int(channel)] = 0
 
     async def ota_update(
@@ -901,214 +1057,18 @@ class DeviceSession:
         timeout: float = 10.0,
         progress_callback: ProgressCallback | None = None,
     ) -> dict[str, Any]:
-        if not image:
-            raise ValueError("OTA image is empty")
-        digest = expected_sha256 or hashlib.sha256(image).digest()
-        if len(digest) != 32:
-            raise ValueError("OTA SHA-256 must contain 32 bytes")
-        project = project_name.encode()
-        release = version.encode()
-        if len(project) > 32 or len(release) > 32:
-            raise ValueError("OTA project/version is too long")
-        begin = (
-            struct.pack("<I", len(image))
-            + digest
-            + bytes([len(project), len(release)])
-            + b"\0\0"
-            + project
-            + release
+        if self._console:
+            return await self._require_data_link().ota_update(image,
+                expected_sha256=expected_sha256, project_name=project_name,
+                version=version, timeout=timeout, progress_callback=progress_callback)
+        return await ota_transport.perform_ota_update(
+            self, image, expected_sha256=expected_sha256,
+            project_name=project_name, version=version, timeout=timeout,
+            progress_callback=progress_callback,
         )
-        if progress_callback is not None:
-            await progress_callback(
-                {
-                    "stage": "erasing",
-                    "bytes_received": 0,
-                    "bytes_total": len(image),
-                    "progress_permille": 0,
-                    "partition": "",
-                }
-            )
-        # BEGIN prepares the image range on the device service worker. Allow
-        # time for that erase, including legacy writers that erase the complete
-        # destination partition. DATA requests retain their shorter deadlines.
-        begin_timeout = max(timeout, self.OTA_BEGIN_TIMEOUT_SECONDS)
-        frame = await self._request(
-            Channel.OTA, OtaType.BEGIN, begin, begin_timeout
-        )
-        if frame.type != OtaType.BEGIN_RESPONSE or len(frame.payload) < 11:
-            raise ProtocolError("unexpected OTA begin response")
-        job_id, total_size, chunk_size = struct.unpack_from("<IIH", frame.payload)
-        label_size = frame.payload[10]
-        if (
-            total_size != len(image)
-            or chunk_size == 0
-            or len(frame.payload) != 11 + label_size
-        ):
-            raise ProtocolError("invalid OTA begin response")
-        partition = frame.payload[11:].decode("ascii", errors="replace")
-        if progress_callback is not None:
-            await progress_callback(
-                {
-                    "stage": "transferring",
-                    "job_id": job_id,
-                    "bytes_received": 0,
-                    "bytes_total": len(image),
-                    "progress_permille": 0,
-                    "partition": partition,
-                }
-            )
-        offset = 0
-        end_confirmed_by_job = False
-        end_confirmed_by_disconnect = False
-        try:
-            while offset < len(image):
-                request_count = max(1, self.OTA_IN_FLIGHT_BYTES // chunk_size)
-                batch: list[tuple[int, bytes]] = []
-                batch_offset = offset
-                while batch_offset < len(image) and len(batch) < request_count:
-                    chunk = image[batch_offset : batch_offset + chunk_size]
-                    batch.append((batch_offset, chunk))
-                    batch_offset += len(chunk)
-                try:
-                    async with self._request_lock:
-                        tasks = [
-                            asyncio.create_task(
-                                self._request_unlocked(
-                                    Channel.OTA,
-                                    OtaType.DATA,
-                                    struct.pack("<I", chunk_offset) + chunk,
-                                    timeout,
-                                )
-                            )
-                            for chunk_offset, chunk in batch
-                        ]
-                        try:
-                            data_responses = await asyncio.gather(*tasks)
-                        except BaseException:
-                            for task in tasks:
-                                task.cancel()
-                            await asyncio.gather(*tasks, return_exceptions=True)
-                            raise
-                except (asyncio.TimeoutError, TimeoutError):
-                    status = await self.ota_status(timeout=timeout)
-                    if not status["active"] or status["job_id"] != job_id:
-                        raise TimeoutError(
-                            f"OTA data response timed out; device status is {status}"
-                        ) from None
-                    received = int(status["bytes_received"])
-                    accepted_offsets = {offset}
-                    accepted_offsets.update(
-                        chunk_offset + len(chunk) for chunk_offset, chunk in batch
-                    )
-                    if received not in accepted_offsets:
-                        raise ProtocolError(
-                            f"OTA resumed at unexpected byte offset {received}"
-                        )
-                    offset = received
-                    if progress_callback is not None:
-                        await progress_callback(status)
-                    continue
-                if len(batch) != len(data_responses):
-                    raise ProtocolError("OTA data response count does not match request batch")
-                for (chunk_offset, chunk), data_response in zip(batch, data_responses):
-                    if (
-                        data_response.type != OtaType.DATA_RESPONSE
-                        or len(data_response.payload) != 8
-                    ):
-                        raise ProtocolError("unexpected OTA data response")
-                    received, progress, reserved = struct.unpack(
-                        "<IHH", data_response.payload
-                    )
-                    if received != chunk_offset + len(chunk) or reserved != 0:
-                        raise ProtocolError("invalid OTA progress")
-                    offset = received
-                    if progress_callback is not None:
-                        await progress_callback(
-                            {
-                                "stage": "transferring",
-                                "job_id": job_id,
-                                "bytes_received": received,
-                                "bytes_total": len(image),
-                                "progress_permille": progress,
-                                "partition": partition,
-                            }
-                        )
-            if progress_callback is not None:
-                await progress_callback(
-                    {
-                        "stage": "verifying",
-                        "job_id": job_id,
-                        "bytes_received": len(image),
-                        "bytes_total": len(image),
-                        "progress_permille": 950,
-                        "partition": partition,
-                    }
-                )
-            try:
-                end = await self._request(Channel.OTA, OtaType.END, b"", timeout)
-            except (asyncio.TimeoutError, TimeoutError):
-                job_status = await self.job(job_id)
-                if (
-                    job_status.get("job_state") != "succeeded"
-                    or int(job_status.get("result", -1)) != 0
-                ):
-                    raise TimeoutError(
-                        f"OTA end response timed out; device Job is {job_status}"
-                    ) from None
-                end_confirmed_by_job = True
-                end = None
-            except (ConnectionError, OSError):
-                # Some USB CDC implementations restart immediately after
-                # accepting OTA END, so Windows removes the COM endpoint before
-                # the END_RESPONSE reaches the host. The gateway must still
-                # validate the new boot identity/version before succeeding.
-                end_confirmed_by_disconnect = True
-                end = None
-        except BaseException:
-            with contextlib.suppress(Exception):
-                await self._request(Channel.OTA, OtaType.CANCEL, b"", timeout)
-            raise
-        if not end_confirmed_by_job and not end_confirmed_by_disconnect:
-            if end is None or end.type != OtaType.END_RESPONSE or len(end.payload) != 8:
-                raise ProtocolError("unexpected OTA end response")
-            returned_job, result = struct.unpack("<Ii", end.payload)
-            if returned_job != job_id or result != 0:
-                raise RuntimeError(f"OTA failed with device error 0x{result:08x}")
-        return {
-            "job_id": job_id,
-            "bytes": len(image),
-            "sha256": digest.hex(),
-            "partition": partition,
-            "restart_required": True,
-            "completion_evidence": (
-                "device_job"
-                if end_confirmed_by_job
-                else "session_close"
-                if end_confirmed_by_disconnect
-                else "end_response"
-            ),
-        }
 
     async def ota_status(self, *, timeout: float = 10.0) -> dict[str, Any]:
-        frame = await self._request(Channel.OTA, OtaType.STATUS, b"", timeout)
-        if frame.type != OtaType.STATUS or len(frame.payload) < 20:
-            raise ProtocolError("unexpected OTA status response")
-        job_id, total, received, progress = struct.unpack_from("<IIIH", frame.payload)
-        active = bool(frame.payload[14])
-        label_size = frame.payload[15]
-        result = struct.unpack_from("<i", frame.payload, 16)[0]
-        if len(frame.payload) != 20 + label_size:
-            raise ProtocolError("invalid OTA status response")
-        return {
-            "stage": "transferring" if active else "idle",
-            "job_id": job_id,
-            "bytes_total": total,
-            "bytes_received": received,
-            "progress_permille": progress,
-            "active": active,
-            "result": result,
-            "partition": frame.payload[20:].decode("ascii", errors="replace"),
-        }
+        return await ota_transport.ota_status(self, timeout=timeout)
 
     @staticmethod
     def _decode_system_update_status(payload: bytes) -> dict[str, Any]:
@@ -1134,6 +1094,9 @@ class DeviceSession:
         timeout: float = system_update_transport.SYSTEM_UPDATE_REQUEST_TIMEOUT,
         progress_callback: ProgressCallback | None = None,
     ) -> dict[str, Any]:
+        if self._console:
+            return await self._require_data_link().system_update(bundle,
+                operation_id=operation_id, timeout=timeout, progress_callback=progress_callback)
         return await system_update_transport.perform_system_update(
             self.wait_ready,
             self._request,
@@ -1191,14 +1154,11 @@ class DeviceSession:
                 RuntimeError,
             ):
                 if (
-                    self.info is not None
-                    and self.info.transport == Transport.USB_SERIAL_JTAG
+                    self._console
                 ):
-                    # USB Serial/JTAG is a fixed hardware endpoint. A physical
-                    # disconnect produces EOF/re-enumeration in run(), so a
-                    # missed clock probe is not evidence of a stale endpoint.
-                    # Closing it here can itself pulse the controller's reset
-                    # state on some hosts.
+                    # Keep raw capture open across bootloaders/debug pauses.
+                    # Explicit HELLO queries detect a changed boot/session even
+                    # when a UART/Serial-JTAG device never re-enumerates.
                     await asyncio.sleep(self._clock_sync_interval)
                     continue
                 # A serial read timeout is handled inside SerialLink and is not

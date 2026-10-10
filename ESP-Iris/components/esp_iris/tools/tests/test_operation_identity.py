@@ -90,7 +90,7 @@ def test_http_conflict_is_409(tmp_path):
             await service.operations.execute(
                 "a", Actor("local", "Unauthenticated local client"), "different", {},
                 lambda: asyncio.sleep(0), operation_id="same")
-            response = await client.post("/v1/devices/a/restart", json={"delay_ms": 250},
+            response = await client.post("/v2/devices/a/restart", json={"delay_ms": 250},
                                          headers={"X-Operation-ID": "same"})
             assert response.status == 409
             assert "operation_id_conflict" in await response.text()
@@ -125,23 +125,13 @@ def test_separate_sqlite_connections_register_once(tmp_path):
         assert sorted(future.result(timeout=10) for future in futures) == [False, True]
 
 
-def test_v4_database_keeps_legacy_request_unverifiable(tmp_path):
+def test_01_operation_database_requires_documented_migration(tmp_path):
     import sqlite3
-
-    from iris_gateway.migrations import MIGRATIONS
-
     db = sqlite3.connect(tmp_path / "gateway.sqlite3")
-    for migration in MIGRATIONS[:4]:
-        migration(db)
+    db.execute("CREATE TABLE operations (operation_id TEXT PRIMARY KEY)")
+    db.execute("INSERT INTO operations VALUES ('old')")
     db.execute("PRAGMA user_version=4")
-    db.execute("INSERT INTO operations(operation_id, device_id, actor_type, actor_name, "
-               "action, params_json, status, created_ns) VALUES ('old','a','agent','test','ota','{}','succeeded',1)")
     db.commit()
     db.close()
-    store = GatewayStore(tmp_path)
-    assert store.operation("old")["request_fingerprint"] is None
-    with pytest.raises(OperationConflict, match="legacy"):
-        store.create_operation({"operation_id": "old", "device_id": "a", "actor_type": "agent",
-                                "actor_name": "test", "action": "ota", "params": {},
-                                "status": "queued", "created_ns": 2})
-    store.close()
+    with pytest.raises(RuntimeError, match="fresh state directory"):
+        GatewayStore(tmp_path)

@@ -1,16 +1,16 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "compatibility": {
     "chip_target": "esp32s31",
-    "product_contract": "esp-mosaico/v1",
+    "product_contract": "esp-mosaico/v2",
     "board_id": "esp-mosaico",
-    "layout_id": "mosaico-retained-recovery-2m-v1",
-    "recovery_abi": 1
+    "layout_id": "mosaico-retained-test-2m-v2",
+    "recovery_abi": 2
   },
   "partition_table_offset": 32768,
   "partition_table_region_bytes": 4096,
   "application_region_start": 2097152,
-  "minimum_recovery_version": "0.1",
+  "minimum_recovery_version": "0.2.0",
   "immutable_layout": {
     "otadata": [
       "data",
@@ -33,9 +33,9 @@
       81920,
       ""
     ],
-    "factory": [
+    "vibe_mode": [
       "app",
-      "factory",
+      "test",
       131072,
       1835008,
       ""
@@ -47,5 +47,22 @@
       131072,
       ""
     ]
+  },
+  "boot_intent": {
+    "partition": "sysmeta",
+    "namespace": "mosaico_boot_v2",
+    "key": "intent",
+    "type": "u32",
+    "recovery_value": 33554433,
+    "consumed_by": "vibe_mode"
+  },
+  "bootstrap_intent": {
+    "partition": "otadata",
+    "offset": 32,
+    "marker": "MOSAICO-BOOT-02!",
+    "image_bytes": 8192,
+    "consumed_by": "vibe_mode",
+    "consumption": "erase first otadata sector after NVS intent commit; second sector preserved",
+    "native_application_flash": "standard blank IDF otadata; no bootstrap marker"
   }
 }

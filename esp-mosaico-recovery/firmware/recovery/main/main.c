@@ -5,6 +5,7 @@
 #include "driver/gpio.h"
 #include "esp_iris.h"
 #include "esp_log.h"
+#include "esp_ota_ops.h"
 #include "factory_network.h"
 #include "iris_bridge.h"
 #include "factory_recovery_control.h"
@@ -16,11 +17,24 @@
 #include "recovery_ota_support.h"
 #include "iris_screen_mirror.h"
 #include "nvs_flash.h"
+#include "mosaico_boot.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
 
 static const char *TAG = "factory";
+
+static void log_boot_selection(bool requested, esp_err_t intent_err)
+{
+    const esp_partition_t *selected = esp_ota_get_boot_partition();
+    esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
+    const esp_err_t state_err = selected == NULL ? ESP_ERR_NOT_FOUND :
+        esp_ota_get_state_partition(selected, &state);
+    ESP_LOGI(TAG, "Vibe boot: AI=%d intent=%d (%s) selected=%s state=%d (%s)",
+             gpio_get_level(BSP_BUTTON_AI_GPIO), requested, esp_err_to_name(intent_err),
+             selected == NULL ? "none" : selected->label,
+             (int)state, esp_err_to_name(state_err));
+}
 
 void app_main(void)
 {
@@ -40,6 +54,9 @@ void app_main(void)
     ESP_ERROR_CHECK_WITHOUT_ABORT(esp_iris_boot_probe());
     ESP_ERROR_CHECK(nvs_flash_init());
     ESP_ERROR_CHECK(factory_system_metadata_init());
+    bool requested = false;
+    const esp_err_t intent_err = mosaico_boot_recovery_requested(&requested);
+    ESP_ERROR_CHECK(mosaico_boot_consume_request());
     const esp_err_t resume_err = iris_bridge_resume_boot();
     if (resume_err != ESP_OK) {
         ESP_LOGE(TAG, "Bridge boot selection failed; staying in Recovery: %s",
@@ -91,6 +108,7 @@ void app_main(void)
     /* This is the Recovery acceptance boundary used by the host's closed-loop
      * self-update workflow.  esp_iris_mark_healthy() replays the event when a
      * USB session connects after this point. */
+    log_boot_selection(requested, intent_err);
     ESP_ERROR_CHECK(esp_iris_mark_healthy());
     ESP_LOGI(TAG, "ESP-Mosaico Vibe Mode firmware is ready");
 }

@@ -1,4 +1,5 @@
 #include "iris_bridge.h"
+#include "mosaico_boot.h"
 #include "system_plan.h"
 #include "cJSON.h"
 #include "esp_app_desc.h"
@@ -45,7 +46,6 @@ typedef struct {
 static http_response_t main_response, download_response;
 /* Handles have one owner at a time: worker, observer, or final reporter. */
 static esp_http_client_handle_t main_client, download_client;
-static bool separate_authorization;
 static int64_t write_deadline;
 static atomic_uint telemetry_revision, telemetry_progress;
 static atomic_bool writing_acknowledged;
@@ -317,10 +317,6 @@ static bool event_with_timeout(const char *state, unsigned progress,
     cJSON_Delete(j);
     return ok;
 }
-static bool event(const char *state, unsigned progress, esp_err_t error)
-{
-    return event_with_timeout(state, progress, error, 15000);
-}
 /* FAILED/CANCELLED are idempotent terminal intents. Retry them briefly because
  * the fault that ended a write is often the same transient network fault that
  * loses its first terminal report. A 401/404/410 after a lost response means
@@ -437,7 +433,7 @@ static cJSON *identity(void)
     cJSON *j = cJSON_CreateObject();
     cJSON_AddStringToObject(j, "chip", "esp32s31");
     cJSON_AddNumberToObject(j, "chip_id", 32);
-    cJSON_AddStringToObject(j, "profile_id", "iris-s31-layout-v1");
+    cJSON_AddStringToObject(j, "profile_id", "iris-s31-test-layout-v2");
     cJSON_AddStringToObject(j, "mac", mac);
     cJSON_AddStringToObject(j, "device_id", cfg.device_id);
     cJSON_AddStringToObject(j, "boot_id", boot_id);
@@ -451,16 +447,16 @@ typedef struct {
 static esp_err_t save_boot(const cJSON *plan)
 {
     const char *target = str(plan, "boot_partition");
-    if (!*target || !strcmp(target, "factory"))
+    if (!*target || !strcmp(target, "vibe_mode"))
         return ESP_OK;
     if (strlen(target) > 16)
         return ESP_ERR_INVALID_ARG;
-    boot_record_t rec = {.version = 1};
+    boot_record_t rec = {.version = 2};
     strlcpy(rec.target, target, sizeof(rec.target));
     strlcpy(rec.table_hash, str(plan, "target_table_sha256"), sizeof(rec.table_hash));
     nvs_handle_t n;
     esp_err_t err =
-        nvs_open_from_partition("sysmeta", "iris_bridge", NVS_READWRITE, &n);
+        nvs_open_from_partition("sysmeta", "iris_bridge_v2", NVS_READWRITE, &n);
     if (err != ESP_OK)
         return err;
     err = nvs_set_blob(n, "pending_boot", &rec, sizeof(rec));
@@ -475,7 +471,7 @@ esp_err_t iris_bridge_resume_boot(void)
         return ESP_FAIL;
     nvs_handle_t n;
     esp_err_t err =
-        nvs_open_from_partition("sysmeta", "iris_bridge", NVS_READWRITE, &n);
+        nvs_open_from_partition("sysmeta", "iris_bridge_v2", NVS_READWRITE, &n);
     if (err == ESP_ERR_NVS_NOT_FOUND)
         return ESP_OK;
     if (err != ESP_OK)
@@ -498,7 +494,7 @@ esp_err_t iris_bridge_resume_boot(void)
     if (read_error != ESP_OK)
         return read_error;
     char hash[65];
-    if (size != sizeof(rec) || rec.version != 1 || rec.target[16] ||
+    if (size != sizeof(rec) || rec.version != 2 || rec.target[16] ||
         rec.table_hash[64] || !flash_hash(0x8000, 4096, hash) ||
         strcmp(hash, rec.table_hash))
         return ESP_ERR_INVALID_VERSION;
@@ -507,7 +503,7 @@ esp_err_t iris_bridge_resume_boot(void)
     if (!p || p->address < 0x200000 || p->subtype < ESP_PARTITION_SUBTYPE_APP_OTA_0 ||
         p->subtype > ESP_PARTITION_SUBTYPE_APP_OTA_15)
         return ESP_ERR_INVALID_ARG;
-    err = esp_ota_set_boot_partition(p);
+    err = mosaico_boot_select(p->address);
     if (err == ESP_OK)
         esp_restart();
     return err;
@@ -758,15 +754,6 @@ static bool authorize_commit(void)
 {
     if (should_cancel())
         return false;
-    if (!separate_authorization) {
-        /* Legacy services still require ordered phases. Ordinary reports may
-         * be lost; reconcile them once at the commit boundary. */
-        if (!atomic_load(&writing_acknowledged) && !event("WRITING", 90, ESP_OK))
-            return false;
-        if (!event("VERIFYING", 95, ESP_OK) || should_cancel())
-            return false;
-        return event("COMMITTING", 98, ESP_OK);
-    }
     set_state("COMMITTING", 98, ESP_OK);
     char path[256];
     path_session(path, "/authorize");
@@ -848,9 +835,9 @@ static esp_err_t execute(const char *op, const cJSON *plan)
     }
     if (factory) {
         const cJSON *m = cJSON_GetObjectItemCaseSensitive(plan, "factory_manifest");
-        if (strcmp(str(m, "profile_id"), "iris-s31-layout-v1") ||
+        if (strcmp(str(m, "profile_id"), "iris-s31-test-layout-v2") ||
             strcmp(str(m, "board_id"), cfg.board_id) ||
-            num(m, "protocol_version") != 1 || !*str(m, "recovery_version"))
+            num(m, "protocol_version") != 2 || !*str(m, "recovery_version"))
             return ESP_ERR_INVALID_VERSION;
     }
     uint8_t *recovery = NULL;
@@ -909,7 +896,7 @@ static esp_err_t execute(const char *op, const cJSON *plan)
         uint32_t length = num(im, "size");
         const char *file = str(im, "upload_id");
         if (cJSON_GetArraySize(images) != 1 ||
-            strcmp(str(im, "partition"), "factory") || !length || length > 0x1c0000 ||
+            strcmp(str(im, "partition"), "vibe_mode") || !length || length > 0x1c0000 ||
             !*file || strchr(file, '/')) {
             err = ESP_ERR_INVALID_ARG;
             goto abort;
@@ -956,7 +943,7 @@ static esp_err_t execute(const char *op, const cJSON *plan)
           *items = cJSON_AddArrayToObject(root, "components");
     uint32_t size = 0;
     esp_flash_get_size(NULL, &size);
-    cJSON_AddStringToObject(root, "schema", "esp-iris-system-update/v1");
+    cJSON_AddStringToObject(root, "schema", "esp-iris-system-update/0.2");
     cJSON_AddBoolToObject(root, "preserve_layout", !layout);
     cJSON_AddStringToObject(root, "target_layout_sha256",
                             str(plan, "target_table_sha256"));
@@ -1135,7 +1122,7 @@ static void run(void *unused)
                 const char *id = str(r, "session_id");
                 const char *secret = str(r, "auth_token");
                 const char *code = str(r, "device_code");
-                if (strlen(id) != 32 || !*secret || strlen(secret) >= sizeof(token) ||
+                if (num(r, "control_protocol") != 2 || strlen(id) != 32 || !*secret || strlen(secret) >= sizeof(token) ||
                     !*code || strlen(code) >= IRIS_BRIDGE_CODE_BYTES) {
                     cJSON_Delete(r);
                     set_state("FAILED", 0, ESP_ERR_INVALID_RESPONSE);
@@ -1143,8 +1130,7 @@ static void run(void *unused)
                 }
                 strlcpy(session, id, sizeof(session));
                 strlcpy(token, secret, sizeof(token));
-                separate_authorization = num(r, "control_protocol") >= 2;
-                ESP_LOGI("iris_bridge", "control protocol %u", separate_authorization ? 2 : 1);
+                ESP_LOGI("iris_bridge", "control protocol 2");
                 pairing_deadline = registered_at + 600LL * 1000000;
                 set_state("PAIRING", 0, ESP_OK);
                 taskENTER_CRITICAL(&snapshot_lock);
@@ -1184,7 +1170,7 @@ static void run(void *unused)
                 if (!atomic_load(&stop_requested) && atomic_load(&bridge_active) &&
                     !strcmp(str(flash, "phase"), "QUEUED")) {
                     /* Never replay after an uncertain PRECHECK acknowledgement. */
-                    path_session(path, separate_authorization ? "/authorize" : "/progress");
+                    path_session(path, "/authorize");
                     cJSON *start = cJSON_CreateObject();
                     cJSON_AddStringToObject(start, "phase", "PRECHECK");
                     cJSON_AddNumberToObject(start, "progress", 0);
@@ -1194,8 +1180,8 @@ static void run(void *unused)
                     cJSON_Delete(start);
                     esp_err_t err = ESP_ERR_INVALID_RESPONSE;
                     uint32_t ttl = num(accepted, "write_authorization_ttl_ms");
-                    write_deadline = separate_authorization ? requested_at + (int64_t)ttl * 1000 : 0;
-                    if ((!separate_authorization || (ttl && !should_cancel())) &&
+                    write_deadline = requested_at + (int64_t)ttl * 1000;
+                    if (ttl && !should_cancel() &&
                         accepted && atomic_load(&bridge_active) &&
                         !strcmp(str(accepted, "phase"), "PRECHECK"))
                         err = execute(session, accepted);
@@ -1287,7 +1273,7 @@ esp_err_t iris_bridge_start(const iris_bridge_config_t *config)
         esp_efuse_is_flash_encryption_enabled())
         goto fail;
     const esp_partition_t *running = esp_ota_get_running_partition();
-    if (!running || running->subtype != ESP_PARTITION_SUBTYPE_APP_FACTORY)
+    if (!running || running->subtype != ESP_PARTITION_SUBTYPE_APP_TEST)
         goto fail;
     uint8_t bytes[16], address[6];
     if (!boot_id[0]) {
@@ -1314,7 +1300,6 @@ esp_err_t iris_bridge_start(const iris_bridge_config_t *config)
     taskEXIT_CRITICAL(&snapshot_lock);
     cancelled = false;
     write_deadline = 0;
-    separate_authorization = false;
     atomic_store(&bridge_active, !config->prefetch_only);
     atomic_store(&stop_requested, false);
     /* This task also writes Flash/NVS, so keep its stack internal. The cloud

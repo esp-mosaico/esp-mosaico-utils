@@ -10,6 +10,11 @@
 #include "lwip/sockets.h"
 #include "lwip/tcp.h"
 
+#if CONFIG_ESP_IRIS_DATA_LINK
+_Static_assert(CONFIG_ESP_IRIS_TCP_PORT != CONFIG_ESP_IRIS_TCP_DATA_PORT,
+               "console and data TCP ports must differ");
+#endif
+
 static void close_client(iris_transport_state_t *state)
 {
     if (state->client_fd >= 0) {
@@ -19,7 +24,7 @@ static void close_client(iris_transport_state_t *state)
     state->link_up = false;
 }
 
-static esp_err_t open_listener(iris_transport_state_t *state)
+static esp_err_t open_listener(const iris_runtime_t *runtime, iris_transport_state_t *state)
 {
     if (state->listen_fd >= 0) {
         return ESP_OK;
@@ -42,7 +47,7 @@ static esp_err_t open_listener(iris_transport_state_t *state)
 
     const struct sockaddr_in address = {
         .sin_family = AF_INET,
-        .sin_port = htons(CONFIG_ESP_IRIS_TCP_PORT),
+        .sin_port = htons(runtime->data_link ? CONFIG_ESP_IRIS_TCP_DATA_PORT : CONFIG_ESP_IRIS_TCP_PORT),
         .sin_addr.s_addr = htonl(INADDR_ANY),
     };
     if (bind(fd, (const struct sockaddr *)&address, sizeof(address)) != 0 ||
@@ -84,7 +89,7 @@ static esp_err_t tcp_start(iris_runtime_t *runtime,
     }
     /* An IP interface may still be created after esp_iris_start(). Binding
      * INADDR_ANY is safe now and listener creation remains retryable. */
-    (void)open_listener(state);
+    (void)open_listener(runtime, state);
     return ESP_OK;
 }
 
@@ -114,7 +119,7 @@ static iris_link_event_t tcp_transport_poll(iris_runtime_t *runtime,
 {
     (void)runtime;
     if (state->listen_fd < 0) {
-        (void)open_listener(state);
+        (void)open_listener(runtime, state);
     }
     if (state->listen_fd >= 0) {
         struct sockaddr_storage peer;

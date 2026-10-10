@@ -22,9 +22,17 @@
 #define IRIS_MEDIA_DATA_HEADER_SIZE 36U
 #define IRIS_AUTH_TOKEN_BYTES 32U
 #define IRIS_AUTH_CHALLENGE_BYTES 32U
+/* A snapshot is bounded independently of a printable RPC record. */
+#define IRIS_SNAPSHOT_MAX_BYTES (16U * 1024U * 1024U)
+#define IRIS_SNAPSHOT_TIMEOUT_US (600LL * 1000000LL)
+#define IRIS_SNAPSHOT_IDLE_US (30LL * 1000000LL)
+#define IRIS_SNAPSHOT_CONTROL_CHUNK_BYTES 768U
 #define IRIS_AUTH_NONCE_BYTES 16U
 #define IRIS_AUTH_PROOF_BYTES 32U
 #define IRIS_OTA_BEGIN_FIXED_SIZE 40U
+#define IRIS_RESTART_MIN_DELAY_MS 100U
+#define IRIS_RESTART_MAX_DELAY_MS 60000U
+#define IRIS_RESTART_FLUSH_GRACE_US 100000LL
 #define IRIS_NVS_NAMESPACE "esp_iris"
 #define IRIS_NVS_PAIR_TOKEN "pair_token"
 
@@ -53,6 +61,7 @@ typedef struct {
     esp_iris_media_desc_t frame_description;
     uint32_t frame_id;
     uint32_t stream_id;
+    uint32_t session_id;
     uint32_t pull_frame_id;
     uint32_t total_size;
     uint32_t offset;
@@ -71,6 +80,11 @@ typedef struct {
     esp_iris_media_desc_t description;
     uint32_t total_size;
     uint32_t stream_id;
+    uint32_t session_id;
+    uint32_t received;
+    uint32_t crc32;
+    int64_t deadline_us;
+    int64_t idle_deadline_us;
 } iris_capture_t;
 
 #if CONFIG_ESP_IRIS_OTA
@@ -95,11 +109,6 @@ typedef struct {
 typedef struct {
     uint32_t last_rpc_request_id;
     bool rpc_request_seen;
-    uint8_t auth_challenge[IRIS_AUTH_CHALLENGE_BYTES];
-    int64_t auth_retry_after_us;
-    uint32_t restart_delay_ms;
-    int64_t restart_at_us;
-    bool restart_pending;
 } iris_service_session_t;
 
 typedef struct {
@@ -125,6 +134,11 @@ typedef struct {
 } iris_service_state_t;
 
 static iris_service_state_t *s_services;
+static uint32_t s_data_cleanup_session;
+/* Protected by s_services_lock; only the protocol task executes the action.
+ * Disconnect preserves it; explicit service deinit cancels it. */
+static int64_t s_restart_at_us;
+static bool s_restart_enabled;
 static portMUX_TYPE s_services_lock = portMUX_INITIALIZER_UNLOCKED;
 
 static bool executor_busy(void);
@@ -213,12 +227,7 @@ static iris_service_session_t *service_session(iris_service_state_t *state, bool
     if (!valid_state(state)) return NULL;
     if (state->session == NULL && create) {
         state->session = service_context_alloc(state, sizeof(*state->session));
-#if CONFIG_ESP_IRIS_TCP_PAIRING
-        if (state->session != NULL) {
-            esp_fill_random(state->session->auth_challenge,
-                            sizeof(state->session->auth_challenge));
-        }
-#endif
+
     }
     return state->session;
 }
@@ -892,10 +901,31 @@ esp_err_t iris_services_init(iris_runtime_t *runtime)
     }
 #if CONFIG_ESP_IRIS_TCP_PAIRING
     iris_service_state_t *state = service_state(true);
-    return state == NULL ? ESP_ERR_NO_MEM : pairing_load_or_create(state, false);
+    esp_err_t err = state == NULL ? ESP_ERR_NO_MEM : pairing_load_or_create(state, false);
 #else
-    return ESP_OK;
+    esp_err_t err = ESP_OK;
 #endif
+    taskENTER_CRITICAL(&s_services_lock);
+    s_restart_enabled = err == ESP_OK;
+    taskEXIT_CRITICAL(&s_services_lock);
+    return err;
+}
+
+esp_err_t esp_iris_schedule_restart(uint32_t delay_ms)
+{
+    if (delay_ms < IRIS_RESTART_MIN_DELAY_MS || delay_ms > IRIS_RESTART_MAX_DELAY_MS) return ESP_ERR_INVALID_ARG;
+    const int64_t deadline = esp_timer_get_time() + (int64_t)delay_ms * 1000;
+    taskENTER_CRITICAL(&s_services_lock);
+    if (!s_restart_enabled) {
+        taskEXIT_CRITICAL(&s_services_lock);
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (s_restart_at_us == 0 || deadline < s_restart_at_us) {
+        s_restart_at_us = deadline;
+    }
+    taskEXIT_CRITICAL(&s_services_lock);
+    iris_notify_worker(&g_iris);
+    return ESP_OK;
 }
 
 static void ota_abort(iris_service_state_t *state, esp_err_t result)
@@ -952,19 +982,40 @@ void iris_services_session_begin(iris_runtime_t *runtime)
 {
     (void)runtime;
     iris_service_state_t *state = service_state(false);
-    if (!valid_state(state)) {
+    if (valid_state(state)) (void)service_session(state, true);
+}
+
+static void capture_expire(iris_service_state_t *state)
+{
+    if (!valid_state(state) || state->streams == NULL || !state->streams->capture.active)
         return;
+    const int64_t now = esp_timer_get_time();
+    if (now < state->streams->capture.deadline_us &&
+        now < state->streams->capture.idle_deadline_us) return;
+    if (state->screen.end != NULL) state->screen.end(state->screen.user_ctx);
+    state->streams->capture.active = false;
+    maybe_release_streams(state);
+}
+
+static void services_data_end_now(void)
+{
+    iris_system_update_session_end();
+    iris_service_state_t *state = service_state(false);
+    if (!valid_state(state)) return;
+    ota_abort(state, ESP_ERR_INVALID_STATE);
+    if (state->streams != NULL) {
+        for (size_t i = 0; i < 3; ++i) {
+            if (i == 0 && state->streams->media[i].pull && state->screen.end != NULL)
+                state->screen.end(state->screen.user_ctx);
+            release_media_buffer(state, &state->streams->media[i]);
+        }
     }
-    if (service_session(state, true) == NULL) return;
-    state->session->last_rpc_request_id = 0;
-    state->session->rpc_request_seen = false;
-#if CONFIG_ESP_IRIS_TCP_PAIRING
-    esp_fill_random(state->session->auth_challenge, sizeof(state->session->auth_challenge));
-#endif
+    maybe_release_streams(state);
 }
 
 static void services_session_end_now(void)
 {
+    s_data_cleanup_session = 0;
     iris_files_deinit();
     iris_system_update_session_end();
     iris_service_state_t *state = service_state(false);
@@ -999,8 +1050,9 @@ static void services_session_end_now(void)
     maybe_release_state(state);
 }
 
-uint64_t iris_services_capabilities(void)
+uint64_t iris_services_capabilities(const iris_runtime_t *runtime)
 {
+    (void)runtime;
     uint64_t result = ESP_IRIS_CAP_SESSION_REOPEN | ESP_IRIS_CAP_RPC | ESP_IRIS_CAP_JOBS |
                       ESP_IRIS_CAP_SCREEN | ESP_IRIS_CAP_IMAGE |
                       ESP_IRIS_CAP_AUDIO | ESP_IRIS_CAP_MIRROR |
@@ -1016,37 +1068,39 @@ uint64_t iris_services_capabilities(void)
     result |= ESP_IRIS_CAP_OTA_PROJECT_NAME_MATCH;
 #endif
 #if CONFIG_ESP_IRIS_TCP_PAIRING
-    if (iris_transport_kind() == ESP_IRIS_TRANSPORT_KIND_TCP) {
+    if (iris_runtime_transport_kind(runtime) == ESP_IRIS_TRANSPORT_KIND_TCP) {
         result |= ESP_IRIS_CAP_AUTH;
     }
 #endif
     return result;
 }
 
-uint8_t iris_services_auth_mode(void)
+uint8_t iris_services_auth_mode(const iris_runtime_t *runtime)
 {
+    (void)runtime;
 #if CONFIG_ESP_IRIS_TCP_PAIRING
-    if (iris_transport_kind() == ESP_IRIS_TRANSPORT_KIND_TCP) {
+    if (iris_runtime_transport_kind(runtime) == ESP_IRIS_TRANSPORT_KIND_TCP) {
         return 1;
     }
 #endif
     return 0;
 }
 
-const uint8_t *iris_services_auth_challenge(size_t *size)
+const uint8_t *iris_services_auth_challenge(const iris_runtime_t *runtime, size_t *size)
 {
+    (void)runtime;
     iris_service_state_t *state = service_state(false);
     if (size != NULL) {
         *size = 0;
     }
 #if CONFIG_ESP_IRIS_TCP_PAIRING
-    if (iris_transport_kind() == ESP_IRIS_TRANSPORT_KIND_TCP &&
+    if (iris_runtime_transport_kind(runtime) == ESP_IRIS_TRANSPORT_KIND_TCP &&
             valid_state(state) && state->auth_token_ready &&
             service_session(state, true) != NULL) {
         if (size != NULL) {
-            *size = sizeof(state->session->auth_challenge);
+            *size = sizeof(runtime->auth_challenge);
         }
-        return state->session->auth_challenge;
+        return runtime->auth_challenge;
     }
 #else
     (void)state;
@@ -1067,60 +1121,39 @@ static bool constant_time_equal(const uint8_t *left, const uint8_t *right,
 #endif
 
 #if CONFIG_ESP_IRIS_TCP_PAIRING
-static esp_err_t auth_failure(iris_service_state_t *state, esp_err_t error)
+static esp_err_t auth_failure(iris_runtime_t *runtime, esp_err_t error)
 {
-    const int64_t delay_us =
+    /* Never sleep in the shared protocol task: a failed data authentication
+     * must not stall console logging or the other healthy link. */
+    runtime->auth_retry_after_us = esp_timer_get_time() +
         (int64_t)CONFIG_ESP_IRIS_AUTH_FAILURE_DELAY_MS * 1000;
-    const int64_t deadline_us = esp_timer_get_time() + delay_us;
-    if (valid_state(state) && state->session != NULL) {
-        state->session->auth_retry_after_us = deadline_us;
-    }
-    do {
-        const int64_t remaining_us = deadline_us - esp_timer_get_time();
-        if (remaining_us <= 0) {
-            break;
-        }
-        TickType_t ticks = pdMS_TO_TICKS(
-            (uint32_t)((remaining_us + 999) / 1000));
-        if (ticks == 0) {
-            ticks = 1;
-        }
-        vTaskDelay(ticks);
-    } while (esp_timer_get_time() < deadline_us);
     return error;
 }
 #endif
 
-esp_err_t iris_services_authenticate(const iris_runtime_t *runtime,
+esp_err_t iris_services_authenticate(iris_runtime_t *runtime,
                                      const uint8_t *payload, size_t size)
 {
+    /* HELLO_ACK = role:u8 + owner:16 + optional nonce:16/proof:32.
+     * The owner is freshly generated per host process, never a port/IP hint. */
+    if (payload == NULL || size < 17 || payload[0] != (runtime->data_link ? 1 : 0))
+        return ESP_ERR_INVALID_ARG;
+    const uint8_t *binding = payload;
+    payload += 17;
+    size -= 17;
 #if CONFIG_ESP_IRIS_TCP_PAIRING
-    if (iris_transport_kind() != ESP_IRIS_TRANSPORT_KIND_TCP) {
-        return size == 0 ? ESP_OK : ESP_ERR_INVALID_SIZE;
+    if (iris_runtime_transport_kind(runtime) != ESP_IRIS_TRANSPORT_KIND_TCP) {
+        return size == 0 ? iris_link_claim(runtime, binding + 1) : ESP_ERR_INVALID_SIZE;
     }
     iris_service_state_t *state = service_state(false);
-    if (!valid_state(state) || service_session(state, true) == NULL ||
-        !state->auth_token_ready ||
-        payload == NULL ||
+    if (esp_timer_get_time() < runtime->auth_retry_after_us) return ESP_ERR_TIMEOUT;
+    if (!valid_state(state) || !state->auth_token_ready ||
         size != IRIS_AUTH_NONCE_BYTES + IRIS_AUTH_PROOF_BYTES) {
-        return auth_failure(state, ESP_ERR_INVALID_ARG);
+        return auth_failure(runtime, ESP_ERR_INVALID_ARG);
     }
-    const int64_t now = esp_timer_get_time();
-    if (now < state->session->auth_retry_after_us) {
-        int64_t remaining_us = state->session->auth_retry_after_us - now;
-        while (remaining_us > 0) {
-            TickType_t ticks = pdMS_TO_TICKS(
-                (uint32_t)((remaining_us + 999) / 1000));
-            if (ticks == 0) {
-                ticks = 1;
-            }
-            vTaskDelay(ticks);
-            remaining_us = state->session->auth_retry_after_us - esp_timer_get_time();
-        }
-    }
-    static const uint8_t label[] = "ESP-Iris-auth-v1";
+    static const uint8_t label[] = "ESP-Iris-auth-0.2";
     uint8_t message[sizeof(label) - 1 + 16 + 8 + 4 +
-                    IRIS_AUTH_CHALLENGE_BYTES + IRIS_AUTH_NONCE_BYTES];
+                    IRIS_AUTH_CHALLENGE_BYTES + IRIS_AUTH_NONCE_BYTES + 17];
     size_t offset = 0;
     memcpy(message + offset, label, sizeof(label) - 1);
     offset += sizeof(label) - 1;
@@ -1130,11 +1163,13 @@ esp_err_t iris_services_authenticate(const iris_runtime_t *runtime,
     offset += 8;
     iris_put_le32(message + offset, runtime->session_id);
     offset += 4;
-    memcpy(message + offset, state->session->auth_challenge,
-           sizeof(state->session->auth_challenge));
-    offset += sizeof(state->session->auth_challenge);
+    memcpy(message + offset, runtime->auth_challenge,
+           sizeof(runtime->auth_challenge));
+    offset += sizeof(runtime->auth_challenge);
     memcpy(message + offset, payload, IRIS_AUTH_NONCE_BYTES);
     offset += IRIS_AUTH_NONCE_BYTES;
+    memcpy(message + offset, binding, 17);
+    offset += 17;
     uint8_t expected[IRIS_AUTH_PROOF_BYTES];
     size_t expected_size = 0;
     psa_key_attributes_t attributes = PSA_KEY_ATTRIBUTES_INIT;
@@ -1162,17 +1197,17 @@ esp_err_t iris_services_authenticate(const iris_runtime_t *runtime,
     if (result != PSA_SUCCESS || expected_size != sizeof(expected) ||
         !constant_time_equal(expected, payload + IRIS_AUTH_NONCE_BYTES,
                              sizeof(expected))) {
-        return auth_failure(state, ESP_ERR_INVALID_CRC);
+        return auth_failure(runtime, ESP_ERR_INVALID_CRC);
     }
-    state->session->auth_retry_after_us = 0;
-    return ESP_OK;
+    runtime->auth_retry_after_us = 0;
+    return iris_link_claim(runtime, binding + 1);
 #else
-    (void)runtime;
-    return size == 0 ? ESP_OK : ESP_ERR_INVALID_SIZE;
+    return size == 0 ? iris_link_claim(runtime, binding + 1) : ESP_ERR_INVALID_SIZE;
 #endif
 }
 
-bool iris_services_credit(uint8_t channel, uint32_t amount)
+bool iris_services_credit(iris_runtime_t *runtime, uint8_t channel,
+                          uint32_t stream_id, uint32_t amount)
 {
     const int index = media_index(channel);
     iris_service_state_t *state = service_state(false);
@@ -1185,6 +1220,11 @@ bool iris_services_credit(uint8_t channel, uint32_t amount)
         return false;
     }
     iris_media_slot_t *slot = &state->streams->media[index];
+    if (!slot->active || slot->stream_id != stream_id ||
+        slot->session_id != runtime->session_id) {
+        taskEXIT_CRITICAL(&s_services_lock);
+        return false;
+    }
     slot->credit = UINT32_MAX - slot->credit < amount
         ? UINT32_MAX : slot->credit + amount;
     taskEXIT_CRITICAL(&s_services_lock);
@@ -1193,7 +1233,7 @@ bool iris_services_credit(uint8_t channel, uint32_t amount)
 
 
 /* Protocol-task replay admission, before publishing the owned request. */
-static esp_err_t rpc_accept_request(const iris_decoded_frame_t *frame)
+static esp_err_t rpc_accept_request(iris_runtime_t *runtime, const iris_decoded_frame_t *frame)
 {
     const esp_iris_wire_header_t *h = &frame->header;
     if (h->payload_size < IRIS_RPC_HEADER_SIZE) return ESP_ERR_INVALID_SIZE;
@@ -1205,8 +1245,7 @@ static esp_err_t rpc_accept_request(const iris_decoded_frame_t *frame)
     }
     iris_service_state_t *state = service_state(false);
     if (!valid_state(state)) return ESP_ERR_INVALID_STATE;
-    iris_service_session_t *session = service_session(state, true);
-    if (session == NULL) return ESP_ERR_NO_MEM;
+    iris_runtime_t *session = runtime;
     const uint32_t distance = h->request_id - session->last_rpc_request_id;
     if (h->request_id == 0 ||
         (session->rpc_request_seen &&
@@ -1382,30 +1421,21 @@ static bool handle_restart(iris_runtime_t *runtime,
         return true;
     }
     uint32_t delay_ms = iris_get_le32(frame->payload);
-    if (delay_ms < 100) {
-        delay_ms = 100;
+    if (delay_ms < IRIS_RESTART_MIN_DELAY_MS) {
+        delay_ms = IRIS_RESTART_MIN_DELAY_MS;
     }
-    if (delay_ms > 60000) {
+    if (delay_ms > IRIS_RESTART_MAX_DELAY_MS) {
         (void)iris_queue_error(runtime, header->request_id,
                                ESP_ERR_INVALID_ARG, header->channel,
                                header->type);
-        return true;
-    }
-    iris_service_state_t *state = service_state(true);
-    if (state == NULL || service_session(state, true) == NULL) {
-        (void)iris_queue_error(runtime, header->request_id, ESP_ERR_NO_MEM,
-                               header->channel, header->type);
         return true;
     }
     esp_err_t err = esp_iris_mark_planned_restart();
     if (err == ESP_ERR_NOT_SUPPORTED) {
         err = ESP_OK;
     }
+    if (err == ESP_OK) err = esp_iris_schedule_restart(delay_ms);
     if (err == ESP_OK) {
-        state->session->restart_delay_ms = delay_ms;
-        state->session->restart_at_us = esp_timer_get_time() +
-                               (int64_t)delay_ms * 1000;
-        state->session->restart_pending = true;
         uint8_t response[4];
         iris_put_le32(response, delay_ms);
         (void)iris_queue_frame(runtime, ESP_IRIS_CHANNEL_CONTROL,
@@ -1420,6 +1450,7 @@ static bool handle_restart(iris_runtime_t *runtime,
     return true;
 }
 
+#include "esp_iris_snapshot_control.inc"
 #include "esp_iris_media_control.inc"
 
 #include "esp_iris_ota_service.inc"
@@ -1448,6 +1479,27 @@ bool iris_services_handle_frame(iris_runtime_t *runtime,
                                 const iris_decoded_frame_t *frame,
                                 uint64_t received_us)
 {
+    const uint8_t channel = frame->header.channel;
+    const uint8_t type = frame->header.type;
+    const bool snapshot = channel == ESP_IRIS_CHANNEL_SCREEN &&
+        (type == ESP_IRIS_MEDIA_OPEN || type == ESP_IRIS_MEDIA_READ ||
+         type == ESP_IRIS_MEDIA_CLOSE);
+    const bool update_control = channel == ESP_IRIS_CHANNEL_SYSTEM_UPDATE &&
+        (type == ESP_IRIS_SYSTEM_UPDATE_STATUS || type == ESP_IRIS_SYSTEM_UPDATE_CANCEL ||
+         type == ESP_IRIS_SYSTEM_UPDATE_INVENTORY);
+    if (!runtime->data_link && channel != ESP_IRIS_CHANNEL_CONTROL &&
+        !snapshot && !update_control &&
+        !(channel == ESP_IRIS_CHANNEL_OTA &&
+          (type == ESP_IRIS_OTA_STATUS || type == ESP_IRIS_OTA_CANCEL))) {
+        (void)iris_queue_error(runtime, frame->header.request_id, ESP_ERR_NOT_SUPPORTED,
+                               channel, type);
+        return true;
+    }
+    if (runtime->data_link && s_data_cleanup_session != 0) {
+        (void)iris_queue_error(runtime, frame->header.request_id, ESP_ERR_INVALID_STATE,
+                               channel, type);
+        return true;
+    }
     if (executor_dispatch(runtime, frame, received_us)) {
         return true;
     }
@@ -1537,6 +1589,7 @@ static bool queue_media(iris_runtime_t *runtime,
     }
     for (size_t i = 0; i < 3; ++i) {
         iris_media_slot_t *slot = &state->streams->media[i];
+        if (slot->session_id != runtime->session_id) continue;
         if (i == 0) {
             (void)prepare_pull_screen(state, slot);
         }
@@ -1575,30 +1628,38 @@ bool iris_services_queue_next(iris_runtime_t *runtime)
         return false;
     }
     maybe_release_state(service_state(false));
-    if (iris_files_queue_next(runtime)) {
+    if (runtime->data_link && iris_files_queue_next(runtime)) {
         return true;
     }
     iris_service_state_t *state = service_state(false);
     if (!valid_state(state)) {
         return false;
     }
-    return queue_job_event(runtime, state) || queue_media(runtime, state);
+    const iris_runtime_t *peer = iris_peer_runtime(runtime);
+    return ((!runtime->data_link || peer == NULL || !peer->hello_acked) &&
+            queue_job_event(runtime, state)) ||
+           (runtime->data_link && queue_media(runtime, state));
 }
 
 void iris_services_poll(iris_runtime_t *runtime)
 {
-    if (executor_busy()) {
-        return;
+    capture_expire(service_state(false));
+    if (executor_busy()) return;
+    if (s_data_cleanup_session != 0) {
+        services_data_end_now();
+        s_data_cleanup_session = 0;
     }
-    iris_service_state_t *state = service_state(false);
-    if (!valid_state(state) || state->session == NULL ||
-        !state->session->restart_pending ||
-        runtime->tx_wire_length != 0 ||
-        esp_timer_get_time() < state->session->restart_at_us) {
-        return;
-    }
-    state->session->restart_pending = false;
-    esp_restart();
+    const iris_runtime_t *peer = iris_peer_runtime(runtime);
+    const bool tx_pending = runtime->tx_wire_length != 0 ||
+                            (peer != NULL && peer->tx_wire_length != 0);
+    const int64_t now = esp_timer_get_time();
+    taskENTER_CRITICAL(&s_services_lock);
+    const bool restart = s_restart_enabled && s_restart_at_us != 0 &&
+                         now >= s_restart_at_us &&
+                         (!tx_pending || now - s_restart_at_us >= IRIS_RESTART_FLUSH_GRACE_US);
+    if (restart) s_restart_at_us = 0;
+    taskEXIT_CRITICAL(&s_services_lock);
+    if (restart) esp_restart();
 }
 
 uint32_t iris_services_allocated_bytes(void)
@@ -1610,7 +1671,7 @@ uint32_t iris_services_allocated_bytes(void)
 
 uint32_t iris_services_static_bytes(void)
 {
-    return sizeof(s_services) + sizeof(s_services_lock) + sizeof(s_executor) +
+    return sizeof(s_services) + sizeof(s_services_lock) + sizeof(s_executor) + sizeof(s_restart_at_us) + sizeof(s_restart_enabled) +
         iris_files_static_bytes() + iris_system_inventory_static_bytes() +
         iris_system_update_static_bytes();
 }

@@ -1,5 +1,12 @@
 # ESP-Mosaico Tools
 
+The [0.2 software specification (中文)](docs/mosaico-tools-software-spec-zh.md)
+and [migration guide (中文)](docs/migration-0.2.md) describe the breaking release.
+The source uses Gateway API 2 and the new test-partition product contract.
+Default updates validate the matching reviewed 0.2.0 base bundle; see the
+[0.2 validation record (中文)](../esp-mosaico-recovery/docs/validation-0.2.md).
+Old devices and old bundles require their separate 0.1 environment.
+
 Workspace-consumed command-line tools for ESP-Mosaico development and device
 operations. A firmware workspace pins the containing `esp-mosaico-utils`
 repository; the CLI package does not need to be installed into the user's
@@ -92,11 +99,10 @@ Active takeover requests hold the receiver until validation completes. Interrupt
 takeover reservations remain protected and require explicit
 reconciliation; they are never silently released to another project.
 
-Older owner-pipe Gateways are listed with unavailable client details. New device
-commands require a compatible API and shared-lifetime capability;
-end an incompatible old session through its original owner. The shared ownership
-schema retains its legacy table layout, with new session metadata in a separate
-table. Remote profiles keep their externally managed lifetimes.
+Gateways must provide the 0.2 API and shared-lifetime capability. The 0.2
+ownership database and private state are isolated from earlier installations;
+stop old Gateways through their original tools before migrating. Remote
+profiles keep their externally managed lifetimes.
 
 `iris app-update` installs code-only changes with an identical device partition table.
 Prefer `iris system-update` for a new application, layout change, or changed resources. It
@@ -110,15 +116,13 @@ is unreachable. `iris test` groups individual Vibe Mode test operations:
 | `recovery-wifi` | Requires Vibe Mode over USB; submit the SSID and password and wait for Wi-Fi connectivity. |
 | `bridge-code` | Requires Vibe Mode over USB, configured Bridge service and network connectivity; open the device's download page and return the pairing code, validity and website URL. |
 
-Legacy command spellings remain accepted for existing scripts, but help and
-examples use the structure above. For example, `install` maps to
-`iris app-update`, `monitor` to `iris logs`, `init` to `project init`,
-`session run/status` to `iris run/status`. The `iris transfer` command group and
-its legacy aliases are removed without compatibility shims. Operation identifiers and evidence formats remain
-stable. `iris logs` follows by default (`--snapshot` prints retained logs only);
+Only the public command paths above are accepted. Replace old script commands
+using the [0.2 migration table](docs/migration-0.2.md); there are no compatibility
+aliases. `iris logs` follows by default (`--snapshot` prints retained logs only);
 `iris memory --follow` enables continuous memory sampling.
 
-The consuming repository owns a `.mosaico.json` file. All configured relative
+The consuming repository owns a `.mosaico.json` file with `schema_version: 2`.
+All configured relative
 paths are resolved from the directory containing that file. Vibe Mode firmware
 source and its reviewed bundle live under `../esp-mosaico-recovery/firmware/recovery` and are resolved
 from this checkout so the CLI and Vibe Mode implementation are versioned
@@ -300,10 +304,9 @@ python mosaico.py project upload --project projects/my_app
 
 Login displays a verification page and a separate user code. Approve the code
 in your browser; the CLI stores its token privately under
-`state_root("esp-mosaico")/mosaico-ideas/` (POSIX directory/file modes 0700/0600).
-Existing per-server private state is moved automatically from the previous brand's
-directory on first use; existing new-directory state takes precedence and is never
-overwritten. Credentials and resumable-upload records migrate together.
+`state_root("esp-mosaico")/0.2/mosaico-ideas/` (POSIX directory/file modes 0700/0600).
+Log in again for 0.2. Earlier credentials and resumable-upload records stay in
+their original directories and are never imported or rewritten.
 Native Windows account directory permissions apply. `account logout` revokes
 the selected token. `MAKER_SPARK_TOKEN` takes precedence over saved credentials;
 logout with that environment variable revokes it, without deleting a different

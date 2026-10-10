@@ -17,8 +17,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-TOOL_ROOT = Path(__file__).resolve().parents[1]
-REPOSITORY = TOOL_ROOT / "tests" / "fixtures" / "workspace"
+TOOL_ROOT = Path(__file__).resolve().parents[2] / "mosaico-tools"
+REPOSITORY = Path(__file__).resolve().parent / "fixtures" / "workspace"
 sys.path.insert(0, str(TOOL_ROOT / "tools"))
 
 from mosaico_cli.build_progress import (
@@ -80,7 +80,6 @@ from mosaico_cli.host import (
 )
 from mosaico_cli.project import partition_table_flash_sha256, resolve_project
 from mosaico_cli.recovery import (
-    _host_verification_path,
     _read_verification_record,
     _registered_recovery_ports,
     _verification_path,
@@ -140,7 +139,8 @@ def create_recovery_bundle(directory: Path) -> Path:
     (directory / "manifest.json").write_text(
         json.dumps(
             {
-                "schema_version": 2,
+                "schema_version": 3,
+                "compatibility": json.loads((TOOL_ROOT.parent / "esp-mosaico-recovery/product_contract.json").read_text())["compatibility"],
                 "target": "esp32s31",
                 "profile": "recovery",
                 "version": "test-recovery",
@@ -157,20 +157,25 @@ class ParserTests(unittest.TestCase):
         return build_parser().parse_args(_normalize_globals(argv))
 
     def test_install_defaults(self) -> None:
-        value = self.parse("install")
+        value = self.parse("iris", "app-update")
         self.assertEqual(value.validation, "elf-sha256")
         self.assertEqual(value.timeout, 600)
         self.assertFalse(value.skip_build)
+        self.assertEqual(value.recovery_source, "reviewed")
+
+    def test_install_can_explicitly_validate_against_current_candidate(self) -> None:
+        value = self.parse("iris", "app-update", "--recovery-source", "current")
+        self.assertEqual(value.recovery_source, "current")
 
     def test_system_update_defaults_to_local_build(self) -> None:
-        value = self.parse("system-update")
+        value = self.parse("iris", "system-update")
         self.assertIsNone(value.bundle)
         self.assertIsNone(value.manifest_path)
         self.assertFalse(value.skip_build)
         self.assertEqual(value.timeout, 900)
 
     def test_system_update_accepts_local_bundle(self) -> None:
-        value = self.parse("system-update", "--bundle", "release.irisfw")
+        value = self.parse("iris", "system-update", "--bundle", "release.irisfw")
         self.assertEqual(value.bundle, Path("release.irisfw"))
 
     def test_recover_defaults(self) -> None:
@@ -187,37 +192,37 @@ class ParserTests(unittest.TestCase):
             self.parse("recover", "--hardware-mac", "30:ed:a0")
 
     def test_enter_recovery_defaults(self) -> None:
-        value = self.parse("enter-recovery", "--device-id", "device-a")
+        value = self.parse("iris", "test", "enter-recovery", "--device-id", "device-a")
         self.assertEqual(value.device_id, "device-a")
         self.assertEqual(value.timeout, 30)
 
     def test_recovery_wifi_has_no_password_argument(self) -> None:
-        value = self.parse("recovery-wifi", "--ssid", "lab-network")
+        value = self.parse("iris", "test", "recovery-wifi", "--ssid", "lab-network")
         self.assertEqual(value.ssid, "lab-network")
         self.assertFalse(hasattr(value, "password"))
         self.assertEqual(value.timeout, 30)
 
     def test_bridge_code_uses_only_device_selection(self) -> None:
-        value = self.parse("bridge-code", "--device-id", "device-a")
+        value = self.parse("iris", "test", "bridge-code", "--device-id", "device-a")
         self.assertEqual(value.device_id, "device-a")
         self.assertFalse(hasattr(value, "code"))
 
     def test_monitor_defaults(self) -> None:
-        value = self.parse("monitor")
+        value = self.parse("iris", "logs")
         self.assertEqual(value.timeout, 0)
         self.assertFalse(value.snapshot)
         self.assertFalse(value.force_color)
         self.assertFalse(value.disable_auto_color)
 
     def test_memory_defaults_and_interval(self) -> None:
-        value = self.parse("memory", "--follow", "--interval", "10")
+        value = self.parse("iris", "memory", "--follow", "--interval", "10")
         self.assertTrue(value.follow)
         self.assertEqual(value.interval, 10)
         with self.assertRaises(SystemExit):
-            self.parse("memory", "--interval", "0")
+            self.parse("iris", "memory", "--interval", "0")
 
     def test_memory_rejects_mismatched_device_snapshot(self) -> None:
-        arguments = self.parse("memory", "--device-id", "device-a")
+        arguments = self.parse("iris", "memory", "--device-id", "device-a")
         with ExitStack() as patches:
             patches.enter_context(mock.patch("mosaico_cli.commands.ensure_gateway", return_value=object()))
             patches.enter_context(mock.patch("mosaico_cli.commands.connected_devices", return_value=[{"device_id": "device-a"}]))
@@ -227,7 +232,7 @@ class ParserTests(unittest.TestCase):
 
     def test_rpc_accepts_hex_payload(self) -> None:
         value = self.parse(
-            "rpc", "0x6a03", "2", "--payload-hex", "0102"
+            "iris", "rpc", "0x6a03", "2", "--payload-hex", "0102"
         )
         self.assertEqual(value.service_id, "0x6a03")
         self.assertEqual(value.method_id, "2")
@@ -235,14 +240,14 @@ class ParserTests(unittest.TestCase):
 
     def test_crash_can_archive_and_save_core(self) -> None:
         value = self.parse(
-            "crash", "--archive", "--save-core", "evidence/core.bin"
+            "iris", "crash", "--archive", "--save-core", "evidence/core.bin"
         )
         self.assertTrue(value.archive)
         self.assertEqual(value.save_core, Path("evidence/core.bin"))
 
     def test_system_update_accepts_nand_manifest_path(self) -> None:
         value = self.parse(
-            "system-update",
+            "iris", "system-update",
             "--manifest-path",
             "/nand/system-update/manifest.json",
         )
@@ -250,14 +255,14 @@ class ParserTests(unittest.TestCase):
         with ExitStack() as _contexts:
             caught = _contexts.enter_context(self.assertRaises(SystemExit))
             self.parse(
-                "system-update",
+                "iris", "system-update",
                 "--manifest-path",
                 "/nand/system-update/../manifest.json",
             )
         self.assertEqual(caught.exception.code, 2)
 
     def test_global_flags_work_after_command(self) -> None:
-        value = self.parse("list", "--gateway-profile", "bench", "--json", "--verbose")
+        value = self.parse("iris", "list", "--gateway-profile", "bench", "--json", "--verbose")
         self.assertTrue(value.json)
         self.assertTrue(value.verbose)
         self.assertEqual(value.gateway_profile, "bench")
@@ -286,7 +291,7 @@ class ParserTests(unittest.TestCase):
             )
             _contexts.enter_context(redirect_stdout(output))
             self.assertEqual(
-                main(["list", "--json", "--workspace", str(REPOSITORY)]), 0
+                main(["iris", "list", "--json", "--workspace", str(REPOSITORY)]), 0
             )
         self.assertEqual(
             json.loads(output.getvalue())["devices"][0]["device_id"], "device-a"
@@ -693,7 +698,7 @@ class GatewayTests(unittest.TestCase):
 
     def test_general_gateway_compatibility_does_not_require_inventory(self) -> None:
         health = {
-            "gateway_api": {"major": 1, "minor": 1},
+            "gateway_api": {"major": 2, "minor": 1},
             "capabilities": ["local-host-operations/v1"],
         }
         self.assertIs(_require_compatible_gateway(health), health)
@@ -759,7 +764,11 @@ class GatewayTests(unittest.TestCase):
             artifacts = SimpleNamespace(
                 build_dir=build_dir,
                 project_name="edge_agent",
+                image=build_dir / "edge_agent.bin",
+                elf=build_dir / "edge_agent.elf",
+                map_file=build_dir / "edge_agent.map",
             )
+            artifacts.image.write_bytes(b"application")
             arguments = argparse.Namespace(
                 gateway_profile=None,
                 device_id=None,
@@ -804,7 +813,7 @@ class GatewayTests(unittest.TestCase):
                     return_value=[{"device_id": "device-a", "firmware_mode": "normal"}],
                 )
             )
-            _contexts.enter_context(
+            request = _contexts.enter_context(
                 mock.patch(
                     "mosaico_cli.commands.gateway_json",
                     return_value={"device": {"firmware_mode": "normal"}},
@@ -816,12 +825,18 @@ class GatewayTests(unittest.TestCase):
                     return_value={"operation": {"status": "succeeded"}},
                 )
             )
-            _contexts.enter_context(mock.patch("mosaico_cli.commands.inspect_bundle_plan", return_value={"components": []}))
+            _contexts.enter_context(mock.patch("mosaico_cli.commands.inspect_bundle_plan", return_value={
+                "components": [{"kind": "application", "sha256": hashlib.sha256(b"application").hexdigest()}],
+            }))
             result = start_system_update(arguments, context)
 
         self.assertEqual(result["status"], "succeeded")
         self.assertEqual(result["source"], "local_build")
         self.assertEqual(result["bundle"], str(bundle))
+        request.assert_any_call(
+            context, session, "firmware-add", str(artifacts.image),
+            "--elf", str(artifacts.elf), "--map", str(artifacts.map_file), timeout=900,
+        )
         self.assertEqual(build.call_args.kwargs["target"], "system-update-bundle")
         self.assertEqual(
             build.call_args.kwargs["definitions"],
@@ -917,8 +932,10 @@ class GatewayTests(unittest.TestCase):
             (component / "tools").mkdir(parents=True)
             script = component / "tools" / "esp_iris.py"
             script.write_text("# test\n", encoding="utf-8")
+            _contexts.enter_context(mock.patch("mosaico_cli.gateway.state_root",
+                                               return_value=repository / "host-state"))
             python = virtual_environment_python(
-                repository / "submodule" / "esp-iris" / ".venv"
+                iris_environment_root(repository / "submodule" / "esp-iris")
             )
             python.parent.mkdir(parents=True)
             python.write_text("", encoding="utf-8")
@@ -1124,9 +1141,9 @@ class GatewayTests(unittest.TestCase):
         self.assertIn("--execution-mode", ota_argv)
         compatibility = json.loads(ota_argv[ota_argv.index("--compatibility-json") + 1])
         self.assertEqual(compatibility, {
-            "chip_target": "esp32s31", "product_contract": "esp-mosaico/v1",
-            "board_id": "esp-mosaico", "layout_id": "mosaico-retained-recovery-2m-v1",
-            "recovery_abi": 1,
+            "chip_target": "esp32s31", "product_contract": "esp-mosaico/v2",
+            "board_id": "esp-mosaico", "layout_id": "mosaico-retained-test-2m-v2",
+            "recovery_abi": 2,
         })
         self.assertNotIn("--validation-mode", ota_argv)
         self.assertEqual(poll.call_count, 2)
@@ -1183,8 +1200,8 @@ class GatewayTests(unittest.TestCase):
         self.assertIn("system-update", argv)
         self.assertIn("release.irisfw", argv)
         compatibility = json.loads(argv[argv.index("--compatibility-json") + 1])
-        self.assertEqual(compatibility["product_contract"], "esp-mosaico/v1")
-        self.assertEqual(compatibility["recovery_abi"], 1)
+        self.assertEqual(compatibility["product_contract"], "esp-mosaico/v2")
+        self.assertEqual(compatibility["recovery_abi"], 2)
         self.assertEqual(poll.call_count, 2)
         poll.assert_called_with(
             context, session, "operation-status", "system-operation-1"
@@ -1636,7 +1653,7 @@ class RecoveryBundleTests(unittest.TestCase):
 
     def test_primary_verification_record_is_host_global(self) -> None:
         path = _verification_path("device")
-        self.assertEqual(path, _host_verification_path("device"))
+        self.assertIn("0.2", path.parts)
         self.assertIn("esp-mosaico", str(path))
 
     def test_reviewed_bundle_hashes(self) -> None:
@@ -1644,7 +1661,7 @@ class RecoveryBundleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             directory = create_recovery_bundle(Path(temporary) / "recovery")
             value = load_bundle(directory, model.target)
-        self.assertEqual(value["schema_version"], 2)
+        self.assertEqual(value["schema_version"], 3)
         self.assertEqual(
             set(value["images"]),
             {"bootloader", "partition_table", "ota_data", "recovery"},
@@ -1793,6 +1810,7 @@ class RecoveryCommandTests(unittest.TestCase):
             arguments = SimpleNamespace(
                 project=str(project),
                 skip_build=True,
+                recovery_source="current",
                 gateway_profile=None,
                 device_id=None,
                 validation="elf-sha256",
@@ -1819,7 +1837,7 @@ class RecoveryCommandTests(unittest.TestCase):
                         return_value=artifacts,
                     )
                 )
-                _contexts.enter_context(
+                bundle_loader = _contexts.enter_context(
                     mock.patch(
                         "mosaico_cli.commands.load_bundle",
                         return_value={"version": "2.1.1-recovery"},
@@ -1853,6 +1871,10 @@ class RecoveryCommandTests(unittest.TestCase):
                 )
                 result = install(arguments, context)
             self.assertEqual(result["status"], "succeeded")
+            bundle_loader.assert_called_once_with(
+                context.workspace.recovery_project / "build-mosaico-recovery" / "recovery-current",
+                "esp32s31",
+            )
             record.assert_called_once_with("device", "2.1.1-recovery", 123)
             inventory.assert_not_called()
             ota.assert_called_once()
@@ -2141,6 +2163,20 @@ class RecoveryCommandTests(unittest.TestCase):
             self.assertEqual(
                 provisioning_candidate(context, select_model(WORKSPACE, None)), "/dev/rom"
             )
+
+    def test_single_fallback_endpoint_must_match_explicit_hardware_mac(self) -> None:
+        context = mock.Mock(workspace=WORKSPACE)
+        context.run.return_value = SimpleNamespace(returncode=0, stdout=json.dumps({
+            "devices": [{"path": "/dev/unrelated-h2", "transport": "usb_serial_jtag"}]
+        }))
+        reader = mock.Mock(return_value="60:55:f9:f7:2e:60")
+        with mock.patch("mosaico_cli.recovery.locate_iris_tools",
+                        return_value=(Path("python"), Path("esp_iris.py"))), \
+             mock.patch("mosaico_cli.recovery._registered_recovery_ports", return_value=[]):
+            with self.assertRaisesRegex(SelectionError, "hardware MAC"):
+                provisioning_candidate(context, select_model(WORKSPACE, None),
+                    hardware_mac="30:ed:a0:f4:51:8e", idf_path=Path("/idf"), mac_reader=reader)
+        reader.assert_called_once_with("/dev/unrelated-h2")
 
     def test_multiple_rom_devices_can_be_selected_by_hardware_mac(self) -> None:
         context = mock.Mock(workspace=WORKSPACE, repository=REPOSITORY)

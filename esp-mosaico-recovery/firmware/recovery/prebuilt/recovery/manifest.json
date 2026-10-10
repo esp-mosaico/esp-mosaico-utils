@@ -1,58 +1,67 @@
 {
+  "compatibility": {
+    "board_id": "esp-mosaico",
+    "chip_target": "esp32s31",
+    "layout_id": "mosaico-retained-test-2m-v2",
+    "product_contract": "esp-mosaico/v2",
+    "recovery_abi": 2
+  },
   "idf_version": "v6.2-dev-2221-g7b9cc1ac79f-dirt",
   "images": {
     "bootloader": {
       "file": "bootloader.bin",
       "offset": "0x2000",
-      "sha256": "7277fdf2382e967e370f1830138d75b8ad086f74ad2a2a1da44a045f9636c675",
-      "size": 24432
+      "sha256": "b70aee04433bd1afa648816de9795169029b276448b18facedd64fcc94f40b0c",
+      "size": 21984
     },
     "ota_data": {
       "file": "ota_data_initial.bin",
       "offset": "0x9000",
-      "sha256": "7d2c7ac4888bfd75cd5f56e8d61f69595121183afc81556c876732fd3782c62f",
+      "sha256": "5a5d79a1c029da23a3b9cc03c111c5b72f9cbfa386877b0a5d20dc93ab42c7e1",
       "size": 8192
     },
     "partition_table": {
       "file": "partition-table.bin",
       "offset": "0x8000",
-      "sha256": "7f638212e0abfc152ff45cce4a3d9ff3c1312f96465a972b5be3b7eb79c8367c",
+      "sha256": "ff7ac35a4f2e51424150a6ba56172174299baa737230a09792dd46e8f5d0bb99",
       "size": 3072
     },
     "recovery": {
       "file": "factory.bin",
       "offset": "0x20000",
-      "sha256": "ce66912c5b161c81f9e147dbfc1788e05ae2335195e778a2950dd4b7391aa545",
-      "size": 1817040
+      "sha256": "1f1573f4f928283d4fc7a9a038f133a00b28b0db4b10cc055c8caf3a549d2d8d",
+      "size": 1782864
     }
   },
   "initial_boot": {
     "expected_mode": "recovery",
     "ota_data_image": "ota_data_initial.bin",
-    "partition": "factory"
+    "partition": "vibe_mode"
   },
   "layout": {
     "application_partition": {
-      "name": "ota_0",
-      "offset": "0x210000"
+      "name": "main_app",
+      "offset": "0x210000",
+      "subtype": "ota_0"
     },
     "recovery_partition": {
-      "name": "factory",
+      "name": "vibe_mode",
       "offset": "0x20000",
-      "size": "0x1c0000"
+      "size": "0x1c0000",
+      "subtype": "test"
     }
   },
   "profile": "recovery",
   "project": "factory",
-  "schema_version": 2,
+  "schema_version": 3,
   "security": {
     "flash_encryption": false,
     "secure_boot": false
   },
   "source": {
-    "commit": "43cd13e28ea47f6bb2ae39f584a2d2ac980f45d2",
+    "commit": "fc63d43f3ac72aa54e701b07b07fbed07a16b3ca",
     "dirty": true
   },
   "target": "esp32s31",
-  "version": "0.1.4"
+  "version": "0.2.0"
 }

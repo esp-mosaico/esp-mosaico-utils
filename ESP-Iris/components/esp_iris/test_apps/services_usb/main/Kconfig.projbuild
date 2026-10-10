@@ -1,0 +1,14 @@
+menu "Iris services private network fixture"
+config ESP_IRIS_TEST_WIFI_SSID
+    string "Private test Wi-Fi SSID"
+    default ""
+config ESP_IRIS_TEST_WIFI_PASSWORD
+    string "Private test Wi-Fi password"
+    default ""
+config ESP_IRIS_TEST_PAIRING_TOKEN
+    string "Private initial 64-hex pairing token"
+    default ""
+config ESP_IRIS_TEST_NEXT_PAIRING_TOKEN
+    string "Private rotated 64-hex pairing token"
+    default ""
+endmenu

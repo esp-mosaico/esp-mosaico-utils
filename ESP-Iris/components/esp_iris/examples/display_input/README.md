@@ -1,6 +1,6 @@
 # Pull screenshot, screen mirror, and pointer input
 
-This USB CDC0 example implements the screen and pointer contracts without a
+This dual-CDC USB example implements the screen and pointer contracts without a
 display driver, BSP, GSP, or framebuffer allocation.
 
 The screen backend generates a deterministic 480 × 480 RGB565 pattern on
@@ -25,8 +25,9 @@ idf.py -C components/esp_iris/examples/display_input \
   -p /dev/serial/by-id/<programming-port> flash
 ```
 
-Application CDC0 is the ESP-Iris binary endpoint; use a separate programming
-interface.
+CDC0 carries text logs and Iris commands for stock `idf.py monitor`; CDC1
+carries binary data. Close Gateway before monitoring the same console. Flash
+through the board's ROM download interface.
 
 ## Expected result
 

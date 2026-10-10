@@ -140,7 +140,7 @@ def test_discovery_reconnect_and_transfer_with_third_contender(tmp_path, by_endp
         hubs, projects = [], []
         opened = []
 
-        async def open_link(host, port):
+        async def open_link(host, port, **kwargs):
             link = SupervisorLink(len(opened) + 1, endpoint=f"tcp:{host}:{port}")
             opened.append(link)
             return link
@@ -188,11 +188,11 @@ def test_discovery_reconnect_and_transfer_with_third_contender(tmp_path, by_endp
                         reg.set_url(str(client.make_url("")).rstrip("/"))
                     body = {"endpoint": E} if by_endpoint else {"device_id": D}
                     body["takeover_id"] = str(uuid.uuid4())
-                    response = await clients[0].post("/v1/project/takeovers", json=body)
+                    response = await clients[0].post("/v2/project/takeovers", json=body)
                     assert response.status == 200, await response.text()
                     result = await response.json()
                     assert result["takeover"]["state"] == "completed"
-                    response = await clients[0].post("/v1/project/takeovers", json=body)
+                    response = await clients[0].post("/v2/project/takeovers", json=body)
                     assert await response.json() == result
                     assert len(opened) == 4
                 finally:
@@ -219,7 +219,7 @@ def test_http_blocks_non_owner_and_transfer_when_busy(tmp_path):
         await client.start_server()
         try:
             store.remember_device({"device_id": D})
-            response = await client.get("/v1/devices/" + D)
+            response = await client.get("/v2/devices/" + D)
             assert response.status == 409
             reg.acquire(E, {})
             reg.bind(E, D)
@@ -239,19 +239,19 @@ def test_http_blocks_non_owner_and_transfer_when_busy(tmp_path):
                 return {"job_id": 7, "job_state": "succeeded"}
 
             with patch.object(hub, "job", side_effect=finished_job):
-                response = await client.get(f"/v1/devices/{D}/jobs/7")
+                response = await client.get(f"/v2/devices/{D}/jobs/7")
                 assert response.status == 200
             assert not service.project.busy(D)
-            response = await client.post("/v1/project/stop", json={})
+            response = await client.post("/v2/project/stop", json={})
             assert response.status == 404
             assert not service.project.closing
-            response = await client.post("/v1/project/acquire", json={
+            response = await client.post("/v2/project/acquire", json={
                 "endpoint": "tcp:127.0.0.1:29999", "pairing_token": "invalid",
             })
             assert response.status == 400
             assert reg.claim("tcp:127.0.0.1:29999") is None
             reg.acquire("tcp:127.0.0.1:29999", {})
-            response = await client.post("/v1/project/release", json={"endpoint": "tcp:127.0.0.1:29999"})
+            response = await client.post("/v2/project/release", json={"endpoint": "tcp:127.0.0.1:29999"})
             assert response.status == 200
             assert reg.claim("tcp:127.0.0.1:29999") is None
         finally:

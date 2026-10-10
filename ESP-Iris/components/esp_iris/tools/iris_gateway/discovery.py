@@ -22,6 +22,8 @@ class IrisUsbDevice:
     product: str = ""
     transport: str = "usb"
     location: str = ""
+    interface: str = ""
+    link_role: str = "control"
 
 
 def _stable_linux_path(device: str) -> str:
@@ -44,7 +46,8 @@ def _stable_linux_path(device: str) -> str:
 
 
 def discover_iris_usb_devices(
-    *, include_usb_serial_jtag: bool = False, include_rom: bool = False
+    *, include_usb_serial_jtag: bool = False, include_rom: bool = False,
+    include_uart: bool = False
 ) -> list[IrisUsbDevice]:
     from serial.tools import list_ports
 
@@ -57,10 +60,14 @@ def discover_iris_usb_devices(
             include_usb_serial_jtag
             and port.vid == 0x303A
             and port.pid == 0x1001
-            and "USB JTAG/serial debug unit" in (port.product or "")
         )
         is_rom = include_rom and port.vid == 0x303A and port.pid == 0x0020
-        if is_iris_cdc or is_usb_serial_jtag or is_rom:
+        # Passive enumeration for the connection picker must not widen automatic
+        # admission or open ordinary serial adapters. Only an explicit claim does.
+        is_uart = (include_uart and port.vid is not None and port.pid is not None
+                   and not (port.vid == 0x303A and port.pid in (0x1001, 0x0020))
+                   and not is_iris_cdc)
+        if is_iris_cdc or is_usb_serial_jtag or is_rom or is_uart:
             devices.append(
                 IrisUsbDevice(
                     path=_stable_linux_path(port.device),
@@ -70,9 +77,11 @@ def discover_iris_usb_devices(
                     serial_number=port.serial_number or "",
                     product=port.product or "",
                     transport=(
-                        "usb_serial_jtag" if is_usb_serial_jtag else "usb"
+                        "usb_serial_jtag" if is_usb_serial_jtag else "uart" if is_uart else "usb"
                     ),
                     location=getattr(port, "location", None) or "",
+                    interface=getattr(port, "interface", None) or "",
+                    link_role="data" if getattr(port, "interface", None) == "ESP-Iris 0.2 data" else "control",
                 )
             )
     return sorted(devices, key=lambda item: item.path)
@@ -123,6 +132,8 @@ def resolve_usb_port(identifier: str) -> dict[str, Any]:
             "serial_number": port.serial_number or "",
             "product": port.product or "",
             "location": getattr(port, "location", None) or "",
+            "interface": getattr(port, "interface", None) or "",
+            "link_role": "data" if getattr(port, "interface", None) == "ESP-Iris 0.2 data" else "control",
         }
         if identifier == usb_endpoint(metadata) or (
             serial_port_key(identifier) == serial_port_key(port.device)

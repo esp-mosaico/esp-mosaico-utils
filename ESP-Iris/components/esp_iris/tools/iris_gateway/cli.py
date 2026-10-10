@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import contextlib
 import getpass
 import ipaddress
@@ -60,7 +61,7 @@ def _default_state_dir(instance_id: str) -> pathlib.Path:
         root = pathlib.Path.home() / "Library" / "Application Support"
     else:
         root = pathlib.Path(os.environ.get("XDG_STATE_HOME", pathlib.Path.home() / ".local/state"))
-    return root / "esp-iris" / instance_id
+    return root / "esp-iris" / "0.2" / instance_id
 
 
 def _config_dir() -> pathlib.Path:
@@ -70,7 +71,7 @@ def _config_dir() -> pathlib.Path:
         root = pathlib.Path.home() / "Library" / "Application Support"
     else:
         root = pathlib.Path(os.environ.get("XDG_CONFIG_HOME", pathlib.Path.home() / ".config"))
-    return root / "esp-iris"
+    return root / "esp-iris" / "0.2"
 
 
 def _read_secret_file(path: str | None) -> str | None:
@@ -194,7 +195,9 @@ async def _web_owned(args: argparse.Namespace, state_dir: pathlib.Path) -> None:
                 await hub.add_usb(port)
             for port in args.usb_serial_jtag:
                 await hub.add_usb(port, usb_serial_jtag=True)
-            explicit_endpoints = bool(args.usb or args.usb_serial_jtag or args.tcp)
+            for port in args.uart:
+                await hub.add_usb(port, uart=True, baudrate=args.uart_baudrate)
+            explicit_endpoints = bool(args.usb or args.usb_serial_jtag or args.uart or args.tcp)
             discover_usb = args.discover_usb if args.discover_usb is not None else not explicit_endpoints
             discover_mdns = args.discover_mdns if args.discover_mdns is not None else not explicit_endpoints
             if discover_usb:
@@ -434,7 +437,7 @@ async def _upload_firmware_artifact(
             filename=path.name,
             content_type="application/octet-stream",
         )
-    async with session.post(base + "/v1/firmware-artifacts", data=form, ssl=ssl_value) as response:
+    async with session.post(base + "/v2/firmware-artifacts", data=form, ssl=ssl_value) as response:
         body = await _response_json(response)
     return dict(body["artifact"])
 
@@ -449,7 +452,7 @@ async def _operation_watch(
 ) -> dict[str, Any]:
     terminal = {"succeeded", "failed", "cancelled", "interrupted", "outcome_unknown"}
     while True:
-        async with session.get(base + f"/v1/operations/{operation_id}", ssl=ssl_value) as response:
+        async with session.get(base + f"/v2/operations/{operation_id}", ssl=ssl_value) as response:
             body = await _response_json(response)
         operation = body.get("operation", body)
         if operation.get("status") in terminal:
@@ -466,7 +469,7 @@ async def _ctl(args: argparse.Namespace) -> int:
         async with ClientSession(headers=headers) as session:
             if args.ctl_command == "login":
                 password = os.environ.get("ESP_IRIS_DEVELOPER_PASSWORD") or getpass.getpass("Developer password: ")
-                async with session.post(base + "/v1/auth/login", json={"password": password}, ssl=ssl_value) as response:
+                async with session.post(base + "/v2/auth/login", json={"password": password}, ssl=ssl_value) as response:
                     result = await _response_json(response)
                     cookie = response.cookies.get("esp_iris_session")
                     if cookie is None:
@@ -490,24 +493,24 @@ async def _ctl(args: argparse.Namespace) -> int:
 
             command = args.ctl_command
             if command == "health":
-                async with session.get(base + "/v1/health", ssl=ssl_value) as response:
+                async with session.get(base + "/v2/health", ssl=ssl_value) as response:
                     _output(await _response_json(response), args.json)
             elif command == "devices":
-                async with session.get(base + "/v1/devices", ssl=ssl_value) as response:
+                async with session.get(base + "/v2/devices", ssl=ssl_value) as response:
                     _output(await _response_json(response), args.json)
             elif command == "status":
-                async with session.get(base + f"/v1/devices/{args.device}", ssl=ssl_value) as response:
+                async with session.get(base + f"/v2/devices/{args.device}", ssl=ssl_value) as response:
                     _output(await _response_json(response), args.json)
             elif command == "memory":
-                async with session.get(base + f"/v1/devices/{args.device}/memory", ssl=ssl_value) as response:
+                async with session.get(base + f"/v2/devices/{args.device}/memory", ssl=ssl_value) as response:
                     _output(await _response_json(response), args.json)
             elif command == "system-inventory":
-                url = base + f"/v1/devices/{args.device}/system-inventory"
+                url = base + f"/v2/devices/{args.device}/system-inventory"
                 async with session.get(url, ssl=ssl_value) as response:
                     _output(await _response_json(response), args.json)
             elif command == "operation-reconcile":
                 async with session.post(
-                    base + f"/v1/operations/{args.operation_id}/reconcile", ssl=ssl_value
+                    base + f"/v2/operations/{args.operation_id}/reconcile", ssl=ssl_value
                 ) as response:
                     _output(await _response_json(response), args.json)
             elif command in ("operation-status", "operation-watch"):
@@ -522,29 +525,29 @@ async def _ctl(args: argparse.Namespace) -> int:
                     _output({"operation": result}, args.json)
                 else:
                     async with session.get(
-                        base + f"/v1/operations/{args.operation_id}", ssl=ssl_value
+                        base + f"/v2/operations/{args.operation_id}", ssl=ssl_value
                     ) as response:
                         _output(await _response_json(response), args.json)
             elif command == "host-operation":
                 from .host_worker import publish_request
                 spec = json.loads(pathlib.Path(args.request_file).read_text(encoding="utf-8"))
                 request_id = publish_request(spec)
-                url = base + "/v1/host-operations"
+                url = base + "/v2/host-operations"
                 try:
                     async with session.post(url, json={"request_id": request_id}, ssl=ssl_value) as response:
                         _output(await _response_json(response), args.json)
                 except Exception as exc:
                     raise RuntimeError(f"host operation {request_id}: {exc}; inspect this operation ID before retrying") from exc
             elif command == "crash":
-                url = base + f"/v1/devices/{args.device}/crashes"
+                url = base + f"/v2/devices/{args.device}/crashes"
                 async with session.get(url, ssl=ssl_value) as response:
                     _output(await _response_json(response), args.json)
             elif command == "crash-archive":
-                url = base + f"/v1/devices/{args.device}/crashes/archive"
+                url = base + f"/v2/devices/{args.device}/crashes/archive"
                 async with session.post(url, ssl=ssl_value) as response:
                     _output(await _response_json(response), args.json)
             elif command == "coredump":
-                url = base + f"/v1/devices/{args.device}/crashes/core-dump"
+                url = base + f"/v2/devices/{args.device}/crashes/core-dump"
                 async with session.get(url, ssl=ssl_value) as response:
                     if response.status >= 400:
                         await _response_json(response)
@@ -569,7 +572,7 @@ async def _ctl(args: argparse.Namespace) -> int:
                 gesture = json.loads(args.gesture)
                 if not isinstance(gesture, dict):
                     raise ValueError("gesture must be a JSON object")
-                url = base + f"/v1/devices/{args.device}/input"
+                url = base + f"/v2/devices/{args.device}/input"
                 async with session.post(
                     url,
                     json=gesture,
@@ -579,18 +582,18 @@ async def _ctl(args: argparse.Namespace) -> int:
                     _output(await _response_json(response), args.json)
             elif command == "mode":
                 if args.value:
-                    async with session.put(base + "/v1/mode", json={"mode": args.value}, ssl=ssl_value) as response:
+                    async with session.put(base + "/v2/mode", json={"mode": args.value}, ssl=ssl_value) as response:
                         _output(await _response_json(response), args.json)
                 else:
-                    async with session.get(base + "/v1/mode", ssl=ssl_value) as response:
+                    async with session.get(base + "/v2/mode", ssl=ssl_value) as response:
                         _output(await _response_json(response), args.json)
             elif command in ("rpc", "rpc-raw"):
                 if command == "rpc":
                     payload = json.loads(args.params)
-                    url = base + f"/v1/devices/{args.device}/rpc/{args.method}"
+                    url = base + f"/v2/devices/{args.device}/rpc/{args.method}"
                     body = {"params": payload, "deadline_ms": args.deadline_ms}
                 else:
-                    url = base + f"/v1/devices/{args.device}/rpc/raw"
+                    url = base + f"/v2/devices/{args.device}/rpc/raw"
                     body = {
                         "service_id": int(args.service_id, 0),
                         "method_id": int(args.method_id, 0),
@@ -602,12 +605,17 @@ async def _ctl(args: argparse.Namespace) -> int:
                         body["payload_text"] = args.payload
                 async with session.post(url, json=body, headers={"X-Operation-ID": str(uuid.uuid4())}, ssl=ssl_value) as response:
                     _output(await _response_json(response), args.json)
+            elif command == "hardware-reset":
+                async with session.post(base + "/v2/consoles/reset",
+                    json={"endpoint": args.endpoint, "mode": args.mode},
+                    headers={"X-Operation-ID": str(uuid.uuid4())}, ssl=ssl_value) as response:
+                    _output(await _response_json(response), args.json)
             elif command == "restart":
-                url = base + f"/v1/devices/{args.device}/restart"
+                url = base + f"/v2/devices/{args.device}/restart"
                 async with session.post(url, json={"delay_ms": args.delay_ms}, headers={"X-Operation-ID": str(uuid.uuid4())}, ssl=ssl_value) as response:
                     _output(await _response_json(response), args.json)
             elif command == "console":
-                url = base + f"/v1/devices/{args.device}/console"
+                url = base + f"/v2/devices/{args.device}/console"
                 async with session.post(
                     url,
                     json={"line": " ".join(args.line)},
@@ -616,7 +624,7 @@ async def _ctl(args: argparse.Namespace) -> int:
                 ) as response:
                     _output(await _response_json(response), args.json)
             elif command == "factory":
-                url = base + f"/v1/devices/{args.device}/factory-recovery"
+                url = base + f"/v2/devices/{args.device}/factory-recovery"
                 async with session.post(
                     url,
                     json={"wait": args.wait, "timeout": args.wait_timeout},
@@ -625,7 +633,7 @@ async def _ctl(args: argparse.Namespace) -> int:
                 ) as response:
                     _output(await _response_json(response), args.json)
             elif command in ("jobs", "cancel"):
-                url = base + f"/v1/devices/{args.device}/jobs/{args.job_id}"
+                url = base + f"/v2/devices/{args.device}/jobs/{args.job_id}"
                 method = session.delete if command == "cancel" else session.get
                 async with method(url, headers={"X-Operation-ID": str(uuid.uuid4())}, ssl=ssl_value) as response:
                     _output(await _response_json(response), args.json)
@@ -637,7 +645,7 @@ async def _ctl(args: argparse.Namespace) -> int:
                 if command == "firmware-add":
                     _output({"artifact": artifact}, args.json)
                 else:
-                    url = base + f"/v1/devices/{args.device}/ota"
+                    url = base + f"/v2/devices/{args.device}/ota"
                     operation_id = str(uuid.uuid4())
                     async with session.post(
                         url,
@@ -669,7 +677,7 @@ async def _ctl(args: argparse.Namespace) -> int:
                 if not bundle_path.is_file():
                     raise ValueError(f"system-update bundle does not exist: {bundle_path}")
                 operation_id = str(uuid.uuid4())
-                url = base + f"/v1/devices/{args.device}/system-update"
+                url = base + f"/v2/devices/{args.device}/system-update"
                 async with session.post(
                     url,
                     data=bundle_path.read_bytes(),
@@ -694,12 +702,13 @@ async def _ctl(args: argparse.Namespace) -> int:
                 if args.wait and operation["status"] != "succeeded":
                     return 1
             elif command == "screenshot":
-                url = base + f"/v1/devices/{args.device}/screenshot?save=true"
+                url = base + f"/v2/devices/{args.device}/screenshot?save=true"
                 body = {
                     key: value
                     for key, value in {
                         "width": args.width,
                         "height": args.height,
+                        "path": args.path,
                     }.items()
                     if value is not None
                 }
@@ -729,7 +738,7 @@ async def _ctl(args: argparse.Namespace) -> int:
                         args.json,
                     )
             elif command == "mirror":
-                url = base + f"/v1/devices/{args.device}/mirror/{args.action}"
+                url = base + f"/v2/devices/{args.device}/mirror/{args.action}"
                 mirror_body: dict[str, Any] = {"channel": args.channel}
                 if args.action == "start":
                     mirror_body["fps"] = args.fps
@@ -750,24 +759,36 @@ async def _ctl(args: argparse.Namespace) -> int:
 
 
 async def _logs(session: ClientSession, base: str, ssl_value: Any, args: argparse.Namespace) -> None:
-    query = {"categories": "log"}
+    query = {"categories": "console" if args.raw else "log"}
+    if args.endpoint:
+        query["endpoint"] = args.endpoint
+    if args.capture_id:
+        query["capture_id"] = args.capture_id
     if args.device:
         query["device_id"] = args.device
-    async with session.get(base + "/v1/events?" + urlencode(query), ssl=ssl_value) as response:
+    async with session.get(base + "/v2/events?" + urlencode(query), ssl=ssl_value) as response:
         history = await _response_json(response)
+    def output_record(item):
+        if args.raw and not args.json and item.get("kind") == "console_raw":
+            sys.stdout.buffer.write(base64.b64decode(item["data_base64"], validate=True))
+            sys.stdout.buffer.flush()
+        elif not args.raw or args.json:
+            _output(item if args.json else item.get("text", item), args.json)
+        elif item.get("kind") == "console_gap":
+            print(item.get("reason", "console log gap"), file=sys.stderr)
     for item in history["events"]:
-        _output(item if args.json else item.get("text", item), args.json)
+        output_record(item)
     if not args.follow:
         return
     parts = urlparse(base)
     ws_base = urlunparse(("wss" if parts.scheme == "https" else "ws", parts.netloc, "", "", "", ""))
     query.update(cursor=str(history["next_cursor"]))
-    async with session.ws_connect(ws_base + "/v1/events/ws?" + urlencode(query), ssl=ssl_value, heartbeat=20) as websocket:
+    async with session.ws_connect(ws_base + "/v2/events/ws?" + urlencode(query), ssl=ssl_value, heartbeat=20) as websocket:
         async for message in websocket:
             if message.type == WSMsgType.TEXT:
                 item = json.loads(message.data)
-                if item.get("category") == "log":
-                    _output(item if args.json else item.get("text", item), args.json)
+                if item.get("category") == query["categories"] or item.get("kind") == "history_gap":
+                    output_record(item)
 
 
 def _doctor(args: argparse.Namespace) -> int:
@@ -851,6 +872,10 @@ def build_parser() -> argparse.ArgumentParser:
     web_parser.add_argument("--tcp", action="append", default=[], metavar="HOST[:PORT]")
     web_parser.add_argument("--pairing-token", default=os.environ.get("ESP_IRIS_PAIRING_TOKEN"))
     web_parser.add_argument("--usb", action="append", default=[], metavar="PORT")
+    web_parser.add_argument("--uart", action="append", default=[], metavar="PORT",
+                            help="attach a UART console without resetting it")
+    web_parser.add_argument("--uart-baudrate", type=int, default=115200,
+                            help="UART rate matching the firmware console (default: 115200)")
     web_parser.add_argument(
         "--usb-serial-jtag", action="append", default=[], metavar="PORT"
     )
@@ -932,6 +957,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     logs = commands.add_parser("logs")
     logs.add_argument("--device")
+    logs.add_argument("--endpoint", help="Capture by physical console, including before Iris HELLO")
+    logs.add_argument("--capture-id")
+    logs.add_argument("--raw", action="store_true", help="Output original bytes, or capture metadata with --json")
     logs.add_argument("--follow", action="store_true")
     rpc = commands.add_parser("rpc")
     rpc.add_argument("device")
@@ -1001,11 +1029,15 @@ def build_parser() -> argparse.ArgumentParser:
     screenshot.add_argument("output")
     screenshot.add_argument("--width", type=int)
     screenshot.add_argument("--height", type=int)
+    screenshot.add_argument("--path", choices=("auto", "control", "data"), default="auto")
     mirror = commands.add_parser("mirror")
     mirror.add_argument("device")
     mirror.add_argument("action", choices=("start", "stop"))
     mirror.add_argument("--channel", choices=("screen", "image", "audio"), default="screen")
     mirror.add_argument("--fps", type=int, default=5)
+    reset = commands.add_parser("hardware-reset")
+    reset.add_argument("endpoint")
+    reset.add_argument("--mode", choices=("run", "rom", "attach"), default="run")
     restart = commands.add_parser("restart")
     restart.add_argument("device")
     restart.add_argument("--delay-ms", type=int, default=250)

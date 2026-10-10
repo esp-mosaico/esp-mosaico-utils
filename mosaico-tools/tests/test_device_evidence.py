@@ -48,12 +48,12 @@ def gateway(tmp_path, monkeypatch):
 
         def do_GET(self):
             state.requests.append(("GET", self.path))
-            if self.path == "/v1/devices":
+            if self.path == "/v2/devices":
                 self.reply({"devices": [{"device_id": DEVICE_ID, "connected": True}]})
-            elif self.path == f"/v1/devices/{DEVICE_ID}":
+            elif self.path == f"/v2/devices/{DEVICE_ID}":
                 status = state.statuses.pop(0) if len(state.statuses) > 1 else state.statuses[0]
                 self.reply({"device": status})
-            elif self.path == f"/v1/operations/{OPERATION_ID}":
+            elif self.path == f"/v2/operations/{OPERATION_ID}":
                 self.reply({"operation": state.operation})
             else:
                 self.reply({"error": "unexpected route"}, 404)
@@ -61,7 +61,11 @@ def gateway(tmp_path, monkeypatch):
         def do_POST(self):
             state.requests.append(("POST", self.path))
             self.rfile.read(int(self.headers.get("Content-Length", 0)))
-            if self.path != f"/v1/devices/{DEVICE_ID}/screenshot?save=true":
+            if self.path == f"/v2/devices/{DEVICE_ID}/restart":
+                return self.reply({"operation": {
+                    "device_id": DEVICE_ID, "operation_id": OPERATION_ID, "status": "succeeded",
+                }, "restart": {"previous_boot_id": 42, "boot_id": 43, "reconnected": True}})
+            if self.path != f"/v2/devices/{DEVICE_ID}/screenshot?save=true":
                 return self.reply({"error": "unexpected route"}, 404)
             if state.capture_error:
                 return self.reply({"error": "capture unavailable"}, 503)
@@ -109,9 +113,9 @@ def test_screenshot_saves_device_bytes_and_correlated_evidence(gateway, tmp_path
     assert result["capture"]["operation_id"] == OPERATION_ID
     assert result["capture"]["saved_artifact"] == "screenshot-artifact"
     assert gateway.requests == [
-        ("GET", "/v1/devices"), ("GET", f"/v1/devices/{DEVICE_ID}"),
-        ("POST", f"/v1/devices/{DEVICE_ID}/screenshot?save=true"),
-        ("GET", f"/v1/devices/{DEVICE_ID}"),
+        ("GET", "/v2/devices"), ("GET", f"/v2/devices/{DEVICE_ID}"),
+        ("POST", f"/v2/devices/{DEVICE_ID}/screenshot?save=true"),
+        ("GET", f"/v2/devices/{DEVICE_ID}"),
     ]
     assert gateway.ensure.call_args.kwargs == {"select": True}
 
@@ -148,7 +152,7 @@ def test_capture_failure_does_not_fall_back_or_retry(gateway, tmp_path, capsys):
 def test_explicit_missing_device_never_captures_another(gateway, tmp_path, capsys):
     assert main(["iris", "screenshot", str(tmp_path / "device.png"), "--device-id", "other", "--json"]) == 4
     assert json.loads(capsys.readouterr().err)["ok"] is False
-    assert gateway.requests == [("GET", "/v1/devices")]
+    assert gateway.requests == [("GET", "/v2/devices")]
 
 
 @pytest.mark.parametrize("json_output", [False, True])
@@ -167,5 +171,27 @@ def test_operation_query_preserves_outcome_without_device_access(gateway, capsys
     result = json.loads(capsys.readouterr().out)
     assert result["ok"] is True
     assert result["operation"]["status"] == status
-    assert gateway.requests == [("GET", f"/v1/operations/{OPERATION_ID}")]
+    assert gateway.requests == [("GET", f"/v2/operations/{OPERATION_ID}")]
     assert gateway.ensure.call_args.kwargs == {"select": False}
+
+
+def test_restart_verifies_same_device_and_new_boot(gateway, capsys):
+    gateway.statuses.append({**gateway.statuses[0], "boot_id": 43})
+    assert main(["iris", "restart", "--json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["previous_boot_id"] == 42 and result["boot_id"] == 43
+    assert result["operation"]["operation_id"] == OPERATION_ID
+    assert sum(method == "POST" for method, _ in gateway.requests) == 1
+
+
+def test_restart_rejects_unchanged_boot_without_retry(gateway, capsys):
+    assert main(["iris", "restart", "--json"]) == 4
+    assert json.loads(capsys.readouterr().err)["ok"] is False
+    assert sum(method == "POST" for method, _ in gateway.requests) == 1
+
+
+def test_restart_rejects_stale_identity_before_write(gateway, capsys):
+    gateway.statuses[0]["stale"] = True
+    assert main(["iris", "restart", "--json"]) == 4
+    assert json.loads(capsys.readouterr().err)["ok"] is False
+    assert all(method == "GET" for method, _ in gateway.requests)

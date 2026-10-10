@@ -10,7 +10,7 @@ function displayName(device: Device) {
 
 function fileUrl(deviceId: string, volume: string, path: string) {
   const query = new URLSearchParams({ volume, path });
-  return `/v1/devices/${encodeURIComponent(deviceId)}/file?${query}`;
+  return `/v2/devices/${encodeURIComponent(deviceId)}/file?${query}`;
 }
 
 export default function Files({ device, mode }: { device?: Device; mode: "develop" | "observe" }) {
@@ -39,7 +39,7 @@ export default function Files({ device, mode }: { device?: Device; mode: "develo
         cursor: String(targetCursor),
         limit: String(PAGE_SIZE),
       });
-      const result = await api<FileList>(`/v1/devices/${encodeURIComponent(device.device_id)}/files?${query}`);
+      const result = await api<FileList>(`/v2/devices/${encodeURIComponent(device.device_id)}/files?${query}`);
       if (revision !== requestRevision.current) return;
       setVolume(targetVolume);
       setPath(targetPath);
@@ -64,7 +64,7 @@ export default function Files({ device, mode }: { device?: Device; mode: "develo
     setNotice("");
     if (!device || !device.connected || mode !== "develop" || !device.capability_names?.includes("files")) return () => { current = false; };
     setLoading(true);
-    void api<{ volumes: FileVolume[] }>(`/v1/devices/${encodeURIComponent(device.device_id)}/files/volumes`)
+    void api<{ volumes: FileVolume[] }>(`/v2/devices/${encodeURIComponent(device.device_id)}/files/volumes`)
       .then(async (result) => {
         if (!current || revision !== requestRevision.current) return;
         setVolumes(result.volumes);
@@ -117,7 +117,7 @@ export default function Files({ device, mode }: { device?: Device; mode: "develo
       return;
     }
     await mutate(
-      () => api(`/v1/devices/${encodeURIComponent(device.device_id)}/directories`, {
+      () => api(`/v2/devices/${encodeURIComponent(device.device_id)}/directories`, {
         method: "POST",
         ...jsonBody({ volume, path: target }),
       }),
@@ -148,7 +148,7 @@ export default function Files({ device, mode }: { device?: Device; mode: "develo
     const query = new URLSearchParams({ volume, path: childPath(name) });
     if (overwrite) query.set("overwrite", "true");
     await mutate(
-      () => api(`/v1/devices/${encodeURIComponent(device.device_id)}/file?${query}`, {
+      () => api(`/v2/devices/${encodeURIComponent(device.device_id)}/file?${query}`, {
         method: "PUT",
         body: file,
         headers: overwrite ? { "If-Match": `W/"${existing.etag}"` } : undefined,
@@ -171,7 +171,7 @@ export default function Files({ device, mode }: { device?: Device; mode: "develo
     const source = childPath(entry.name);
     if (source === destination) return;
     await mutate(
-      () => api(`/v1/devices/${encodeURIComponent(device.device_id)}/file-rename`, {
+      () => api(`/v2/devices/${encodeURIComponent(device.device_id)}/file-rename`, {
         method: "POST",
         ...jsonBody({ volume, source, destination }),
       }),
@@ -186,7 +186,7 @@ export default function Files({ device, mode }: { device?: Device; mode: "develo
     if (!window.confirm(`删除 ${target}？${detail}`)) return;
     const query = new URLSearchParams({ volume, path: target });
     await mutate(
-      () => api(`/v1/devices/${encodeURIComponent(device.device_id)}/file?${query}`, { method: "DELETE" }),
+      () => api(`/v2/devices/${encodeURIComponent(device.device_id)}/file?${query}`, { method: "DELETE" }),
       `已删除 ${target}`,
     );
   }
@@ -194,6 +194,7 @@ export default function Files({ device, mode }: { device?: Device; mode: "develo
   if (!device) return <main className="workspace-empty"><strong>未选择设备</strong><span>从左侧选择一台设备以浏览文件</span></main>;
   if (mode === "observe") return <main className="workspace-empty"><strong>观察模式不访问设备文件</strong><span>切换到开发模式后可访问产品显式导出的逻辑卷</span></main>;
   if (!device.connected) return <main className="workspace-empty"><strong>设备当前离线</strong><span>文件目录不会使用缓存结果</span></main>;
+  if (!device.data_available && !device.demo) return <main className="workspace-empty"><strong>数据链路未连接</strong><span>文件传输需要 High-Speed USB 或 TCP 数据链路；控制链路仍可用于日志、RPC 和截图。</span></main>;
   if (!device.capability_names?.includes("files")) return <main className="workspace-empty"><strong>设备未提供文件服务</strong><span>产品需要在启动 ESP-Iris 前注册逻辑卷</span></main>;
 
   const parts = path ? path.split("/") : [];

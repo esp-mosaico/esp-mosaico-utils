@@ -6,6 +6,7 @@
 #include <stdbool.h>
 #include <inttypes.h>
 #include <sys/reent.h>
+#include <string.h>
 
 #include "sdkconfig.h"
 #include "esp_log.h"
@@ -15,15 +16,53 @@
 #include "bootloader_init.h"
 #include "bootloader_utility.h"
 #include "bootloader_common.h"
+#include "bootloader_flash_priv.h"
 #include "hal/gpio_ll.h"
+#include "hal/usb_utmi_ll.h"
 #include "mosaico_boot_splash.h"
 #include "soc/gpio_struct.h"
 #include "soc/soc_caps.h"
+#include "mosaico_boot_nvs.h"
+#include "nvs.h"
+#include "mosaico_recovery_contract.h"
 
 ESP_LOG_ATTR_TAG(TAG, "boot");
 
 static int select_partition_number(bootloader_state_t *bs);
 static int selected_boot_partition(const bootloader_state_t *bs);
+
+static void stop_inherited_usb_dma(void)
+{
+    /* Panic/watchdog resets bypass application shutdown handlers. S31's SDK
+     * leaves USB DMA running across CPU resets: stop it before loading any
+     * application RAM segments that can overlap the previous USB buffers. */
+    if (_usb_utmi_ll_bus_clock_is_enabled()) {
+        usb_utmi_ll_reset_register();
+        usb_utmi_ll_enable_bus_clock(false);
+    }
+}
+
+static bool bootstrap_recovery_requested(const bootloader_state_t *bs)
+{
+    if (bs->ota_info.size != MOSAICO_OTADATA_BYTES) return false;
+    char marker[MOSAICO_BOOTSTRAP_BYTES];
+    return bootloader_flash_read(bs->ota_info.offset + MOSAICO_BOOTSTRAP_OFFSET,
+        marker, sizeof(marker), true) == ESP_OK &&
+        memcmp(marker, MOSAICO_BOOTSTRAP_MARKER, sizeof(marker)) == 0;
+}
+
+static bool software_recovery_requested(void)
+{
+    uint32_t intent = MOSAICO_BOOT_INTENT_NONE;
+    esp_err_t err = mosaico_boot_read_intent(&intent);
+    if (err == ESP_ERR_NVS_NOT_FOUND) return false;
+    if (err != ESP_OK || (intent != MOSAICO_BOOT_INTENT_NONE &&
+                          intent != MOSAICO_BOOT_INTENT_RECOVERY)) {
+        ESP_LOGW(TAG, "Boot intent unavailable (%d); selecting Vibe Mode", err);
+        return true;
+    }
+    return intent == MOSAICO_BOOT_INTENT_RECOVERY;
+}
 
 /* The AI button selects Vibe Mode after ROM boots this loader from Flash.
  * The separate Boot button selects ROM Download Mode before this code runs. */
@@ -63,6 +102,7 @@ static bool factory_recovery_requested(void)
  */
 void __attribute__((noreturn)) call_start_cpu0(void)
 {
+    stop_inherited_usb_dma();
     if (bootloader_init() != ESP_OK) {
         bootloader_reset();
     }
@@ -96,17 +136,21 @@ static int select_partition_number(bootloader_state_t *bs)
         return INVALID_INDEX;
     }
 
-    if (factory_recovery_requested()) {
-        if (bs->factory.offset != 0 && bs->factory.size != 0) {
+    if (factory_recovery_requested() || bootstrap_recovery_requested(bs) ||
+        software_recovery_requested()) {
+        if (bs->test.offset == MOSAICO_RECOVERY_ADDRESS &&
+            bs->test.size == MOSAICO_RECOVERY_BYTES) {
             ESP_LOGW(TAG,
-                     "GPIO%d held low; booting factory recovery without changing OTA data",
+                     "Maintenance requested; booting Vibe Mode (GPIO%d), preserving OTA data",
                      CONFIG_FACTORY_RECOVERY_BOOT_GPIO);
-            return FACTORY_INDEX;
+            return TEST_APP_INDEX;
         }
-        ESP_LOGE(TAG, "Factory recovery requested, but no factory partition exists");
+        ESP_LOGE(TAG, "Vibe Mode test partition is missing or has the wrong layout");
     }
 
     const int boot_index = selected_boot_partition(bs);
+    if (boot_index == INVALID_INDEX && bs->test.offset == MOSAICO_RECOVERY_ADDRESS &&
+        bs->test.size == MOSAICO_RECOVERY_BYTES) return TEST_APP_INDEX;
     ESP_LOGI(TAG, "Selected boot partition index=%d", boot_index);
     return boot_index;
 }

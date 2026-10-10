@@ -30,7 +30,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: python tools/check_repository_layout.py
-      - run: python esp-mosaico-recovery/mosaico.py --version
+      - run: python mosaico-tools/mosaico.py --version
 
   host:
     name: Host / ${{ matrix.os }} / Python ${{ matrix.python }}
@@ -127,7 +127,7 @@ jobs:
       - run: >-
           python -m compileall -q
           mosaico-tools/tools
-          esp-mosaico-recovery/tools
+          esp-mosaico-recovery/firmware/recovery/tools
           ESP-Iris/components/esp_iris/tools/iris_gateway
 
   sanitizers:

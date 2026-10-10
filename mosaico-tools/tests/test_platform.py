@@ -303,7 +303,7 @@ class PlatformTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"MAKER_SPARK_TOKEN": "environment"}):
             self.assertEqual(credential("https://ideas.test"), "environment")
 
-    def test_private_state_moves_credentials_and_upload_ledger_once(self):
+    def test_private_state_never_imports_old_credentials_or_upload_ledgers(self):
         server = "https://ideas.test"
         state = self.root / "private"
         legacy = state / "maker-spark" / hashlib.sha256(server.encode()).hexdigest()
@@ -311,16 +311,19 @@ class PlatformTests(unittest.TestCase):
         write_state(legacy / "credential.json", {"access_token": "existing"})
         write_state(legacy / "upload-retry.json", {"key": "original-idempotency-key"})
         with mock.patch("mosaico_cli.platform_client.state_root", return_value=state):
-            self.assertEqual(credential(server), "existing")
+            with self.assertRaises(SelectionError):
+                credential(server)
             current = private_root(server)
             self.assertEqual(current.parent.name, "mosaico-ideas")
-            self.assertFalse(legacy.exists())
-            self.assertEqual(json.loads((current / "upload-retry.json").read_text()),
+            self.assertEqual(current.parent.parent.name, "0.2")
+            self.assertTrue(legacy.exists())
+            self.assertFalse((current / "credential.json").exists())
+            self.assertFalse((current / "upload-retry.json").exists())
+            self.assertEqual(json.loads((legacy / "upload-retry.json").read_text()),
                              {"key": "original-idempotency-key"})
             self.assertEqual(private_root(server), current)
             if os.name != "nt":
                 self.assertEqual(current.stat().st_mode & 0o777, 0o700)
-                self.assertEqual((current / "credential.json").stat().st_mode & 0o777, 0o600)
 
     def test_existing_private_state_is_not_overwritten_by_legacy_state(self):
         server = "https://ideas.test"

@@ -8,7 +8,7 @@ from unittest import mock
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "mosaico-tools/tools"))
 from mosaico_cli.cli import build_parser
 from mosaico_cli.commands import read_bridge_code
 from mosaico_cli.errors import DeviceError, OperationError
@@ -112,6 +112,6 @@ def test_non_string_code_is_rejected(code):
 
 
 def test_removed_cli_entries_are_rejected():
-    for arguments in [["http-update-code"], ["system-update", "--manifest-url", "https://example.com/m.json"]]:
+    for arguments in [["http-update-code"], ["iris", "system-update", "--manifest-url", "https://example.com/m.json"]]:
         with pytest.raises(SystemExit):
             build_parser().parse_args(arguments)

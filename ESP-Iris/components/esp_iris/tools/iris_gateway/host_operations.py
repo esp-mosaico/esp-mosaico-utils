@@ -198,9 +198,9 @@ def register_routes(app: web.Application, service: Any) -> None:
             raise ValueError("host operations accept only a private request_id")
         operation = await service.host_operations.submit(str(body["request_id"]), request_actor(request))
         return web.json_response({"operation": operation,
-                                  "status_url": "/v1/operations/" + operation["operation_id"]}, status=202)
+                                  "status_url": "/v2/operations/" + operation["operation_id"]}, status=202)
 
-    app.router.add_post("/v1/host-operations", submit)
+    app.router.add_post("/v2/host-operations", submit)
 
 
 __all__ = ["HostOperations", "active_workers", "register_routes"]

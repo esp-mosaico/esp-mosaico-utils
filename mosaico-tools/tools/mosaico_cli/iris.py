@@ -16,6 +16,6 @@ def host_api(workspace: Any) -> Any:
 
     if Path(client.__file__).resolve().parent.parent != tools.resolve():
         raise EnvironmentError("Another Iris checkout is already imported in this host process")
-    if client.API_MAJOR != 1:
+    if client.API_MAJOR != 2:
         raise EnvironmentError("Unsupported Iris public host API version")
     return client
