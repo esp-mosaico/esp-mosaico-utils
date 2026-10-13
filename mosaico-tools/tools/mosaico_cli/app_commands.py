@@ -78,7 +78,7 @@ def _iris_project(workspace, selected):
     template = workspace.tool_root / "templates" / "blank_game"
     # Source paths, including named examples in another Engine checkout, must
     # never reuse each other's component-manager lock or build cache.
-    key = name + "-" + hashlib.sha256(str(source).encode()).hexdigest()[:12]
+    key = name + "-bmgr-" + hashlib.sha256(str(source).encode()).hexdigest()[:12]
     project = workspace.run_dir / "raylib-iris" / key / "project"
     project.mkdir(parents=True, exist_ok=True)
     (project / "CMakeLists.txt").write_text(IRIS_PROJECT_CMAKE.format(
@@ -88,6 +88,48 @@ def _iris_project(workspace, selected):
         'CONFIG_APP_PROJECT_VER="' + version + '"\n', encoding="utf-8")
     (project / "partitions.csv").write_bytes((template / "partitions.csv").read_bytes())
     return project
+
+
+
+def _prepare_iris_board(context, project, engine):
+    """Generate hardware configuration inside the wrapper, never the Game."""
+    from .runtime import idf_target_command, resolve_idf_path, run_idf_target
+    from .errors import BuildError
+    profile = engine / "examples/boards/esp-mosaico/bmgr"
+    if not (profile / "esp_mosaico/board_info.yaml").is_file():
+        raise EnvironmentError("Raylib Iris builds require the Engine's Mosaico BMGR profile; update the Engine checkout.")
+    # Resolve the action plugin in a small tool-owned IDF project. This avoids
+    # configuring the real wrapper before gen_bmgr_codes exists, or depending
+    # on esp-bmgr-assist being installed in the user's shell environment.
+    bootstrap = project.parent / "bmgr-bootstrap"
+    main = bootstrap / "main"
+    main.mkdir(parents=True, exist_ok=True)
+    (bootstrap / "CMakeLists.txt").write_text(
+        'cmake_minimum_required(VERSION 3.16)\n'
+        'include($ENV{IDF_PATH}/tools/cmake/project.cmake)\n'
+        'project(raylib_bmgr_bootstrap)\n', encoding="utf-8")
+    (main / "CMakeLists.txt").write_text('idf_component_register()\n', encoding="utf-8")
+    (main / "idf_component.yml").write_text(
+        'dependencies:\n  idf: ">=6.2"\n  espressif/esp_board_manager: "^0.7.1"\n', encoding="utf-8")
+    (bootstrap / "sdkconfig.defaults").write_text(
+        'CONFIG_IDF_TARGET="esp32s31"\nCONFIG_IDF_EXPERIMENTAL_FEATURES=y\n', encoding="utf-8")
+    idf_path = resolve_idf_path(context.workspace, project)
+    run_idf_target(context, idf_path=idf_path, project=bootstrap,
+                   build_dir=bootstrap / "build", target="reconfigure",
+                   definitions={"IDF_TARGET": "esp32s31"}, timeout=900)
+    plugin = bootstrap / "managed_components/espressif__esp_board_manager"
+    if not (plugin / "idf_ext.py").is_file():
+        raise BuildError("The resolved Board Manager IDF action plugin is missing.")
+    command = idf_target_command(context, idf_path=idf_path, project=project,
+                                build_dir=project / "build", target="bmgr", timeout=900)
+    command["env"]["IDF_EXTRA_ACTIONS_PATH"] = str(plugin)
+    command["argv"].extend(["-c", str(profile), "-b", "esp_mosaico"])
+    result = context.run(command["argv"], cwd=project, env=command["env"], timeout=900)
+    if result.returncode:
+        raise BuildError("Mosaico BMGR configuration generation failed.", details={"log": str(context.log_path)})
+    metadata = project / "components/gen_bmgr_codes/gen_board_metadata.yaml"
+    if not metadata.is_file() or not re.search(r"^board:\s*esp_mosaico\s*$", metadata.read_text(), re.MULTILINE):
+        raise BuildError("BMGR did not generate the required Mosaico Board configuration.")
 
 
 def add_commands(commands, project_commands):
@@ -196,10 +238,15 @@ def run(arguments, workspace):
             os.environ["IDF_PATH"] = str(Path(arguments.idf_path).expanduser().resolve())
         os.environ["RAYLIB_LITE_ENGINE_ROOT"] = str(workspace.raylib_path)
         os.environ["MOSAICO_UTILS_ROOT"] = str(workspace.tool_root.parent)
-        os.environ["MOSAICO_BSP_ROOT"] = str(workspace.bsp_path)
-        os.environ["RAYLIB_LITE_BSP_DIR"] = str(workspace.bsp_path)
+        if iris:
+            os.environ.pop("MOSAICO_BSP_ROOT", None)
+            os.environ.pop("RAYLIB_LITE_BSP_DIR", None)
+        else:
+            os.environ["MOSAICO_BSP_ROOT"] = str(workspace.bsp_path)
         os.environ["RAYLIB_LITE_UTILS_DIR"] = str(workspace.tool_root.parent)
         context = RunContext(workspace, "game-build", arguments.verbose, arguments.json)
+        if iris:
+            _prepare_iris_board(context, project, workspace.raylib_path)
         build_application(context, project)
         if iris:
             from .gateway import ensure_iris_tools
