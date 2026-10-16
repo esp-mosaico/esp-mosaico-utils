@@ -3,7 +3,30 @@ from __future__ import annotations
 
 import sqlite3
 
-SCHEMA_VERSION = 200
+SCHEMA_VERSION = 202
+
+_SEGMENT_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS event_segments (
+        start_id INTEGER PRIMARY KEY, last_id INTEGER NOT NULL,
+        created_ns INTEGER NOT NULL, last_ns INTEGER NOT NULL,
+        row_count INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL CHECK(status IN ('active','closed','deleting'))
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS one_active_segment ON event_segments(status) WHERE status='active';
+    CREATE TABLE IF NOT EXISTS event_gaps (
+        start_id INTEGER NOT NULL, end_id INTEGER NOT NULL, reason TEXT NOT NULL,
+        PRIMARY KEY(start_id, end_id)
+    );
+"""
+
+_EVIDENCE_SCHEMA = """
+    CREATE TABLE IF NOT EXISTS operation_evidence (
+        operation_id TEXT NOT NULL REFERENCES operations(operation_id),
+        kind TEXT NOT NULL, boot_id TEXT NOT NULL, host_receive_ns INTEGER NOT NULL,
+        payload_json TEXT NOT NULL,
+        PRIMARY KEY(operation_id, kind, boot_id)
+    );
+"""
 
 _SCHEMA = r"""
         CREATE TABLE IF NOT EXISTS settings (
@@ -84,10 +107,16 @@ def initialize_schema(db: sqlite3.Connection) -> int:
     if current == SCHEMA_VERSION:
         return current
     tables = db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+    if current in {200, 201} and {"operations", "events", "settings"} <= {row[0] for row in tables}:
+        # Additive upgrade within Iris 0.2; no 0.1 state is read or converted.
+        db.executescript("BEGIN IMMEDIATE;" + _EVIDENCE_SCHEMA + _SEGMENT_SCHEMA +
+                         f"PRAGMA user_version={SCHEMA_VERSION}; COMMIT;")
+        return SCHEMA_VERSION
     if current != 0 or tables:
         raise RuntimeError(
             f"unsupported Gateway database schema {current}; Iris 0.2 requires a fresh state directory. "
             "Archive the old state and follow the documented migration guide.")
-    db.executescript("BEGIN IMMEDIATE;" + _SCHEMA +
+    db.execute("PRAGMA auto_vacuum=INCREMENTAL")
+    db.executescript("BEGIN IMMEDIATE;" + _SCHEMA + _EVIDENCE_SCHEMA + _SEGMENT_SCHEMA +
                      f"PRAGMA user_version={SCHEMA_VERSION}; COMMIT;")
     return SCHEMA_VERSION

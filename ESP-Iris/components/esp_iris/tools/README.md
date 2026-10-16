@@ -443,6 +443,51 @@ python "$IRIS" ctl --profile lab-a \
 
 ## Runtime and storage model
 
+Project clients keep diagnostics in the selected application's `.gateway/`:
+`state/gateway.sqlite3`, `state/events/`, `state/artifacts/` and `gateway.log`.
+The directory contains a Git ignore file and is independent of `build/`.
+Connection records, launch locks and cross-project device ownership remain in
+the host's `project-sessions/` and `ownership/` directories. Passwords, tokens,
+host identity and TLS files stay in a separate host-local credentials store.
+Moving or copying a project preserves its history without copying a live
+Gateway connection or its authentication credentials.
+
+For read-only or network-mounted projects, pass `mosaico.py iris run
+--gateway-data-dir /local/disk/project-gateway`. This location is remembered for
+that project on this host and cannot be assigned to a second project. The CLI
+prints the actual data location; `/v2/health` also reports it. Stop the Gateway
+before changing this location.
+
+Existing 0.2 data is relocated explicitly while the Gateway is stopped:
+
+Before upgrading, stop every Gateway using the data and make a separate backup
+of the complete state directory, including any SQLite WAL/SHM files, logs,
+artifacts and event segments. Back up the host credentials directory too if it
+is separate. Keep these backups outside `.gateway/` and outside retention paths.
+
+```bash
+python "$IRIS" storage --state-dir /host/project-sessions/PROJECT/state \
+  --migrate-to /application/.gateway/state
+```
+
+The copy is validated and published atomically. It omits credentials and TLS
+keys; the original host directory continues to supply authentication. An
+interrupted copy can be retried, and an existing destination is never replaced.
+The source is retained, but it continues to serve as the live credentials store:
+starting the new Gateway can upgrade its schema and update authentication state.
+Use the separate pre-upgrade backup for rollback, not that live source.
+
+Opening a schema 200 or 201 database upgrades it in place to schema 202. This
+also applies to standalone `web --state-dir` and the `storage` inspection command;
+reverting the code alone does not downgrade the database. To roll back, stop the
+new Gateway, archive its current data, restore the complete pre-upgrade state
+and credentials directories, and start the previous code against those restored
+directories. Records and credential changes made after the backup remain only in
+the archived new state; rollback does not merge or replay them. Keep the retained
+source while it is the live credentials store. Independent pre-upgrade backups
+still consume disk space; archive or delete them explicitly once the rollback
+window has closed.
+
 - One Gateway supervises many USB/TCP endpoints concurrently and indexes their
   sessions and events by stable `device_id`.
 - Each physical device has at most one active session, even if more than one
@@ -465,6 +510,75 @@ python "$IRIS" ctl --profile lab-a \
   events before live events, preserving continuity across reconnects.
 
 ## Troubleshooting
+
+### Diagnostic retention and storage failures
+
+Gateway resource admission is configured with `web --resource-policy limits.json`
+and persisted per Gateway. Defaults allow 32 event subscribers (8 per actor),
+1 MiB per subscriber, 64 outstanding operations (8 per device, 32 per actor),
+128 MiB of operation payloads, 32 HTTP requests and 2 large transfers. JSON bodies
+are limited to 1 MiB and uploads to 128 MiB, including chunked transfers. Device
+history, media queues, authentication sessions and background crash work also
+have finite limits. `/v2/health` exposes the configured limits and current usage.
+Admission failures return HTTP 429 with `resource_limit` and `Retry-After: 1`;
+oversized bodies return 413. Cancelled and completed work releases its capacity.
+History responses are capped at 8 MiB; clients continue using the last event ID.
+Slow observers receive `history_gap` records when their byte or item budget fills.
+
+Ordinary events default to 7 days, 200,000 rows and a 512 MiB budget. New events
+are stored once in SQLite segments, rotating at 8 MiB or one hour, with at most
+64 retained segments. Closed segments are retired as whole files, so a row
+budget can retain fewer rows and age expiry can lag by one segment's duration.
+Segment accounting includes indexes and journal sidecars; maintenance can
+temporarily lag a burst by the in-flight batch and its maintenance interval.
+Legacy compressed raw logs default to 7 days and 256 MiB. Background maintenance
+uses batches of at most 512 rows, with a 50 ms work window each second; a batch
+already executing may finish after that window. Bursts can temporarily exceed
+the budget. State, credentials, operations, saved artifacts and operation-bound
+healthy observations are protected. Slow clients and unavailable event storage
+produce explicit `history_gap` records; live delivery continues. A failed
+critical state commit rejects a new device write with `storage_unavailable`.
+An uncommitted device result remains unknown after restart and is never replayed.
+
+The event writer owns its SQLite connections on a dedicated thread. Its normal
+queue holds at most 1,024 events / 4 MiB, with 16 entries / 512 KiB reserved for
+critical evidence. Each transaction processes at most 128 queued events or
+512 KiB (one oversized event is handled alone). Durable cursors are broadcast
+only after commit. A full queue provides live, explicitly unpersisted events
+and records a history gap; it does not wait for disk space. Healthy observations
+wait for their persistence acknowledgement. Unchanged device snapshots refresh
+at most every five seconds. Shutdown drains the writer; an abnormal exit leaves
+a durable marker so the next writer reports its uncertain buffer window.
+
+Use `web --retention-policy policy.json` to save overrides for `event_days`,
+`event_rows`, `event_bytes`, `raw_days`, `raw_bytes`, `batch_rows` (1–4096),
+`segment_bytes` (at least 16 KiB), `segment_seconds` and `segment_files` (1–1024).
+Health reports storage failures, lost events and maintenance state. Project
+launches rotate process stdout/stderr at 8 MiB with three backups; a direct
+launch can use `--process-log PATH` and `--process-log-bytes N`.
+
+For an existing large 0.2 database, preview before maintenance:
+
+```bash
+python "$IRIS" storage --state-dir /path/to/state
+# Stop this Gateway and back up its state before applying destructive retention.
+python "$IRIS" storage --state-dir /path/to/state --apply
+# Optional offline physical compaction; allow free disk space for SQLite's copy.
+python "$IRIS" storage --state-dir /path/to/state --apply --compact
+```
+
+Logical deletion frees pages for reuse. New databases reclaim free pages
+incrementally; older 0.2 files may remain physically large until offline
+compaction. WAL/SHM sizes are reported separately. No full-table deletion or
+VACUUM runs in the startup or device callback. The 0.2 schema upgrade preserves
+existing state and adds operation-bound evidence and a segment catalog; it does
+not import 0.1 data. Existing events stay queryable in the old database while
+bounded maintenance retires them. New IDs continue above the old sequence.
+Retiring a segment records its boundary before deleting its files, and an
+interrupted event commit becomes a history gap on recovery. Identity bindings
+are resolved through the state catalog across closed segments; early bytes
+never acquire an invented boot identity. Critical evidence commits before
+disposable history, so a missing segment cannot erase an operation's evidence.
 
 ### The Workbench says the frontend is not built
 
@@ -564,3 +678,47 @@ reserved identity locally. This peer endpoint is an implementation detail;
 there is no owner-initiated public transfer API, callback accept API or legacy
 route alias. The durable registry transaction still uses the internal transfer
 schema and retains reservations across interrupted HTTP requests.
+
+### Background evidence exports
+
+`POST /v2/export` now returns HTTP 202 with a job ID, `status_url` and
+`download_url`. Poll `GET /v2/exports/{job_id}` (or list `/v2/exports`), then
+stream the completed ZIP from its download URL. Workbench Settings provides
+range fields, progress, cancellation, download and deletion. Downloads stream
+directly to the browser instead of buffering a ZIP in browser memory.
+
+Clients that previously downloaded the POST response as a ZIP must adopt the
+job/poll/download sequence. Detect `background-export/v1` in `/v2/health`
+when selecting this behavior; deploy Gateway and its bundled Workbench together.
+The synchronous offline Python export API remains available as described below.
+
+The optional JSON body accepts `device_id`, `operation_id`, inclusive `since_ns`
+and `until_ns`, and `retain` (default false). The project is the current Gateway's
+storage root. Operation scope includes its durable evidence plus that device's
+logs within the operation interval. Device exports omit project-wide audit
+entries that cannot be attributed to the device. A manifest records the effective
+scope, event watermark and pruning boundary; `history-gaps.jsonl` and gap events
+explain missing history. `events.jsonl` contains resolved device/capture identity
+and replaces duplicate raw gzip files and segment databases in the bundle.
+Credentials, tokens and the internal state database are never packaged.
+
+One export runs at a time, with default limits of 1 GiB for snapshot plus ZIP and
+input bytes, 2 GiB for all exports, 32 retained jobs, 4096 files, and 300 seconds.
+`web --export-policy policy.json` saves overrides as `exports.policy` in Gateway
+state and `/v2/health` reports the limits and job counts. The policy accepts `job_bytes`, `total_bytes`, `jobs`,
+`ttl_seconds` and `timeout_seconds`. Ordinary downloads expire after one hour;
+`retain: true` keeps a bundle until explicitly deleted and still counts toward
+quotas. `POST /v2/exports/{job_id}/cancel` cancels work, while `DELETE
+/v2/exports/{job_id}` removes a terminal job. Failed or cancelled jobs remove
+partial data; startup marks interrupted jobs and removes abandoned snapshots.
+A disconnected download can be retried before expiry. ZIP and member SHA-256
+checksums support validation after download.
+
+Snapshots cover committed history at their recorded watermark; event ingress
+continues while an export is accepted. Snapshots briefly seal and hard-link closed segments on the same filesystem,
+then back up a SQLite read snapshot and release it before packing. Retention can
+continue deleting original segment names while the export reads its bounded
+snapshot. The filesystem must support hard links; an unsupported filesystem
+produces a failed job with its OS error. Explicit synchronous Python
+`store.export_zip(target)` remains available for offline callers, using the same
+bounded streaming writer; such caller-owned archives are outside HTTP job expiry.
