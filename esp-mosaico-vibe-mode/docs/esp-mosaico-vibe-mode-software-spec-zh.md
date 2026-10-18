@@ -8,9 +8,9 @@ ESP-Mosaico Vibe Mode 是保留在设备 Flash 中的应用安装与维护固件
 | --- | --- |
 | 文档修订 | 第 3 版，2026-10-10 |
 | 源码基线 | `main`，`5f6f89d4a47098b567efa26ac09f2c8f9c027795` |
-| 源码固件版本／评审基础包版本 | `0.2.0`／`0.2.0`；同版本号不表示二进制与当前源码完全相同 |
+| 源码固件版本／评审基础包版本 | `0.2.1`／`0.2.1`；预编译包来自干净源码 `0bbf1c8`，验证范围见 `validation-0.2.1.md` |
 | 目标硬件 | ESP-Mosaico，ESP32-S31，16 MiB 主 Flash，PSRAM、显示与触摸、板载 SPI NAND |
-| SDK | 组件要求 ESP-IDF ≥ 6.2；现有 0.2 验证使用提交 `7b9cc1ac79f865983f59bb8ff3ff43eb74ff1dbe` |
+| SDK | Recovery 与普通应用固定使用提交 `188e3e55bb20505b5fa9dc49ee390bf42c58b4ee` |
 | 产品契约 | `esp-mosaico/v2`，板型 `esp-mosaico` |
 | 启动与布局 | Recovery ABI 2；布局版本 5；`mosaico-retained-test-2m-v2` |
 | 更新制品 | 基础包 schema 3；System Update schema `esp-iris-system-update/0.2` |

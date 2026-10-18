@@ -62,7 +62,7 @@ def current_build(packager, tmp_path):
     config.write_text("\n".join(lines) + "\n")
     description = tmp_path / "project_description.json"
     description.write_text(json.dumps({
-        "project_name": "vibe-mode", "project_version": "0.2.0", "target": "esp32s31",
+        "project_name": "vibe-mode", "project_version": "0.2.1", "target": "esp32s31",
         "config_file": str(config), "git_revision": "test-idf",
     }))
     return images, description

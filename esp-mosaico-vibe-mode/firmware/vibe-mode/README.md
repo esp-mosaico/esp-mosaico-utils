@@ -3,7 +3,7 @@
 当前源码为 Recovery 0.2.1，使用固定 ESP-IDF `188e3e55bb20`，修复单槽
 OTA 健康状态与 S31 维护交接；普通应用通过 `app/ota_0` 子类型解析，标签由产品
 拥有。限制、编译回归与实机证据见 [0.2.1 验证](../../docs/validation-0.2.1.md)。
-下文 2026-10-16 的 0.2.0 评审包记录保留为历史；新包只在设备资格验证后替换。
+`prebuilt/recovery` 已替换为同一份通过单板验证的冻结包，基础分区表保持原字节。
 
 本工程支持通过高速 USB console 执行 `idf.py -p PORT flash monitor`。
 `CONFIG_ESP_IRIS_USB_AUTO_DOWNLOAD=y` 在 CDC0 识别下载握手；CDC1 保持 Iris data
@@ -28,11 +28,11 @@ ROM 身份不符、端口不唯一或重枚举超时会停止，不尝试其它�
 当前源码使用 ESP-Iris 0.2、Recovery ABI 2 和 `mosaico-retained-test-2m-v2`
 布局。`vibe_mode` 为 `app/test`，`main_app` 为 `app/ota_0`。固件工程名为
 `vibe-mode`，新构建产物为 `vibe-mode.bin`、`vibe-mode.elf`，候选包的
-manifest 使用 `project: vibe-mode`。`prebuilt/recovery` 已于 2026-10-16 更新为
-源码提交 `ca0ecf7` 的 `vibe-mode.bin`，版本保持 0.2.0，镜像大小为 1,488,608 字节。
+manifest 使用 `project: vibe-mode`。`prebuilt/recovery` 已于 2026-10-18 更新为
+干净源码提交 `0bbf1c8` 的 `vibe-mode.bin`，版本 0.2.1，镜像大小为 1,493,728 字节。
 默认 Ideas 地址为 `https://mosaico-ideas.espressif.com`，包含固件清单尾部 JSON
 空白解析修复及“打开失败”提示。主程序与 ESP32-S31 实机自更新、重启后 ELF 哈希
-核对及用户手动验收通过的镜像字节一致；bootloader、分区表及初始 OTA 数据保持原评审包
+核对一致；0.2.1 bootloader 与 Recovery 同包冻结并验证，分区表及初始 OTA 数据保持原评审包
 字节不变。完整包通过 manifest、布局、大小和 SHA-256 校验，S31 产品统一使用 QIO。
 
 目录改名后须使用新的构建目录重新配置，避免复用包含旧绝对路径的 CMake 缓存。

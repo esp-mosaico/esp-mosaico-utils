@@ -6,13 +6,13 @@
     "product_contract": "esp-mosaico/v2",
     "recovery_abi": 2
   },
-  "idf_version": "v6.2-dev-2221-g7b9cc1ac79f",
+  "idf_version": "v6.1-dev-8142-g188e3e55bb2",
   "images": {
     "bootloader": {
       "file": "bootloader.bin",
       "offset": "0x2000",
-      "sha256": "3e0a6c29c039111a83e0d66f18effcfedc6ecc6b7ef2ac441697562100ac49b1",
-      "size": 21984
+      "sha256": "ee533601822f1c697bfaedb8f6a01a6d008206574bf2e268cec690fe88807848",
+      "size": 22784
     },
     "ota_data": {
       "file": "ota_data_initial.bin",
@@ -29,8 +29,8 @@
     "recovery": {
       "file": "vibe-mode.bin",
       "offset": "0x20000",
-      "sha256": "d463c09362c9887b62e81d0e81061d17f18f94af4cf8123ea74a8b3b588fc3f8",
-      "size": 1488608
+      "sha256": "b56736f43cb6817c9350a855618ff5cd3037849c7d0f5b02222c92762d995f2a",
+      "size": 1493728
     }
   },
   "initial_boot": {
@@ -42,6 +42,7 @@
     "application_partition": {
       "name": "main_app",
       "offset": "0x210000",
+      "size": "0xdf0000",
       "subtype": "ota_0"
     },
     "recovery_partition": {
@@ -59,9 +60,9 @@
     "secure_boot": false
   },
   "source": {
-    "commit": "ca0ecf70d62b143f8bfa26a4f54baf929db84190",
+    "commit": "0bbf1c8afa99919349acbc4efcb59e9cbff35597",
     "dirty": false
   },
   "target": "esp32s31",
-  "version": "0.2.0"
+  "version": "0.2.1"
 }
