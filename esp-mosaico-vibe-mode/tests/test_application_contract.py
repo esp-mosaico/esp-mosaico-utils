@@ -1,5 +1,6 @@
 """Validate effective build config, including reuse of an old build."""
 import json
+import os
 import sys
 import subprocess
 from unittest.mock import Mock, patch
@@ -88,3 +89,18 @@ def test_bundle_plan_uses_public_inspection_before_writing():
         assert inspect_bundle_plan(context, Path("app.irisfw")) == plan
     assert context.run.call_args.args[0] == ["python", "iris", "bundle", "--json", "inspect", "app.irisfw"]
     assert "0xf00000" in context.status.call_args.args[0]
+
+
+@pytest.mark.parametrize("idf_available", [False, True])
+def test_native_revision_gate_rejects_missing_or_unreviewed_sdk(tmp_path, idf_available):
+    gate = Path(__file__).resolve().parents[1] / "cmake/mosaico_idf_revision.cmake"
+    environment = dict(os.environ)
+    environment.pop("IDF_PATH", None)
+    if idf_available:
+        fake = tmp_path / "unreviewed-idf"
+        fake.mkdir()
+        environment["IDF_PATH"] = str(fake)
+    result = subprocess.run(["cmake", "-P", str(gate)], env=environment,
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode != 0
+    assert ("requires ESP-IDF 188e3e55" if idf_available else "Load the pinned ESP-IDF") in result.stderr

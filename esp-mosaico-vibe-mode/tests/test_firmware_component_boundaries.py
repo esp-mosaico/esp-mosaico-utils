@@ -28,7 +28,7 @@ def test_application_dependency_graph_is_acyclic_and_never_points_to_main():
     applications = {path.name: registration(path)
                     for path in COMPONENTS.iterdir() if path.is_dir()}
     assert applications
-    assert all(name.startswith("app_") for name in applications)
+    assert all(name.startswith("app_") or name == "mosaico_supply" for name in applications)
     # This name belongs to the SDK OTA component; shadowing it breaks OTA APIs.
     assert "app_update" not in applications
     graph = {}
@@ -36,6 +36,11 @@ def test_application_dependency_graph_is_acyclic_and_never_points_to_main():
         dependencies = fields.get("REQUIRES", []) + fields.get("PRIV_REQUIRES", [])
         assert "main" not in dependencies, name
         graph[name] = {item for item in dependencies if item in applications}
+        if name == "mosaico_supply":
+            # The startup/reset hook has no public application-state interface.
+            assert fields["SRCS"] == ["mosaico_supply.c"]
+            assert not fields.get("INCLUDE_DIRS") and not fields.get("PRIV_INCLUDE_DIRS")
+            continue
         assert fields["INCLUDE_DIRS"][0] == "include", name
         private_headers = list((COMPONENTS / name / "private").glob("*.h"))
         assert fields.get("PRIV_INCLUDE_DIRS", []) == (["private"] if private_headers else []), name
@@ -76,6 +81,8 @@ def test_private_headers_and_mutable_state_do_not_cross_components():
             # Function declarations and immutable generated assets are allowed;
             # mutable extern variables are not a business-state interface.
             for declaration in re.findall(r'^extern[ \t]+(?!")([^;{]+);', source, re.M):
+                if component.name == "mosaico_supply" and declaration == "int _bss_end":
+                    continue  # SDK linker boundary, not shared mutable application state.
                 assert "(" in declaration or declaration.startswith("const "), path
 
 
