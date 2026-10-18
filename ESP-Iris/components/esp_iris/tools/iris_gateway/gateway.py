@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import contextlib
+import dataclasses
 import hashlib
 import json
 import os
 import pathlib
 import re
+import sqlite3
 import time
 import uuid
 from collections.abc import Awaitable, Callable
@@ -29,6 +30,8 @@ from .crashes import (
 from .crashes import register_routes as register_crash_routes
 from .device_state import describe as describe_device
 from .discovery import discover_iris_usb_devices, usb_endpoint
+from .event_writer import EventWriter
+from .export_jobs import ExportJobs, register_exports
 from .file_routes import register_file_routes
 from .files import FileServiceError, file_error_http_status
 from .firmware import inspect_firmware_image
@@ -73,8 +76,16 @@ from .recovery_transition import (
     recovery_preconditions,
     validate_recovery,
 )
+from .resource_limits import (
+    ByteBudgetQueue,
+    GatewayLimits,
+    ResourceExhausted,
+    event_size,
+)
 from .security import Actor, AuthManager
 from .source_identity import running_source
+from .state_store import StateStore
+from .storage_health import StorageUnavailable
 from .store import GatewayStore
 from .system_update import (
     SystemUpdateBundle,
@@ -85,7 +96,7 @@ from .update_acceptance import validate_updated_contract
 
 LOG_PATTERN = re.compile(r"^(?P<level>[EWIDV])\s+\((?P<stamp>\d+)\)\s+(?P<tag>[^:]+):\s?(?P<message>.*)$")
 CONSOLE_METHOD_NAME = "console.execute"
-GATEWAY_CLIENT_MAX_SIZE = 1024 * 1024 * 1024
+GATEWAY_CLIENT_MAX_SIZE = 128 * 1024 * 1024
 GATEWAY_API = {"major": 2, "minor": 0}
 GATEWAY_CAPABILITIES = [
     "local-host-operations/v1",
@@ -95,10 +106,14 @@ GATEWAY_CAPABILITIES = [
     "recovery-preconditions/v1",
     "update-acceptance/v1",
     "recovery-transition/v1",
+    "background-export/v1",
 ]
 
 
 class GatewayService:
+    # Installed by register_exports before the HTTP application is started.
+    exports: ExportJobs
+
     def __init__(
         self,
         store: GatewayStore,
@@ -109,8 +124,12 @@ class GatewayService:
         frontend_dist: pathlib.Path | None = None,
         system_update_trust_key: bytes | None = None,
         ota_health_timeout: float | None = None,
+        credentials_store: StateStore | None = None,
+        limits: GatewayLimits | None = None,
     ) -> None:
         self.store = store
+        self.limits = limits or GatewayLimits(**store.get_setting("resources.limits", {}))
+        self.resource_usage = {"requests": 0, "large_requests": 0, "media_streams": 0}
         self.source_identity = running_source()
         self.instance_id = instance_id
         self.demo = demo
@@ -120,7 +139,8 @@ class GatewayService:
         if ota_health_timeout is not None:
             health_timeout({}, ota_health_timeout)
         self.ota_health_timeout = ota_health_timeout
-        self.auth = AuthManager(store)
+        self.credentials = credentials_store if credentials_store is not None else store
+        self.auth = AuthManager(self.credentials, max_sessions=self.limits.auth_sessions)
         self.hub: GatewayHub | None = None
         self.metrics = MetricsRegistry()
         # Runtime mode is intentionally not resumed. Every gateway process
@@ -128,16 +148,19 @@ class GatewayService:
         self.mode = "develop"
         store.set_setting("mode", self.mode)
         self.mode_transition = False
-        self._subscribers: set[asyncio.Queue[dict[str, Any]]] = set()
+        self._subscribers: set[ByteBudgetQueue] = set()
+        self._subscriber_owners: dict[ByteBudgetQueue, str] = {}
+        self._event_writer: EventWriter | None = None
         self._memory_requests: dict[str, asyncio.Task[dict[str, Any]]] = {}
         self._crash_archives_in_progress: set[str] = set()
-        self.operations = OperationManager(store, self.on_device_event, self.metrics)
-        self.host_id = str(store.get_setting("host_id") or uuid.uuid4())
-        store.set_setting("host_id", self.host_id)
+        self.operations = OperationManager(store, self.on_device_event, self.metrics, self.limits)
+        self.host_id = str(self.credentials.get_setting("host_id") or uuid.uuid4())
+        self.credentials.set_setting("host_id", self.host_id)
         self.host_operations = HostOperations(self)
         self.rpc_catalog = self._load_rpc_catalog()
         self.project: Any = None
         self.jobs: dict[tuple[str, int], dict[str, Any]] = {}
+        self.maintenance_state: dict[str, Any] = {"status": "pending"}
 
     def attach_hub(self, hub: GatewayHub) -> None:
         self.hub = hub
@@ -160,10 +183,16 @@ class GatewayService:
     def observe_device_activity(self, event: dict[str, Any]) -> None:
         device_id = str(event.get("device_id") or "")
         if event.get("kind") == "job":
+            if event_size(event) > self.limits.event_bytes:
+                self.metrics.increment("jobs.oversized_events")
+                return
             key = (device_id, int(event["job_id"]))
             if event.get("job_state") in {"succeeded", "failed", "cancelled"}:
                 self.jobs.pop(key, None)
             else:
+                if key not in self.jobs and len(self.jobs) >= self.limits.observed_jobs:
+                    self.jobs.pop(next(iter(self.jobs)))
+                    self.metrics.increment("jobs.cache_evictions")
                 self.jobs[key] = dict(event)
         elif event.get("kind") == "connection" and event.get("connection_state") == "rebooted":
             for key in list(self.jobs):
@@ -184,38 +213,65 @@ class GatewayService:
             category = "console"
         elif kind == "operation":
             category = "operation"
+        elif kind == "system_audit":
+            category = "system"
         else:
             category = "device"
         item = normalize_event(item, category=category, component="gateway")
         self.metrics.increment(f"events.{category}")
+        device = None
         if device_id and self.hub is not None:
             for current in self.hub.list_devices():
                 if current.get("device_id") == device_id:
                     current = dict(current)
                     current["connected"] = True
-                    self.store.remember_device(current)
+                    device = current
                     break
-        persisted = self.store.append_event(category, item, device_id)
-        for queue in tuple(self._subscribers):
-            if queue.full():
-                with contextlib.suppress(asyncio.QueueEmpty):
-                    queue.get_nowait()
-                gap = {
-                    "kind": "history_gap",
-                    "category": "system",
-                    "host_receive_ns": time.time_ns(),
-                    "reason": "live subscriber queue overflow",
-                }
-                queue.put_nowait(gap)
-            queue.put_nowait(persisted)
-        self.metrics.gauge("events.subscribers", len(self._subscribers))
+        if self._event_writer is None:
+            self._event_writer = EventWriter(self.store.root, self._events_written,
+                                             max_items=self.limits.writer_items, max_bytes=self.limits.writer_bytes,
+                                             max_event_bytes=self.limits.event_bytes)
+            self.store.before_close(self._event_writer.close_sync)
+        accepted, acknowledgement = self._event_writer.submit(
+            category, item, device, critical=item.get("event_name") == "healthy")
+        if not accepted:
+            self._broadcast_event({"kind": "history_gap", "category": "system",
+                                   "reason": "event writer queue is full", "dropped_events": 1})
+            self._broadcast_event(dict(item, category=category, persisted=False))
+        elif acknowledgement is not None:
+            await asyncio.wrap_future(acknowledgement)
         if (
             device_id
             and item.get("event_name") == "core_dump_available"
             and device_id not in self._crash_archives_in_progress
+            and len(self._crash_archives_in_progress) < self.limits.background_jobs
         ):
             self._crash_archives_in_progress.add(str(device_id))
             asyncio.create_task(self._auto_archive_crash(str(device_id)))
+
+    def _events_written(self, events: list[dict[str, Any]]) -> None:
+        for event in events:
+            self._broadcast_event(event)
+        if self._event_writer is not None:
+            snapshot = self._event_writer.snapshot()
+            self.metrics.gauge("events.writer.queued_bytes", snapshot["queued_bytes"])
+            self.metrics.gauge("events.writer.dropped", snapshot["dropped_events"])
+
+    async def flush_events(self) -> None:
+        if self._event_writer is not None:
+            await self._event_writer.flush()
+
+    async def close_events(self) -> None:
+        if self._event_writer is not None:
+            await self._event_writer.close()
+
+    def _broadcast_event(self, persisted: dict[str, Any]) -> None:
+        size = event_size(persisted)
+        for queue in tuple(self._subscribers):
+            dropped = queue.push(persisted, size)
+            if dropped:
+                self.metrics.increment("events.subscriber_drops", dropped)
+        self.metrics.gauge("events.subscribers", len(self._subscribers))
 
     def _matching_crash_artifact(
         self, report: dict[str, Any]
@@ -232,14 +288,20 @@ class GatewayService:
     async def _auto_archive_crash(self, device_id: str) -> None:
         await auto_archive(self, device_id)
 
-    def subscribe(self) -> asyncio.Queue[dict[str, Any]]:
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue(maxsize=1024)
+    def subscribe(self, owner: str = "internal") -> ByteBudgetQueue:
+        if len(self._subscribers) >= self.limits.subscribers:
+            raise ResourceExhausted("subscribers", self.limits.subscribers)
+        if sum(value == owner for value in self._subscriber_owners.values()) >= self.limits.subscribers_per_actor:
+            raise ResourceExhausted("subscribers per actor", self.limits.subscribers_per_actor)
+        queue = ByteBudgetQueue(self.limits.subscriber_items, self.limits.subscriber_bytes)
         self._subscribers.add(queue)
+        self._subscriber_owners[queue] = owner
         self.metrics.gauge("events.subscribers", len(self._subscribers))
         return queue
 
-    def unsubscribe(self, queue: asyncio.Queue[dict[str, Any]]) -> None:
+    def unsubscribe(self, queue: ByteBudgetQueue) -> None:
         self._subscribers.discard(queue)
+        self._subscriber_owners.pop(queue, None)
         self.metrics.gauge("events.subscribers", len(self._subscribers))
 
     def require_develop(self) -> web.Response | None:
@@ -293,13 +355,7 @@ class GatewayService:
         }
 
     async def _broadcast_system(self, audit: dict[str, Any]) -> None:
-        item = self.store.append_event(
-            "system",
-            {"kind": "system_audit", "audit": audit, "host_receive_wall_ns": time.time_ns()},
-        )
-        for queue in tuple(self._subscribers):
-            if not queue.full():
-                queue.put_nowait(item)
+        await self.on_device_event({"kind": "system_audit", "audit": audit, "host_receive_wall_ns": time.time_ns()})
 
     def list_devices(self) -> list[dict[str, Any]]:
         connected = {
@@ -687,10 +743,19 @@ def create_app(service: GatewayService) -> web.Application:
             return _error(409, "operation_id_conflict", str(exc))
         except DeviceBusy as exc:
             return _error(409, "device_busy", str(exc))
+        except ResourceExhausted as exc:
+            service.metrics.increment("resources.rejected")
+            response = _error(429, "resource_limit", str(exc), resource=exc.resource, limit=exc.limit)
+            response.headers["Retry-After"] = "1"
+            return response
         except OperationCancelled as exc:
             return _error(409, "operation_cancelled", str(exc))
         except OperationOutcomeUnknown as exc:
             return _error(409, "outcome_unknown", str(exc))
+        except StorageUnavailable as exc:
+            return _error(503, "storage_unavailable", str(exc))
+        except sqlite3.Error as exc:
+            return _error(503, "storage_unavailable", str(exc))
         except (asyncio.TimeoutError, TimeoutError) as exc:
             return _error(504, "device_timeout", str(exc) or "device request timed out")
         except (RuntimeError, ConnectionError) as exc:
@@ -719,14 +784,49 @@ def create_app(service: GatewayService) -> web.Application:
         finally:
             ACTOR_CONTEXT.reset(token)
 
-    middlewares = [errors, authentication]
+    @web.middleware
+    async def resources(request: web.Request, handler: Callable[[web.Request], Awaitable[web.StreamResponse]]) -> web.StreamResponse:
+        if request.path in {"/v2/health", "/v2/metrics"} or request.headers.get("Upgrade", "").lower() == "websocket":
+            return await handler(request)
+        large = (request.path == "/v2/firmware-artifacts" and request.method == "POST") or any(
+            request.path.endswith(suffix) for suffix in ("/system-update", "/audio", "/screenshot")) or "/files/" in request.path
+        names = ["requests", *(["large_requests"] if large else [])]
+        for name in names:
+            maximum = getattr(service.limits, name)
+            if service.resource_usage[name] >= maximum:
+                raise ResourceExhausted(name, maximum)
+        maximum_bytes = service.limits.upload_bytes if large else service.limits.json_bytes
+        if request.content_length is not None and request.content_length > maximum_bytes:
+            raise web.HTTPRequestEntityTooLarge(max_size=maximum_bytes, actual_size=request.content_length)
+        for name in names:
+            service.resource_usage[name] += 1
+        try:
+            return await handler(request.clone(client_max_size=maximum_bytes))
+        finally:
+            for name in names:
+                service.resource_usage[name] -= 1
+
+    middlewares = [errors, resources, authentication]
     if service.project is not None:
         middlewares.append(service.project.guard)
-    app = web.Application(middlewares=middlewares, client_max_size=GATEWAY_CLIENT_MAX_SIZE)
+    app = web.Application(middlewares=middlewares, client_max_size=service.limits.upload_bytes)
+    async def flush_events(app: web.Application) -> None:
+        await service.flush_events()
+    app.on_cleanup.append(flush_events)
     async def health(request: web.Request) -> web.Response:
         return web.json_response(
             {
                 "status": "ok",
+                "storage": service.store.storage_health(),
+                "event_writer": service._event_writer.snapshot() if service._event_writer else None,
+                "exports": {"limits": dataclasses.asdict(service.exports.policy), "active": len(service.exports.cancel_events),
+                            "retained_jobs": len(service.exports.jobs), "storage_error": service.exports.storage_error},
+                "resources": {"limits": dataclasses.asdict(service.limits), "active": service.resource_usage,
+                              "subscribers": len(service._subscribers),
+                              "subscriber_bytes": sum(queue.bytes for queue in service._subscribers),
+                              "operations": len(service.operations.admission.reservations)},
+                "storage_maintenance": service.maintenance_state,
+                "storage_paths": {"data": str(service.store.root), "credentials": str(service.credentials.root)},
                 "instance_id": service.instance_id,
                 "host_id": service.host_id,
                 "gateway_api": GATEWAY_API,
@@ -907,13 +1007,18 @@ def create_app(service: GatewayService) -> web.Application:
         device_id = request.query.get("device_id")
         capture_id = request.query.get("capture_id")
         endpoint = request.query.get("endpoint")
+        actor = _actor(request)
+        queue = service.subscribe(actor.kind + ":" + actor.name)
         lease = None
-        if service.project and service.project.shared:
-            lease = service.project.clients.register({
-                "kind": "workbench" if request.query.get("client") == "workbench" else "cli",
-                "command": "Web Workbench" if request.query.get("client") == "workbench" else "event stream",
-            }, connected=True)
-        queue = service.subscribe()
+        try:
+            if service.project and service.project.shared:
+                lease = service.project.clients.register({
+                    "kind": "workbench" if request.query.get("client") == "workbench" else "cli",
+                    "command": "Web Workbench" if request.query.get("client") == "workbench" else "event stream",
+                }, connected=True)
+        except BaseException:
+            service.unsubscribe(queue)
+            raise
         # Observe PONG frames for accurate last-seen diagnostics. aiohttp still
         # owns heartbeat timeouts; project sockets reply to PING explicitly.
         websocket = web.WebSocketResponse(heartbeat=5 if lease else 20, autoping=not bool(lease))
@@ -950,6 +1055,9 @@ def create_app(service: GatewayService) -> web.Application:
             nonlocal last_event_id
             while True:
                 item = await queue.get()
+                if item.get("kind") == "history_gap":
+                    await websocket.send_json(item)
+                    continue
                 if device_id and item.get("device_id") != device_id:
                     continue
                 if capture_id and item.get("capture_id") != capture_id:
@@ -1289,26 +1397,34 @@ def create_app(service: GatewayService) -> web.Application:
         if channel is None:
             raise KeyError("unknown media channel")
         device_id = service.resolve_device(request.match_info["device_id"])
+        if service.resource_usage["media_streams"] >= service.limits.media_streams:
+            raise ResourceExhausted("media streams", service.limits.media_streams)
         queue = service.device_hub.subscribe_media(device_id, channel)
+        service.resource_usage["media_streams"] += 1
         websocket = web.WebSocketResponse(heartbeat=20)
-        await websocket.prepare(request)
 
         async def forward() -> None:
             while True:
                 item = await queue.get()
+                if item.get("kind") == "history_gap":
+                    await websocket.send_json(item)
+                    continue
                 data = item["data"]
                 metadata = json.dumps({key: value for key, value in item.items() if key != "data"}, separators=(",", ":")).encode()
                 await websocket.send_bytes(len(metadata).to_bytes(4, "little") + metadata + data)
 
-        task = asyncio.create_task(forward())
+        task = None
         try:
+            await websocket.prepare(request)
+            task = asyncio.create_task(forward())
             async for _ in websocket:
                 pass
         finally:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
+            if task is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
             service.device_hub.unsubscribe_media(device_id, channel, queue)
+            service.resource_usage["media_streams"] -= 1
         return websocket
 
     async def input_event(request: web.Request) -> web.Response:
@@ -1364,15 +1480,24 @@ def create_app(service: GatewayService) -> web.Application:
             return blocked
         reader = await request.multipart()
         parts: dict[str, bytes] = {}
+        total = 0
         async for part in reader:
             if not isinstance(part, BodyPartReader):
-                continue
-            if part.name not in {"bin", "elf", "map"}:
-                continue
-            data = await part.read(decode=False)
+                raise TypeError("nested multipart artifacts are not supported")
+            if part.name not in {"bin", "elf", "map"} or part.name in parts:
+                raise ValueError("unexpected or duplicate firmware artifact field")
+            data = bytearray()
+            while True:
+                chunk = await part.read_chunk(65536)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > service.limits.upload_bytes:
+                    raise web.HTTPRequestEntityTooLarge(max_size=service.limits.upload_bytes, actual_size=total)
+                data.extend(chunk)
             if not data:
                 raise ValueError(f"firmware artifact field {part.name} is empty")
-            parts[str(part.name)] = data
+            parts[str(part.name)] = bytes(data)
         missing = {"bin", "elf", "map"} - parts.keys()
         if missing:
             raise ValueError(
@@ -1421,7 +1546,10 @@ def create_app(service: GatewayService) -> web.Application:
         artifact = service.store.firmware_artifact(artifact_id)
         if artifact is None:
             raise KeyError("unknown firmware artifact")
-        image = (pathlib.Path(artifact["path"]) / "firmware.bin").read_bytes()
+        binary_path = pathlib.Path(artifact["path"]) / "firmware.bin"
+        if binary_path.stat().st_size > service.limits.operation_bytes:
+            raise ResourceExhausted("operation payload bytes", service.limits.operation_bytes)
+        image = binary_path.read_bytes()
         metadata = inspect_firmware_image(image).as_dict()
         if metadata["sha256"] != artifact["binary_sha256"]:
             raise ValueError("archived firmware binary checksum changed on disk")
@@ -1449,6 +1577,7 @@ def create_app(service: GatewayService) -> web.Application:
                 preconditions=preconditions,
             ),
             operation_id=operation_id,
+            cost_bytes=len(image),
         )
         return web.json_response(
             {
@@ -1497,6 +1626,7 @@ def create_app(service: GatewayService) -> web.Application:
                 device_id, bundle, operation_id, compatibility=compatibility
             ),
             operation_id=operation_id,
+            cost_bytes=sum(len(component.data) for component in bundle.components),
         )
         return web.json_response(
             {
@@ -1525,11 +1655,6 @@ def create_app(service: GatewayService) -> web.Application:
         body = await _json_body(request)
         service.auth.change_password(str(body.get("password", "")), _actor(request))
         return web.json_response({"changed": True, "login_required": True})
-
-    async def export(request: web.Request) -> web.StreamResponse:
-        del request
-        target = service.store.export_zip()
-        return web.FileResponse(target, headers={"Content-Disposition": f'attachment; filename="{target.name}"'})
 
     async def openapi(request: web.Request) -> web.Response:
         return web.json_response(
@@ -1632,7 +1757,7 @@ def create_app(service: GatewayService) -> web.Application:
     app.router.add_post("/v2/auth/tokens", tokens)
     app.router.add_delete("/v2/auth/tokens/{token_id}", revoke_token)
     app.router.add_put("/v2/auth/password", change_password)
-    app.router.add_post("/v2/export", export)
+    register_exports(app, service)
     app.router.add_get("/v2/openapi.json", openapi)
     if service.project is not None:
         service.project.register_routes(app)

@@ -4,12 +4,14 @@ import argparse
 import asyncio
 import base64
 import contextlib
+import dataclasses
 import getpass
 import ipaddress
 import json
 import os
 import pathlib
 import signal
+import sqlite3
 import ssl
 import sys
 import threading
@@ -34,6 +36,7 @@ from .compat import BooleanOptionalAction
 from .compatibility import compatibility_expectation
 from .demo import DemoHub
 from .discovery import discover_iris_usb_devices
+from .export_jobs import ExportPolicy
 from .gateway import (
     DEFAULT_OTA_VALIDATION_MODE,
     OTA_VALIDATION_MODES,
@@ -45,7 +48,10 @@ from .link import EndpointLock
 from .ownership import OwnershipRegistry
 from .project_gateway import ProjectGateway
 from .recovery_transition import recovery_preconditions
+from .resource_limits import GatewayLimits
+from .retention import RetentionPolicy, disk_usage, maintain, prune_events
 from .security import DEFAULT_DEVELOPER_PASSWORD
+from .state_store import StateStore
 from .store import GatewayStore
 from .system_update import (
     build_system_update_bundle,
@@ -134,6 +140,17 @@ async def _web(args: argparse.Namespace) -> None:
 
 async def _web_owned(args: argparse.Namespace, state_dir: pathlib.Path) -> None:
     store = GatewayStore(state_dir)
+    credentials = (StateStore(pathlib.Path(args.credentials_dir).expanduser().resolve())
+                   if getattr(args, "credentials_dir", None) else store)
+    if getattr(args, "retention_policy", None):
+        policy = RetentionPolicy(**json.loads(pathlib.Path(args.retention_policy).read_text(encoding="utf-8")))
+        store.set_setting("storage.retention", dataclasses.asdict(policy))
+    if getattr(args, "resource_policy", None):
+        limits = GatewayLimits(**json.loads(pathlib.Path(args.resource_policy).read_text(encoding="utf-8")))
+        store.set_setting("resources.limits", dataclasses.asdict(limits))
+    if getattr(args, "export_policy", None):
+        export_policy = ExportPolicy(**json.loads(pathlib.Path(args.export_policy).read_text(encoding="utf-8")))
+        store.set_setting("exports.policy", dataclasses.asdict(export_policy))
     _recover_interrupted(store)
     system_update_trust_key = None
     if args.system_update_trust_key:
@@ -147,6 +164,7 @@ async def _web_owned(args: argparse.Namespace, state_dir: pathlib.Path) -> None:
         frontend_dist=pathlib.Path(__file__).resolve().parent.parent / "frontend" / "dist",
         system_update_trust_key=system_update_trust_key,
         ota_health_timeout=args.ota_health_timeout,
+        credentials_store=credentials,
     )
     listener_is_loopback = _listen_is_loopback(args.listen)
     default_password_selected = False
@@ -165,6 +183,19 @@ async def _web_owned(args: argparse.Namespace, state_dir: pathlib.Path) -> None:
     owner_task = None
     drain_task = None
     idle_task = None
+    maintenance_stop = asyncio.Event()
+
+    async def maintenance() -> None:
+        while not maintenance_stop.is_set():
+            try:
+                await asyncio.wait_for(maintenance_stop.wait(), timeout=1)
+            except asyncio.TimeoutError:
+                try:
+                    service.maintenance_state = await asyncio.get_running_loop().run_in_executor(None, maintain, state_dir)
+                except (sqlite3.Error, OSError) as exc:
+                    service.maintenance_state = {"status": "degraded", "error": str(exc)}
+
+    maintenance_task = None
     shared = getattr(args, "project_shared", False)
     project_session_id = getattr(args, "project_session_id", None)
     if project_session_id:
@@ -179,12 +210,14 @@ async def _web_owned(args: argparse.Namespace, state_dir: pathlib.Path) -> None:
     if args.demo:
         hub: Any = DemoHub(service.on_device_event)
     else:
-        hub = IrisHub(instance_id=args.instance_id, event_sink=service.on_device_event, ownership=registry)
+        hub = IrisHub(instance_id=args.instance_id, event_sink=service.on_device_event, ownership=registry,
+                      limits=service.limits)
     service.attach_hub(hub)
     if registry is not None:
         service.project = ProjectGateway(registry, service, hub, stop, pairing_token=args.pairing_token, shared=shared)
         drain_task = asyncio.create_task(service.project.drain())
     try:
+        maintenance_task = asyncio.create_task(maintenance())
         if args.demo:
             await hub.start()
         else:
@@ -216,7 +249,7 @@ async def _web_owned(args: argparse.Namespace, state_dir: pathlib.Path) -> None:
             raise ValueError("--no-tls cannot be combined with TLS options")
         if tls_requested:
             cert, key, fingerprint = ensure_certificate(
-                state_dir,
+                credentials.root,
                 cert_path=pathlib.Path(args.tls_cert) if args.tls_cert else None,
                 key_path=pathlib.Path(args.tls_key) if args.tls_key else None,
             )
@@ -302,6 +335,9 @@ async def _web_owned(args: argparse.Namespace, state_dir: pathlib.Path) -> None:
         await stop.wait()
         await runner.cleanup()
     finally:
+        maintenance_stop.set()
+        if maintenance_task is not None:
+            await maintenance_task
         if idle_task is not None:
             idle_task.cancel()
             await asyncio.gather(idle_task, return_exceptions=True)
@@ -313,6 +349,7 @@ async def _web_owned(args: argparse.Namespace, state_dir: pathlib.Path) -> None:
             await asyncio.gather(drain_task, return_exceptions=True)
         await service.operations.close()
         await hub.close()
+        await service.close_events()
         if registry is not None:
             if args.project_connection_file:
                 with contextlib.suppress(OSError, ValueError):
@@ -320,11 +357,15 @@ async def _web_owned(args: argparse.Namespace, state_dir: pathlib.Path) -> None:
                     if json.loads(connection.read_text()).get("session_id") == project_session_id:
                         connection.unlink()
             registry.close(clean=not service.project.drain_timed_out)
-        store.add_audit(
-            "system", "gateway", "gateway.stopped", {"instance_id": args.instance_id}
-        )
-        store.cleanup_raw_logs()
-        store.close()
+        try:
+            store.add_audit(
+                "system", "gateway", "gateway.stopped", {"instance_id": args.instance_id}
+            )
+            store.cleanup_raw_logs()
+        finally:
+            store.close()
+            if credentials is not store:
+                credentials.close()
 
 
 def _profile_path() -> pathlib.Path:
@@ -900,6 +941,12 @@ def build_parser() -> argparse.ArgumentParser:
     web_parser.add_argument("--ota-health-timeout", type=float,
                             help="override product HELLO health timeout, seconds (1..600)")
     web_parser.add_argument("--state-dir")
+    web_parser.add_argument("--credentials-dir", help="host-local authentication and TLS directory")
+    web_parser.add_argument("--retention-policy", help="JSON retention policy, saved in this Gateway's state")
+    web_parser.add_argument("--resource-policy", help="JSON resource limits, saved in this Gateway's state")
+    web_parser.add_argument("--export-policy", help="JSON export budgets and expiry, saved in this Gateway state")
+    web_parser.add_argument("--process-log", help="rotate process stdout/stderr at this path")
+    web_parser.add_argument("--process-log-bytes", type=int, default=8 * 1024 * 1024)
     web_parser.add_argument("--project-session-id")
     web_parser.add_argument("--project-id")
     web_parser.add_argument("--project-path")
@@ -1078,9 +1125,65 @@ def build_parser() -> argparse.ArgumentParser:
         help="optional PEM ECDSA P-256 trust key; omit for unsigned bundles",
     )
 
+    storage = subparsers.add_parser("storage", help="preview or perform offline diagnostics maintenance")
+    storage.add_argument("--state-dir", required=True)
+    storage.add_argument("--apply", action="store_true", help="prune disposable diagnostics under the saved policy")
+    storage.add_argument("--compact", action="store_true", help="with --apply, VACUUM the stopped database")
+    storage.add_argument("--migrate-to", help="copy stopped 0.2 diagnostics to a fresh project state directory")
     doctor = subparsers.add_parser("doctor", help="cross-platform environment and USB diagnostics")
     doctor.add_argument("--json", action="store_true")
     return parser
+
+
+def _storage(args: argparse.Namespace) -> int:
+    root = pathlib.Path(args.state_dir).expanduser().resolve()
+    if args.migrate_to:
+        if args.apply or args.compact:
+            raise ValueError("migration cannot be combined with pruning or compaction")
+        from .storage_migration import migrate_project_data
+
+        print(json.dumps(migrate_project_data(root, pathlib.Path(args.migrate_to).expanduser().resolve())))
+        return 0
+    if args.compact and not args.apply:
+        raise ValueError("--compact requires --apply and a stopped Gateway")
+    if not args.apply:
+        with contextlib.closing(sqlite3.connect((root / "gateway.sqlite3").as_uri() + "?mode=ro", uri=True)) as db:
+            count = db.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+            if db.execute("SELECT 1 FROM sqlite_master WHERE name='event_segments'").fetchone():
+                count += db.execute("SELECT COALESCE(SUM(row_count),0) FROM event_segments WHERE status!='deleting'").fetchone()[0]
+            reclaimable = db.execute("PRAGMA freelist_count").fetchone()[0] * db.execute("PRAGMA page_size").fetchone()[0]
+            row = db.execute("SELECT value FROM settings WHERE key='storage.retention'").fetchone()
+        print(json.dumps({"state_dir": str(root), "event_rows": count, "reusable_bytes": reclaimable,
+                          "policy": dataclasses.asdict(RetentionPolicy(**(json.loads(row[0]) if row else {}))),
+                          **disk_usage(root), "applied": False}))
+        return 0
+    lock = EndpointLock("gateway-state:" + os.path.normcase(str(root)))
+    try:
+        lock.acquire()
+        store = GatewayStore(root)
+        try:
+            policy = RetentionPolicy(**store.get_setting("storage.retention", {}))
+            removed = 0
+            while True:
+                count = prune_events(store, policy)
+                removed += count
+                if not count:
+                    break
+            while True:
+                count = store.events.segments.prune(policy)
+                removed += count
+                if not count:
+                    break
+            store.cleanup_raw_logs(policy.raw_days, policy.raw_bytes)
+            if args.compact:
+                store.db.execute("VACUUM")
+            store.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            print(json.dumps({"removed_events": removed, **disk_usage(root), "applied": True}))
+        finally:
+            store.close()
+    finally:
+        lock.close()
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1096,10 +1199,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             return _bundle(args)
         if args.command == "ctl":
             return asyncio.run(_ctl(args))
-        asyncio.run(_web(args))
+        if args.command == "storage":
+            return _storage(args)
+        if args.process_log:
+            from .process_log import redirect_process_log
+
+            with redirect_process_log(pathlib.Path(args.process_log), max_bytes=args.process_log_bytes):
+                asyncio.run(_web(args))
+        else:
+            asyncio.run(_web(args))
     except KeyboardInterrupt:
         return 130
-    except (OSError, RuntimeError, TypeError, ValueError, json.JSONDecodeError) as exc:
+    except (OSError, sqlite3.Error, RuntimeError, TypeError, ValueError, json.JSONDecodeError) as exc:
         print(f"esp_iris.py: error: {exc}", file=sys.stderr)
         return 2
     return 0
