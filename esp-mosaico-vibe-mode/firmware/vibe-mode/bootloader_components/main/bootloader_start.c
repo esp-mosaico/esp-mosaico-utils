@@ -10,6 +10,8 @@
 
 #include "sdkconfig.h"
 #include "esp_log.h"
+#include "esp_efuse.h"
+#include "esp_secure_boot.h"
 #include "esp_rom_caps.h"
 #include "esp_rom_gpio.h"
 #include "esp_rom_sys.h"
@@ -31,6 +33,132 @@ ESP_LOG_ATTR_TAG(TAG, "boot");
 
 static int select_partition_number(bootloader_state_t *bs);
 static int selected_boot_partition(const bootloader_state_t *bs);
+
+/* BEGIN MOSAICO_SINGLE_SLOT_POLICY
+ * The ABI 2 product supports one normal application in a single physical OTA
+ * slot. A previous VALID copy does not describe different application bytes.
+ * CRC covers ota_seq only, so inspect terminal states before IDF filters them.
+ */
+static bool mosaico_single_slot_layout(const bootloader_state_t *bs)
+{
+    if (esp_efuse_is_flash_encryption_enabled() || esp_secure_boot_enabled() ||
+        bs->app_count != 1 || bs->factory.offset != 0 || bs->factory.size != 0 ||
+        bs->test.offset != MOSAICO_RECOVERY_ADDRESS ||
+        bs->test.size != MOSAICO_RECOVERY_BYTES ||
+        bs->ota_info.offset != 0x9000U || bs->ota_info.size != MOSAICO_OTADATA_BYTES ||
+        bs->ota[0].offset != MOSAICO_APPLICATION_ADDRESS || bs->ota[0].size == 0 ||
+        bs->ota[0].size % MOSAICO_FLASH_SECTOR_BYTES != 0 ||
+        bs->ota[0].size > MOSAICO_FLASH_BYTES - MOSAICO_APPLICATION_ADDRESS) {
+        return false;
+    }
+    for (unsigned i = 1; i < MAX_OTA_SLOTS; ++i) {
+        if (bs->ota[i].offset != 0 || bs->ota[i].size != 0) return false;
+    }
+    return true;
+}
+
+static bool mosaico_ota_record_crc_valid(const esp_ota_select_entry_t *entry)
+{
+    return entry->ota_seq != UINT32_MAX &&
+        entry->crc == bootloader_common_ota_select_crc(entry);
+}
+
+static bool mosaico_ota_state_known(uint32_t state)
+{
+    return state <= ESP_OTA_IMG_ABORTED || state == ESP_OTA_IMG_UNDEFINED;
+}
+
+static int mosaico_ota_sector_erased(uint32_t offset)
+{
+    uint32_t words[16];
+    for (unsigned pos = 0; pos < MOSAICO_FLASH_SECTOR_BYTES; pos += sizeof(words)) {
+        if (bootloader_flash_read(offset + pos, words, sizeof(words), true) != ESP_OK)
+            return -1;
+        for (unsigned i = 0; i < sizeof(words) / sizeof(words[0]); ++i) {
+            if (words[i] != UINT32_MAX) return 0;
+        }
+    }
+    return 1;
+}
+
+static bool mosaico_ota_keep_authority(const bootloader_state_t *bs, int authority)
+{
+    const uint32_t peer_offset = bs->ota_info.offset +
+        (unsigned)(authority ^ 1) * MOSAICO_FLASH_SECTOR_BYTES;
+    const int erased = mosaico_ota_sector_erased(peer_offset);
+    if (erased < 0) return false;
+    if (erased == 0) {
+        /* Never erase the authority. A reset during peer erasure can only
+         * leave the same authority or unusable metadata, both checked again. */
+        if (bootloader_flash_erase_sector(peer_offset / MOSAICO_FLASH_SECTOR_BYTES) != ESP_OK)
+            return false;
+        if (mosaico_ota_sector_erased(peer_offset) != 1) return false;
+    }
+    return true;
+}
+
+static int mosaico_single_slot_selected(const bootloader_state_t *bs)
+{
+    esp_ota_select_entry_t entries[2];
+    if (!mosaico_single_slot_layout(bs)) return INVALID_INDEX;
+    if (bootloader_common_read_otadata(&bs->ota_info, entries) != ESP_OK)
+        return TEST_APP_INDEX;
+
+    bool present[2];
+    int new_entry = -1;
+    for (int i = 0; i < 2; ++i) {
+        present[i] = mosaico_ota_record_crc_valid(&entries[i]);
+        if (!present[i]) continue;
+        if (entries[i].ota_seq == 0 || !mosaico_ota_state_known(entries[i].ota_state))
+            return TEST_APP_INDEX;
+        if (entries[i].ota_state == ESP_OTA_IMG_NEW) {
+            /* Multiple NEW records cannot be produced by this normalized
+             * single-slot history; imported ambiguity must not grant a trial. */
+            if (new_entry != -1) return TEST_APP_INDEX;
+            new_entry = i;
+        }
+    }
+
+    int authority = present[0] ? 0 : (present[1] ? 1 : -1);
+    if (authority == -1) return TEST_APP_INDEX;
+    if (present[0] && present[1]) {
+        if (entries[0].ota_seq == entries[1].ota_seq &&
+            entries[0].ota_state != entries[1].ota_state) return TEST_APP_INDEX;
+        if (entries[1].ota_seq > entries[0].ota_seq) authority = 1;
+    }
+
+    if (new_entry != -1) {
+        const int peer = new_entry ^ 1;
+        if (present[peer] && entries[peer].ota_seq > entries[new_entry].ota_seq &&
+            entries[peer].ota_state != ESP_OTA_IMG_INVALID &&
+            entries[peer].ota_state != ESP_OTA_IMG_ABORTED) return TEST_APP_INDEX;
+        /* IDF188 can rewrite a lower-sequence active copy NEW in place when
+         * the higher copy is INVALID/ABORTED. This exception relies on the
+         * reviewed bootstrap + pinned update protocol, not imported metadata. */
+        authority = new_entry;
+    } else if (entries[authority].ota_state != ESP_OTA_IMG_VALID) {
+        /* In particular keep PENDING durable: never let IDF turn it ABORTED
+         * then try the same overwritten ota_0 through its no-factory fallback. */
+        return TEST_APP_INDEX;
+    }
+
+    if (!mosaico_ota_keep_authority(bs, authority)) return TEST_APP_INDEX;
+    /* Let the pinned SDK perform NEW -> PENDING, but do not trust its return
+     * alone: its selector ignores an otadata erase/write failure. */
+    if (new_entry != -1 && bootloader_utility_get_selected_boot_partition(bs) != 0)
+        return TEST_APP_INDEX;
+    esp_ota_select_entry_t after[2];
+    if (bootloader_common_read_otadata(&bs->ota_info, after) != ESP_OK ||
+        after[authority].ota_seq != entries[authority].ota_seq ||
+        after[authority].ota_state != (new_entry != -1 ?
+            ESP_OTA_IMG_PENDING_VERIFY : ESP_OTA_IMG_VALID) ||
+        !mosaico_ota_record_crc_valid(&after[authority]) ||
+        mosaico_ota_sector_erased(bs->ota_info.offset +
+            (unsigned)(authority ^ 1) * MOSAICO_FLASH_SECTOR_BYTES) != 1)
+        return TEST_APP_INDEX;
+    return 0;
+}
+/* END MOSAICO_SINGLE_SLOT_POLICY */
 
 static void stop_inherited_usb_dma(void)
 {
@@ -113,9 +241,7 @@ void __attribute__((noreturn)) call_start_cpu0(void)
      * can never prevent Recovery or the normal application from booting. */
     (void)mosaico_boot_splash_show();
 
-#ifdef CONFIG_BOOTLOADER_SKIP_VALIDATE_IN_DEEP_SLEEP
-    bootloader_utility_load_boot_image_from_deep_sleep();
-#endif
+    /* Deep-sleep resumes must pass the same metadata guard as cold boots. */
 
     bootloader_state_t bs = {0};
     int boot_index = select_partition_number(&bs);
@@ -134,6 +260,11 @@ static int select_partition_number(bootloader_state_t *bs)
 {
     if (!bootloader_utility_load_partition_table(bs)) {
         ESP_LOGE(TAG, "load partition table error!");
+        return INVALID_INDEX;
+    }
+
+    if (!mosaico_single_slot_layout(bs)) {
+        ESP_LOGE(TAG, "Unsupported ABI 2 single-slot layout; refusing application scan");
         return INVALID_INDEX;
     }
 
@@ -156,61 +287,10 @@ static int select_partition_number(bootloader_state_t *bs)
     return boot_index;
 }
 
-/* Keep ESP-IDF's standard OTA, rollback, factory-reset, and test-app rules. */
+/* The single-slot guard must precede IDF's multi-slot rollback fallback. */
 static int selected_boot_partition(const bootloader_state_t *bs)
 {
-    int boot_index = bootloader_utility_get_selected_boot_partition(bs);
-    if (boot_index == INVALID_INDEX) {
-        return boot_index;
-    }
-
-    if (esp_rom_get_reset_reason(0) != RESET_REASON_CORE_DEEP_SLEEP) {
-#ifdef CONFIG_BOOTLOADER_FACTORY_RESET
-        bool reset_level = false;
-#if CONFIG_BOOTLOADER_FACTORY_RESET_PIN_HIGH
-        reset_level = true;
-#endif
-        if (bootloader_common_check_long_hold_gpio_level(
-                CONFIG_BOOTLOADER_NUM_PIN_FACTORY_RESET,
-                CONFIG_BOOTLOADER_HOLD_TIME_GPIO,
-                reset_level) == GPIO_LONG_HOLD) {
-            ESP_LOGI(TAG, "Detect a condition of the factory reset");
-            bool ota_data_erase = false;
-#ifdef CONFIG_BOOTLOADER_OTA_DATA_ERASE
-            ota_data_erase = true;
-#endif
-            const char *list_erase = CONFIG_BOOTLOADER_DATA_FACTORY_RESET;
-            ESP_LOGI(TAG, "Data partitions to erase: %s", list_erase);
-            if (!bootloader_common_erase_part_type_data(list_erase, ota_data_erase)) {
-                ESP_LOGE(TAG, "Not all partitions were erased");
-            }
-#ifdef CONFIG_BOOTLOADER_RESERVE_RTC_MEM
-            bootloader_common_set_rtc_retain_mem_factory_reset_state();
-#endif
-            return bootloader_utility_get_selected_boot_partition(bs);
-        }
-#endif
-
-#ifdef CONFIG_BOOTLOADER_APP_TEST
-        bool app_test_level = false;
-#if CONFIG_BOOTLOADER_APP_TEST_PIN_HIGH
-        app_test_level = true;
-#endif
-        if (bootloader_common_check_long_hold_gpio_level(
-                CONFIG_BOOTLOADER_NUM_PIN_APP_TEST,
-                CONFIG_BOOTLOADER_HOLD_TIME_GPIO,
-                app_test_level) == GPIO_LONG_HOLD) {
-            ESP_LOGI(TAG, "Detect a boot condition of the test firmware");
-            if (bs->test.offset != 0) {
-                return TEST_APP_INDEX;
-            }
-            ESP_LOGE(TAG, "Test firmware is not found in partition table");
-            return INVALID_INDEX;
-        }
-#endif
-    }
-
-    return boot_index;
+    return mosaico_single_slot_selected(bs);
 }
 
 #if CONFIG_LIBC_NEWLIB

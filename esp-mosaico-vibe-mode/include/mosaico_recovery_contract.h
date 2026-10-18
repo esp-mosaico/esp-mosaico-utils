@@ -12,6 +12,9 @@
 #define MOSAICO_RECOVERY_PARTITION "vibe_mode"
 #define MOSAICO_RECOVERY_ADDRESS 0x20000U
 #define MOSAICO_RECOVERY_BYTES 0x1c0000U
+/* The normal slot label and capacity are product-owned; subtype is app/ota_0. */
+#define MOSAICO_APPLICATION_ADDRESS 0x210000U
+#define MOSAICO_FLASH_BYTES 0x1000000U
 #define MOSAICO_BOOT_NAMESPACE "mosaico_boot_v2"
 #define MOSAICO_BOOT_INTENT_KEY "intent"
 #define MOSAICO_BOOT_INTENT_NONE 0U

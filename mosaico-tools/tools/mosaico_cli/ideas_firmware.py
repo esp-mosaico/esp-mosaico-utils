@@ -69,9 +69,11 @@ def validate_firmware(raw):
         kind, subtype, start, size, flags = fields
         require(partitions.get(name) == (types[kind], subtypes[subtype], start, size, 0),
                 "Immutable product partition changed", name, "INVALID_FIRMWARE")
-    application = partitions.get("main_app")
-    require(application and application[:3] == (0, 0x10, 0x210000) and not application[4],
-            "Invalid main_app partition", code="INVALID_FIRMWARE")
+    applications = [part for name, part in partitions.items() if part[0] == 0 and name != "vibe_mode"]
+    application = applications[0] if len(applications) == 1 else None
+    require(application and application[:3] == (0, 0x10, 0x210000)
+            and application[3] <= 0x1000000 - 0x210000 and not application[4],
+            "Invalid sole ota_0 application partition", code="INVALID_FIRMWARE")
     for component in components[1:]:
         found = [p for p in partitions.values() if p[2] == component["target_offset"]]
         require(len(found) == 1 and component["size"] <= found[0][3] and not found[0][4],

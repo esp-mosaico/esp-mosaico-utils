@@ -2,6 +2,8 @@
 
 import importlib.util
 import json
+import hashlib
+import struct
 from pathlib import Path
 
 import pytest
@@ -48,7 +50,9 @@ def current_build(packager, tmp_path):
     images = {}
     for name, filename in packager.IMAGE_FILES.items():
         path = tmp_path / filename
-        path.write_bytes(packager.bootstrap_image() if name == "ota_data" else b"\xe9test-image")
+        path.write_bytes(packager.bootstrap_image() if name == "ota_data" else
+                         (PROJECT / "prebuilt/recovery/partition-table.bin").read_bytes()
+                         if name == "partition_table" else b"\xe9test-image")
         images[name] = path
     config = tmp_path / "sdkconfig"
     lines = ["CONFIG_FACTORY_RECOVERY_FIRMWARE=y"]
@@ -102,3 +106,28 @@ def test_current_bundle_rejects_mismatched_filename(packager, current_build, tmp
     manifest["images"]["recovery"]["file"] = "factory.bin"
     with pytest.raises(packager.RecoveryImageError, match="unexpected file name for recovery"):
         check_bundle(packager, images, manifest)
+
+
+@pytest.mark.parametrize("label,capacity", [("main_app", 0xdf0000), ("ota_0", 0x700000)])
+def test_bundle_application_metadata_uses_product_subtype(packager, tmp_path, label, capacity):
+    raw = bytearray((PROJECT / "prebuilt/recovery/partition-table.bin").read_bytes())
+    checksum_offset = None
+    for offset in range(0, len(raw), 32):
+        if raw[offset:offset + 2] == b"\xeb\xeb":
+            checksum_offset = offset
+            break
+        if raw[offset + 2:offset + 4] == b"\x00\x10":
+            row = list(struct.unpack("<HBBII16sI", raw[offset:offset + 32]))
+            row[4], row[5] = capacity, label.encode().ljust(16, b"\0")
+            raw[offset:offset + 32] = struct.pack("<HBBII16sI", *row)
+    assert checksum_offset is not None
+    raw[checksum_offset + 16:checksum_offset + 32] = hashlib.md5(raw[:checksum_offset]).digest()
+    path = tmp_path / "partition-table.bin"
+    path.write_bytes(raw)
+    assert packager.normal_application_partition(path) == {
+        "name": label, "subtype": "ota_0", "offset": "0x210000", "size": hex(capacity),
+    }
+    raw[checksum_offset + 16] ^= 1
+    path.write_bytes(raw)
+    with pytest.raises(packager.RecoveryImageError, match="MD5"):
+        packager.normal_application_partition(path)

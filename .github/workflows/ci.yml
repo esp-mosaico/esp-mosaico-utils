@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 env:
-  ESP_IDF_REVISION: 7b9cc1ac79f865983f59bb8ff3ff43eb74ff1dbe
+  ESP_IDF_REVISION: 188e3e55bb20505b5fa9dc49ee390bf42c58b4ee
   IRIS_REQUIRE_HOST_CC: "1"
 
 concurrency:
@@ -298,6 +298,7 @@ jobs:
         run: |
           source "$IDF_PATH/export.sh"
           python -m pip install --disable-pip-version-check -r esp-mosaico-vibe-mode/firmware/vibe-mode/tools/requirements.txt
+          python esp-mosaico-vibe-mode/firmware/vibe-mode/tools/check_boot_policy.py --candidate-project esp-mosaico-vibe-mode/firmware/vibe-mode --idf-path "$IDF_PATH"
           ccache --zero-stats
           bash tools/ci/build_firmware.sh "${{ matrix.group }}"
           ccache --show-stats

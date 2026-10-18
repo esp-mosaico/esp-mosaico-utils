@@ -49,8 +49,8 @@ Keep Recovery commands, protocol identifiers and ABI names stable. See the
   Python 3.8 compatibility.
 - Run Workbench unit/build/E2E checks for frontend changes.
 - Build affected ESP-IDF examples and fixtures with a compatible, verified
-  ESP-IDF checkout. Vibe Mode currently requires ESP-IDF 6.2 or newer and the
-  ESP32-S31 target.
+  ESP-IDF checkout. Vibe Mode and its normal applications require the reviewed ESP-IDF
+  `188e3e55bb20505b5fa9dc49ee390bf42c58b4ee` and the ESP32-S31 target.
 - Preserve reviewed Vibe Mode binaries until their replacement passes manifest,
   layout, hash, and device validation.
 

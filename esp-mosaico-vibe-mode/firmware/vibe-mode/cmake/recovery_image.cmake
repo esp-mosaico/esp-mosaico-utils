@@ -13,7 +13,7 @@ partition_table_get_partition_info(
 partition_table_get_partition_info(
     recovery_partition_size "--partition-name vibe_mode" "size")
 partition_table_get_partition_info(
-    normal_partition_offset "--partition-name main_app" "offset")
+    normal_partition_offset "--partition-type app --partition-subtype ota_0" "offset")
 partition_table_get_partition_info(
     ota_data_partition_offset "--partition-name otadata" "offset")
 
@@ -50,7 +50,7 @@ add_custom_target(recovery-slot-check ALL
     VERBATIM)
 add_dependencies(recovery-slot-check app)
 # This project builds Vibe Mode itself. IDF's ordinary application default is
-# main_app; replace its generated entries so native flash cannot put this
+# the normal app/ota_0; replace its generated entries so native flash cannot put this
 # maintenance image in the user's application slot. Product applications keep
 # the standard IDF targets and never include this file.
 foreach(native_target flash app-flash)

@@ -13,7 +13,23 @@
 #define ESP_LOGE(...) ((void)0)
 #define ESP_LOGW(...) ((void)0)
 #define ESP_LOGI(...) ((void)0)
-typedef struct { esp_partition_pos_t test, ota_info; } bootloader_state_t;
+#define MAX_OTA_SLOTS 16
+#define ESP_OTA_IMG_NEW 0
+#define ESP_OTA_IMG_PENDING_VERIFY 1
+#define ESP_OTA_IMG_VALID 2
+#define ESP_OTA_IMG_INVALID 3
+#define ESP_OTA_IMG_ABORTED 4
+#define ESP_OTA_IMG_UNDEFINED UINT32_MAX
+typedef struct { uint32_t ota_seq; uint8_t label[20]; uint32_t ota_state, crc; } esp_ota_select_entry_t;
+typedef struct { esp_partition_pos_t test, ota_info, factory, ota[MAX_OTA_SLOTS]; unsigned app_count; } bootloader_state_t;
+static uint32_t ota_state = ESP_OTA_IMG_VALID;
+static inline bool esp_efuse_is_flash_encryption_enabled(void) { return false; }
+static inline bool esp_secure_boot_enabled(void) { return false; }
+static inline uint32_t bootloader_common_ota_select_crc(const esp_ota_select_entry_t *e) { return e->ota_seq ^ 123; }
+static inline esp_err_t bootloader_common_read_otadata(const esp_partition_pos_t *p, esp_ota_select_entry_t *out)
+{ memset(out, 0xff, sizeof(*out) * 2); out[0].ota_seq = 1; out[0].ota_state = ota_state; out[0].crc = bootloader_common_ota_select_crc(&out[0]); return ESP_OK; }
+static inline esp_err_t bootloader_flash_erase_sector(unsigned sector) { abort(); }
+
 typedef struct {
     const char *namespace_name, *key_name;
     int value_type;
@@ -38,7 +54,7 @@ static inline bool bootloader_utility_load_partition_table(bootloader_state_t *b
 static inline __attribute__((noreturn)) void bootloader_utility_load_boot_image(bootloader_state_t *bs, int i) { abort(); }
 static inline int bootloader_utility_get_selected_boot_partition(const bootloader_state_t *bs) { return selected; }
 static inline esp_err_t bootloader_flash_read(size_t off, void *data, size_t size, bool decrypt)
-{ memcpy(data, bootstrap, size); return ESP_OK; }
+{ if (off == 0x9020 && size == sizeof(bootstrap)) memcpy(data, bootstrap, size); else memset(data, 0xff, size); return ESP_OK; }
 static inline esp_err_t nvs_bootloader_read(const char *p, size_t n, nvs_bootloader_read_list_t *e)
 { e->result_code = key_error; e->value.u32_val = intent; return nvs_error; }
 static inline esp_err_t mosaico_boot_read_intent(uint32_t *value)

@@ -10,7 +10,7 @@
   "partition_table_offset": 32768,
   "partition_table_region_bytes": 4096,
   "application_region_start": 2097152,
-  "minimum_recovery_version": "0.2.0",
+  "minimum_recovery_version": "0.2.1",
   "immutable_layout": {
     "otadata": [
       "data",
@@ -64,5 +64,14 @@
     "consumed_by": "vibe_mode",
     "consumption": "erase first otadata sector after NVS intent commit; second sector preserved",
     "native_application_flash": "standard blank IDF otadata; no bootstrap marker"
+  },
+  "normal_application": {
+    "type": "app",
+    "subtype": "ota_0",
+    "count": 1,
+    "offset": 2162688,
+    "maximum_end": 16777216,
+    "label": "product-owned",
+    "capacity": "product-owned, nonempty and sector-aligned"
   }
 }

@@ -75,7 +75,7 @@ class PrepareSystemUpdateTests(unittest.TestCase):
             self.assertEqual((stage / "ui_apps.bin").read_bytes(), b"ui apps")
             self.assertEqual(manifest["schema"], "esp-iris-system-update/0.2")
             self.assertNotIn("source_layout_sha256", manifest)
-            self.assertEqual(manifest["minimum_recovery_version"], "0.2.0")
+            self.assertEqual(manifest["minimum_recovery_version"], "0.2.1")
             self.assertEqual(
                 [item["kind"] for item in manifest["components"]],
                 ["partition_table", "application", "data"],
@@ -89,10 +89,10 @@ class PrepareSystemUpdateTests(unittest.TestCase):
             partition_csv.write_text(
                 PARTITIONS.replace(
                     "nvs,data,nvs,0x200000,0x10000,",
-                    "nvs,data,nvs,0x200000,0x20000,",
+                    "nvs,data,nvs,0x200000,0x10000,",
                 ).replace(
                     "main_app,app,ota_0,0x210000,0xcf0000,",
-                    "main_app,app,ota_0,0x220000,0xce0000,",
+                    "ota_0,app,ota_0,0x210000,0x700000,",
                 ),
                 encoding="utf-8",
             )
@@ -123,7 +123,7 @@ class PrepareSystemUpdateTests(unittest.TestCase):
             application_component = next(
                 item for item in manifest["components"] if item["kind"] == "application"
             )
-            self.assertEqual(application_component["target_offset"], 0x220000)
+            self.assertEqual(application_component["target_offset"], 0x210000)
 
     def test_rejects_changes_to_immutable_contract(self) -> None:
         variants = {

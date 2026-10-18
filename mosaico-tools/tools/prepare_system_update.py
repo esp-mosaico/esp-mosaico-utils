@@ -73,6 +73,17 @@ def _require_image(path: Path, name: str, capacity: int) -> None:
         )
 
 
+def normal_application(layout: dict[str, Partition]) -> Partition:
+    """Resolve the sole app/ota_0 by subtype; its label and capacity belong to the product."""
+    apps = [entry for label, entry in layout.items()
+            if entry.type == "app" and label not in IMMUTABLE_LAYOUT]
+    if (len(apps) != 1 or apps[0].subtype != "ota_0" or apps[0].flags or
+            apps[0].offset != 0x210000 or apps[0].size <= 0 or apps[0].size % 4096 or
+            apps[0].size > 0x1000000 - 0x210000):
+        raise ValueError("normal application must be one writable app/ota_0 at 0x210000 within 16 MiB")
+    return apps[0]
+
+
 def _layout_sha256(path: Path) -> str:
     data = path.read_bytes()
     if not data or len(data) > PARTITION_TABLE_REGION_BYTES:
@@ -99,16 +110,7 @@ def main() -> int:
                 f"unexpected {name} layout: {layout.get(name)!r}, expected {expected!r}"
             )
 
-    ota_partition = layout.get("main_app")
-    if (
-        ota_partition is None
-        or ota_partition.type != "app"
-        or ota_partition.subtype != "ota_0"
-        or ota_partition.flags
-    ):
-        raise ValueError(
-            f"main_app must be a writable app/ota_0 partition: {ota_partition!r}"
-        )
+    ota_partition = normal_application(layout)
     data_images = {}
     if args.ui_apps is not None:
         data_images["ui_apps"] = args.ui_apps

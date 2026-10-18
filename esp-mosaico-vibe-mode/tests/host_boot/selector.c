@@ -14,6 +14,8 @@ int main(void)
     bootloader_state_t bs = {
         .test = {MOSAICO_RECOVERY_ADDRESS, MOSAICO_RECOVERY_BYTES},
         .ota_info = {0x9000, MOSAICO_OTADATA_BYTES},
+        .ota = {{MOSAICO_APPLICATION_ADDRESS, 0xdf0000}},
+        .app_count = 1,
     };
     memset(bootstrap, 0xff, sizeof(bootstrap));
     assert(select_partition_number(&bs) == 0); /* Blank NVS: native app flash. */
@@ -38,7 +40,7 @@ int main(void)
     gpio_level = 0;
     assert(select_partition_number(&bs) == TEST_APP_INDEX);
     gpio_level = 1;
-    selected = INVALID_INDEX;
+    ota_state = ESP_OTA_IMG_PENDING_VERIFY;
     assert(select_partition_number(&bs) == TEST_APP_INDEX);
     bs.test.offset = 0; /* A wrong layout never grants a recovery boot target. */
     assert(select_partition_number(&bs) == INVALID_INDEX);

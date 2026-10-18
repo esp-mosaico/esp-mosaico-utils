@@ -1,5 +1,10 @@
 # Vibe Mode 0.2
 
+当前源码为 Recovery 0.2.1，使用固定 ESP-IDF `188e3e55bb20`，修复单槽
+OTA 健康状态与 S31 维护交接；普通应用通过 `app/ota_0` 子类型解析，标签由产品
+拥有。限制、编译回归与实机证据见 [0.2.1 验证](../../docs/validation-0.2.1.md)。
+下文 2026-10-16 的 0.2.0 评审包记录保留为历史；新包只在设备资格验证后替换。
+
 本工程支持通过高速 USB console 执行 `idf.py -p PORT flash monitor`。
 `CONFIG_ESP_IRIS_USB_AUTO_DOWNLOAD=y` 在 CDC0 识别下载握手；CDC1 保持 Iris data
 用途。VID/PID 保持 `303A:4002`。项目 `idf_ext.py` 显式加载 Iris 扩展，构建完成后
