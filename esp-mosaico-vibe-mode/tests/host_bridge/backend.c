@@ -343,6 +343,29 @@ static esp_err_t ota_status_error;
 esp_err_t esp_iris_ota_get_status(esp_iris_ota_status_t *status) { status->active = ota_active; return ota_status_error; }
 int main(void)
 {
+    /* The official and framework layouts share one subtype, with product-owned
+     * labels and capacities. Reject alternate app slots before any write. */
+    const uint32_t capacities[] = {0xdf0000, 0x700000};
+    const char *labels[] = {"main_app", "ota_0"};
+    for (unsigned i = 0; i < 2; ++i) {
+        setup();
+        esp_partition_info_t *entries = (void *)(flash + 0x8000);
+        entries[6].pos.size = capacities[i];
+        memset(entries[6].label, 0, sizeof(entries[6].label));
+        memcpy(entries[6].label, labels[i], strlen(labels[i]));
+        assert(update_require_immutable_contract(entries, 7) == ESP_OK);
+        assert(update_find_partition_entry(entries, 7, ESP_PARTITION_TYPE_APP,
+                                          ESP_PARTITION_SUBTYPE_APP_OTA_0, NULL) == &entries[6]);
+        entries[6].flags = 1;
+        assert(update_require_immutable_contract(entries, 7) != ESP_OK);
+        entries[6].flags = 0;
+        entries[6].pos.offset += 0x10000;
+        assert(update_require_immutable_contract(entries, 7) != ESP_OK);
+        entries[6].pos.offset = MOSAICO_APPLICATION_ADDRESS;
+        entries[7] = entries[6];
+        entries[7].subtype++;
+        assert(update_require_immutable_contract(entries, 8) != ESP_OK);
+    }
     ota_active = true;
     assert(factory_system_update_read_acquire() == ESP_ERR_INVALID_STATE);
     assert(!factory_system_update_writer_busy());

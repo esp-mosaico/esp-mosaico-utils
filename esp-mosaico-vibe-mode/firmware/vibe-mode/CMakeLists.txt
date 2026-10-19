@@ -22,8 +22,13 @@ if(NOT SDKCONFIG_DEFAULTS)
         "sdkconfig.defaults;sdkconfig.recovery.defaults")
 endif()
 
+include("${CMAKE_CURRENT_LIST_DIR}/../../cmake/mosaico_idf_revision.cmake")
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(vibe-mode)
+
+if(CONFIG_SECURE_BOOT OR CONFIG_SECURE_FLASH_ENC_ENABLED OR CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK)
+    message(FATAL_ERROR "Reviewed Vibe Mode supports plaintext unfused developer hardware only")
+endif()
 
 include(cmake/usb_dma_bss.cmake)
 include(cmake/bsp_display_timing.cmake)

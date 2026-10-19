@@ -127,7 +127,8 @@ const esp_partition_info_t *update_find_partition_entry(const esp_partition_info
     for (int i = 0; i < count; ++i) {
         if (entries[i].magic == ESP_PARTITION_MAGIC && entries[i].type == type &&
             entries[i].subtype == subtype &&
-            strncmp((const char *)entries[i].label, label, sizeof(entries[i].label)) == 0) {
+            (label == NULL ||
+             strncmp((const char *)entries[i].label, label, sizeof(entries[i].label)) == 0)) {
             return &entries[i];
         }
     }
@@ -154,6 +155,23 @@ esp_err_t update_require_immutable_contract(const esp_partition_info_t *entries,
                             ESP_ERR_INVALID_VERSION, TAG,
                             "immutable partition contract mismatch: %s", contract->label);
     }
+    unsigned normal_apps = 0;
+    for (int i = 0; i < count; ++i) {
+        const esp_partition_info_t *entry = &entries[i];
+        if (entry->magic != ESP_PARTITION_MAGIC || entry->type != ESP_PARTITION_TYPE_APP)
+            continue;
+        if (update_partition_entry_matches_contract(entry, &s_immutable_partitions[3]))
+            continue;
+        ESP_RETURN_ON_FALSE(
+            entry->subtype == ESP_PARTITION_SUBTYPE_APP_OTA_0 && ++normal_apps == 1 &&
+                entry->pos.offset == MOSAICO_APPLICATION_ADDRESS && entry->pos.size > 0 &&
+                entry->pos.size % FACTORY_SYSTEM_FLASH_SECTOR_BYTES == 0 &&
+                entry->pos.size <= MOSAICO_FLASH_BYTES - MOSAICO_APPLICATION_ADDRESS &&
+                entry->flags == 0,
+            ESP_ERR_INVALID_VERSION, TAG, "normal application must be the sole writable ota_0");
+    }
+    ESP_RETURN_ON_FALSE(normal_apps == 1, ESP_ERR_INVALID_VERSION, TAG,
+                        "normal ota_0 application is missing");
     return ESP_OK;
 }
 
@@ -216,7 +234,7 @@ esp_err_t update_resolve_component_targets(update_context_t *ctx,
                          ? update_find_partition_entry_at_offset(entries, count,
                                                                  component->target_offset)
                          : update_find_partition_entry(entries, count, ESP_PARTITION_TYPE_APP,
-                                                       ESP_PARTITION_SUBTYPE_APP_OTA_0, "main_app");
+                                                       ESP_PARTITION_SUBTYPE_APP_OTA_0, NULL);
             ESP_RETURN_ON_FALSE(
                 target != NULL && target->type == ESP_PARTITION_TYPE_APP &&
                     (!ctx->transaction.remote_bridge || target->pos.offset >= 0x200000U) &&

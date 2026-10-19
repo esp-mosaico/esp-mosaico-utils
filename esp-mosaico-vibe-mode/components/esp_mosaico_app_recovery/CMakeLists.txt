@@ -1,3 +1,7 @@
+# Script-mode contract probes do not configure or build firmware.
+if(NOT CMAKE_SCRIPT_MODE_FILE)
+    include("${CMAKE_CURRENT_LIST_DIR}/../../cmake/mosaico_idf_revision.cmake")
+endif()
 idf_component_register(
     SRCS "iris_ota_support.c" "mosaico_shared.c"
     INCLUDE_DIRS "include"
@@ -36,4 +40,8 @@ foreach(entry IN LISTS mosaico_contract)
 endforeach()
 if(CONFIG_ESP_IRIS_OTA)
     message(FATAL_ERROR "Mosaico application must disable CONFIG_ESP_IRIS_OTA; Recovery owns the writer")
+endif()
+
+if(CONFIG_SECURE_BOOT OR CONFIG_SECURE_FLASH_ENC_ENABLED OR CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK)
+    message(FATAL_ERROR "Mosaico Recovery integration supports plaintext unfused developer hardware only")
 endif()

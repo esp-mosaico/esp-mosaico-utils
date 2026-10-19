@@ -37,7 +37,7 @@ def test_fixture_preserves_partitions_and_uses_real_ui():
 
 
 @pytest.mark.parametrize("component_layout", [True, False])
-def test_fixture_discovers_application_components(tmp_path, component_layout):
+def test_fixture_discovers_application_components(tmp_path, component_layout, pinned_idf_probe):
     cmake = shutil.which("cmake")
     if cmake is None:
         pytest.skip("CMake is required to check fixture component discovery")
@@ -58,7 +58,7 @@ def test_fixture_discovers_application_components(tmp_path, component_layout):
     )
     build = tmp_path / "build"
     result = subprocess.run(
-        [cmake, "-S", str(FIXTURE), "-B", str(build),
+        [cmake, "-S", str(pinned_idf_probe(FIXTURE)), "-B", str(build),
          "-DMOSAICO_TEST_APPLICATION=" + str(application),
          "-DGSPC_EXECUTABLE=" + str(tmp_path / "unused-gspc")],
         env=dict(os.environ, IDF_PATH=str(fake_idf)),

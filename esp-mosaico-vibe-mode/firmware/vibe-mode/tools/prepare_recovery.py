@@ -8,6 +8,7 @@ import hashlib
 import json
 from pathlib import Path
 import shutil
+import struct
 import subprocess
 import sys
 from typing import Any
@@ -94,6 +95,58 @@ def enabled_config(config: str, name: str) -> bool:
     return f"{name}=y" in config.splitlines()
 
 
+def normal_application_partition(path: Path) -> dict[str, Any]:
+    """Read the actual table, retaining the product's OTA0 label and capacity."""
+    raw = path.read_bytes()
+    if not raw or len(raw) > 4096 or len(raw) % 32:
+        raise RecoveryImageError("invalid partition table size")
+    entries = []
+    checksum = False
+    for offset in range(0, len(raw), 32):
+        row = raw[offset:offset + 32]
+        if row == b"\xff" * 32:
+            if any(byte != 255 for byte in raw[offset:]):
+                raise RecoveryImageError("partition table has data after its terminator")
+            break
+        if row[:2] == b"\xeb\xeb" and not checksum:
+            if row[2:16] != b"\xff" * 14 or row[16:] != hashlib.md5(raw[:offset]).digest():
+                raise RecoveryImageError("partition table MD5 mismatch")
+            checksum = True
+            continue
+        if checksum:
+            raise RecoveryImageError("partition entry follows its checksum")
+        magic, kind, subtype, address, size, label, flags = struct.unpack("<HBBII16sI", row)
+        if magic != 0x50aa:
+            raise RecoveryImageError("invalid partition table entry")
+        try:
+            name = label.split(b"\0", 1)[0].decode("ascii")
+        except UnicodeError as error:
+            raise RecoveryImageError("invalid partition label") from error
+        if (not name or any(entry[0] == name for entry in entries) or not size or
+                address < 0x9000 or address % 4096 or size % 4096 or
+                address + size > 0x1000000 or any(
+                    address < entry[3] + entry[4] and entry[3] < address + size
+                    for entry in entries)):
+            raise RecoveryImageError("invalid, duplicate or overlapping partition range")
+        entries.append((name, kind, subtype, address, size, flags))
+    if not checksum:
+        raise RecoveryImageError("partition table checksum is missing")
+    types = {"app": 0, "data": 1}
+    subtypes = {"ota": 0, "phy": 1, "nvs": 2, "coredump": 3, "test": 0x20}
+    for label, fields in PRODUCT_CONTRACT["immutable_layout"].items():
+        kind, subtype, address, size, flags = fields
+        if (label, types[kind], subtypes[subtype], address, size, 0) not in entries or flags:
+            raise RecoveryImageError("immutable partition contract changed: " + label)
+    apps = [entry for entry in entries if entry[1] == 0 and entry[0] != "vibe_mode"]
+    if len(apps) != 1:
+        raise RecoveryImageError("partition table must contain one normal application")
+    name, _, subtype, address, size, flags = apps[0]
+    if (not name or subtype != 0x10 or address != 0x210000 or not size or
+            size % 4096 or size > 0x1000000 - address or flags):
+        raise RecoveryImageError("normal application must be writable ota_0 at 0x210000 within 16 MiB")
+    return {"name": name, "subtype": "ota_0", "offset": f"0x{address:x}", "size": f"0x{size:x}"}
+
+
 def source_state(source_root: Path) -> tuple[str, bool]:
     try:
         commit = subprocess.run(
@@ -156,11 +209,7 @@ def build_manifest(
                 "offset": f"0x{offsets['recovery']:x}",
                 "size": f"0x{partition_size:x}",
             },
-            "application_partition": {
-                "name": "main_app",
-                "subtype": "ota_0",
-                "offset": f"0x{normal_offset:x}",
-            },
+            "application_partition": normal_application_partition(images["partition_table"]),
         },
         "initial_boot": {
             "partition": "vibe_mode",
@@ -231,15 +280,19 @@ def validate(
         raise RecoveryImageError("Vibe Mode partition offset changed; rebuild recovery bundle")
     if parse_int(recovery_partition.get("size", "")) != partition_size:
         raise RecoveryImageError("Vibe Mode partition size changed; rebuild recovery bundle")
-    if application_partition.get("name") != "main_app" or application_partition.get("subtype") != "ota_0" or parse_int(
+    actual_application = normal_application_partition(images["partition_table"])
+    if application_partition.get("name") != actual_application["name"] or application_partition.get("subtype") != "ota_0" or parse_int(
         application_partition.get("offset", "")
-    ) != normal_offset:
+    ) != normal_offset or ("size" in application_partition and
+                         application_partition["size"] != actual_application["size"]):
         raise RecoveryImageError("normal application partition layout changed")
     security = require_mapping(manifest, "security")
     if security.get("secure_boot") is not secure_boot:
         raise RecoveryImageError("recovery secure-boot configuration differs")
     if security.get("flash_encryption") is not flash_encryption:
         raise RecoveryImageError("recovery flash-encryption configuration differs")
+    if secure_boot or flash_encryption:
+        raise RecoveryImageError("the reviewed Recovery supports plaintext unfused developer hardware only")
 
     entries = require_mapping(manifest, "images")
     for name, path in images.items():

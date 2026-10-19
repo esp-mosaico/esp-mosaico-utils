@@ -11,7 +11,7 @@ UTILS_ROOT = Path(__file__).resolve().parents[2]
 RECOVERY = UTILS_ROOT / "esp-mosaico-vibe-mode/firmware/vibe-mode"
 
 
-def test_recovery_does_not_bootstrap_a_ui_framework(tmp_path):
+def test_recovery_does_not_bootstrap_a_ui_framework(tmp_path, pinned_idf_probe):
     cmake = shutil.which("cmake")
     if cmake is None:
         pytest.skip("CMake is required for the Recovery configure regression")
@@ -42,7 +42,7 @@ def test_recovery_does_not_bootstrap_a_ui_framework(tmp_path):
         environment.pop(name, None)
     build = tmp_path / "build"
     result = subprocess.run(
-        [cmake, "-S", str(RECOVERY), "-B", str(build),
+        [cmake, "-S", str(pinned_idf_probe(RECOVERY)), "-B", str(build),
          "-DMOSAICO_GSPC_PYTHON=" + str(python)],
         env=environment, capture_output=True, text=True, timeout=60,
     )
