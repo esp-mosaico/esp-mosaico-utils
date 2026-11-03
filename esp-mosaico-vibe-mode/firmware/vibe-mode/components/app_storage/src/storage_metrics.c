@@ -23,6 +23,11 @@ void storage_metrics_add(storage_metric_t metric, uint64_t value) {
     portEXIT_CRITICAL(&s_lock);
 }
 void storage_metrics_bind(spi_device_handle_t spi, size_t page_size) {
+#if CONFIG_IRIS_FACTORY_IO_DIAGNOSTICS
+    esp_log_level_set("io_perf", ESP_LOG_INFO);
+    esp_log_level_set("nand_perf", ESP_LOG_INFO);
+    esp_log_level_set("app_storage", ESP_LOG_INFO);
+#endif
     s_spi = spi;
     s_page_size = page_size;
     s_ready_started = 0;
@@ -51,9 +56,9 @@ void storage_metrics_end(void) {
              (unsigned)s_page_size, (long long)(esp_timer_get_time() - s_started),
              M(LOGICAL_PAGES), M(CACHE_HITS), M(CACHE_MISSES), M(LOGICAL_US),
              M(RAW_DATA), M(RAW_META), M(RAW_BYTES), M(RAW_US), M(IO_ERRORS));
-    ESP_LOGI("nand_perf", "spi_page=%llu spi_status=%llu spi_data=%llu spi_other=%llu page_us=%llu status_us=%llu data_us=%llu other_us=%llu spi_bytes=%llu ready_us=%llu polling=%llu spi_errors=%llu",
+    ESP_LOGI("nand_perf", "spi_page=%llu spi_status=%llu spi_data=%llu spi_other=%llu page_us=%llu status_us=%llu data_us=%llu other_us=%llu spi_bytes=%llu ready_us=%llu polling=%llu spi_errors=%llu programs=%llu erases=%llu",
              M(SPI_PAGE), M(SPI_STATUS), M(SPI_DATA), M(SPI_OTHER), M(SPI_PAGE_US),
-             M(SPI_STATUS_US), M(SPI_DATA_US), M(SPI_OTHER_US), M(SPI_BYTES), M(READY_US), M(POLLING), M(ERRORS));
+             M(SPI_STATUS_US), M(SPI_DATA_US), M(SPI_OTHER_US), M(SPI_BYTES), M(READY_US), M(POLLING), M(ERRORS), M(PROGRAMS), M(ERASES));
 #undef M
 }
 
@@ -83,6 +88,8 @@ esp_err_t __wrap_spi_device_transmit(spi_device_handle_t spi, spi_transaction_t 
         err = __real_spi_device_transmit(spi, tx);
     int64_t ended = esp_timer_get_time();
     storage_metrics_add(count, 1);
+    if (tx->cmd == 0x10) storage_metrics_add(STORAGE_PROGRAMS, 1);
+    if (tx->cmd == 0xd8) storage_metrics_add(STORAGE_ERASES, 1);
     storage_metrics_add(duration, ended - started);
     storage_metrics_add(STORAGE_SPI_BYTES, (tx->rxlength + tx->length + 7) / 8);
     if (count == STORAGE_SPI_DATA && s_raw_started) {

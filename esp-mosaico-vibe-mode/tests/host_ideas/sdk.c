@@ -216,6 +216,7 @@ esp_err_t app_storage_acquire(void) {
     }
     return err;
 }
+esp_err_t app_storage_reclaim(void) { return ESP_ERR_NOT_SUPPORTED; }
 void app_storage_release(void) {
     assert(env.lease);
     env.lease = false;

@@ -6,6 +6,7 @@
 #define CONFIG_IRIS_FACTORY_SYSTEM_UPDATE_BACKEND 1
 #define CONFIG_IRIS_FACTORY_NAND_SYSTEM_UPDATE 1
 #define CONFIG_IRIS_FACTORY_NAND_READ_CACHE_KIB 8
+#define CONFIG_IRIS_FACTORY_NAND_CLOCK_MHZ 20
 #define ESP_RETURN_ON_ERROR(call, tag, ...) do { (void)(tag); int e = (call); if (e) return e; } while (0)
 #define taskENTER_CRITICAL portENTER_CRITICAL
 #define taskEXIT_CRITICAL portEXIT_CRITICAL
@@ -31,7 +32,7 @@
 typedef int gpio_num_t;
 typedef struct { uint64_t pin_bit_mask; int mode, pull_up_en, pull_down_en, intr_type; } gpio_config_t;
 typedef struct { int mosi_io_num, miso_io_num, sclk_io_num, quadhd_io_num, quadwp_io_num, max_transfer_sz; } spi_bus_config_t;
-typedef struct { int clock_speed_hz, mode, spics_io_num, queue_size, flags; } spi_device_interface_config_t;
+typedef struct { int command_bits, clock_speed_hz, mode, spics_io_num, queue_size, flags; } spi_device_interface_config_t;
 typedef struct { spi_device_handle_t device_handle; int gc_factor, io_mode, flags; } spi_nand_flash_config_t;
 typedef struct {
     const char *base_path;
@@ -46,7 +47,8 @@ static int read_error;
 esp_err_t storage_blockdev_read_error(void) { return read_error; }
 void storage_blockdev_clear_error(void) { read_error = ESP_OK; }
 static esp_err_t release_device(esp_blockdev_handle_t dev) { ++releases; return ESP_OK; }
-static const esp_blockdev_ops_t ops = {.release = release_device};
+static esp_err_t control_device(esp_blockdev_handle_t dev, uint8_t cmd, void *arg) { return ESP_OK; }
+static const esp_blockdev_ops_t ops = {.release = release_device, .ioctl = control_device};
 static esp_blockdev_t device = {.ops = &ops, .geometry = {.read_size = 2048, .disk_size = 8192}};
 static esp_err_t gpio_set_level(gpio_num_t pin, int level) { return ESP_OK; }
 static esp_err_t gpio_config(const gpio_config_t *c) { return ESP_OK; }

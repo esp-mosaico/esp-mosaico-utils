@@ -8,6 +8,12 @@ idf_component_register(
     PRIV_INCLUDE_DIRS "private"
     PRIV_REQUIRES esp-mosaico-bsp esp_lcd_touch esp_blockdev espressif__spi_nand_flash joltwallet__littlefs esp_driver_spi esp_driver_gpio esp_timer
 )
+if(CONFIG_IRIS_FACTORY_NAND_RECLAIM)
+    target_sources(${COMPONENT_LIB} PRIVATE "src/storage_reclaim.c")
+endif()
+if(CONFIG_IRIS_FACTORY_IO_DIAGNOSTICS)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE LOG_LOCAL_LEVEL=ESP_LOG_INFO)
+endif()
 if(CONFIG_IRIS_FACTORY_NAND_SYSTEM_UPDATE)
     # Observe only this NAND's SPI handle. Count physical reads from commands:
     # LTO can inline the NAND driver's private nand_read entry.

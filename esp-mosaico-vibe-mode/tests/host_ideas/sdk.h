@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
+#define ESP_LOGW(...) ((void)0)
 #include <assert.h>
 #include <openssl/sha.h>
 #include <stdbool.h>
