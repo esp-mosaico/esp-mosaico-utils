@@ -37,7 +37,9 @@
 #include <unistd.h>
 
 #define ROOT "/nand/ideas"
-#define IO_BYTES 4096
+#define IO_BYTES FACTORY_IO_CHUNK_BYTES
+/* Worker-owned HTTPS connection; released at the end of every job. */
+void ideas_cloud_cleanup(void);
 typedef struct ideas_context ideas_context_t;
 typedef struct {
     void *data;

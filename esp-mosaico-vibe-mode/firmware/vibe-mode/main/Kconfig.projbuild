@@ -115,14 +115,49 @@ config IRIS_FACTORY_NAND_SYSTEM_UPDATE
         The Recovery UI scans /nand/system-update/manifest.json and one level
         of release subdirectories so an operator can select a bundle locally.
 
+config IRIS_FACTORY_NAND_CLOCK_MHZ
+    int "External NAND SPI clock (MHz)"
+    range 20 80
+    default 40
+    depends on IRIS_FACTORY_NAND_SYSTEM_UPDATE
+    help
+        Select a board-validated clock. This controls the external SPI NAND,
+        independently of the main NOR boot/XIP clock.
+
+config IRIS_FACTORY_NAND_QIO
+    bool "Use all four NAND data pins"
+    default n
+    depends on IRIS_FACTORY_NAND_SYSTEM_UPDATE
+    help
+        Connect BSP_NAND_WP/HOLD as IO2/IO3. The NAND driver enables QE while
+        retaining its ECC policy. Disable for boards wired for single IO only.
+
+config IRIS_FACTORY_NAND_RECLAIM
+    bool "Discard unused NAND logical pages after committed file changes"
+    default y
+    depends on IRIS_FACTORY_NAND_SYSTEM_UPDATE
+    help
+        Traverse under the LittleFS VFS lock, with no open files/directories,
+        then discard only unreachable logical pages. Keeps disk geometry and
+        the existing filesystem. A bounded pass also reclaims stale mappings
+        left by older firmware. Errors never format the NAND.
+
+config IRIS_FACTORY_IO_DIAGNOSTICS
+    bool "Record Idea IO and NAND performance counters"
+    default n
+    help
+        Compile INFO logs for the product IO/storage components only. Includes
+        cooperative scheduling time and physical program/erase command counts.
+
 config IRIS_FACTORY_NAND_READ_CACHE_KIB
     int "NAND logical page read cache in PSRAM (KiB, 0 disables)"
     range 0 128
     default 64
     depends on IRIS_FACTORY_NAND_SYSTEM_UPDATE
     help
-        Read-only LRU between LittleFS and Dhara. Writes, erase, ioctl and sync
-        invalidate it before forwarding. Allocation failure uses uncached IO.
+        Read-only LRU between LittleFS and Dhara. Writes and erase invalidate
+        the affected pages; sync and ioctl keep a full verification barrier.
+        Allocation failure uses uncached IO.
         Changes RAM usage only; NAND geometry and disk format stay unchanged.
 
 config IRIS_FACTORY_NAND_POLL_SHORT

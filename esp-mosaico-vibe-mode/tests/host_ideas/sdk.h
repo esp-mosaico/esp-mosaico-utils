@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
+#define ESP_LOGW(...) ((void)0)
 #include <assert.h>
 #include <openssl/sha.h>
 #include <stdbool.h>
@@ -87,6 +88,7 @@ typedef struct {
 } esp_http_client_config_t;
 esp_err_t esp_crt_bundle_attach(void *config);
 esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *config);
+esp_err_t esp_http_client_set_url(esp_http_client_handle_t client, const char *url);
 esp_err_t esp_http_client_set_header(esp_http_client_handle_t client, const char *key,
                                      const char *value);
 esp_err_t esp_http_client_delete_header(esp_http_client_handle_t client, const char *key);

@@ -17,6 +17,9 @@
 #include "storage_metrics.h"
 #include "storage_blockdev.h"
 #include "storage_volume.h"
+#include "storage_reclaim.h"
+#include "mosaico_littlefs_extension.h"
+#include "mosaico_nand_extension.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -48,6 +51,37 @@ static esp_err_t release_control_pin(gpio_num_t pin)
     return gpio_set_level(pin, 1);
 }
 
+#if CONFIG_IRIS_FACTORY_NAND_QIO
+static esp_err_t prepare_quad(void)
+{
+    /* With QE=0 the chip treats IO2/IO3 as WP/HOLD. Routing them to the SPI
+     * peripheral first can assert HOLD and make even RDID return zero. Use
+     * single IO to apply the driver's chip-specific QE policy, then reconnect. */
+    const spi_bus_config_t bus = {
+        .mosi_io_num=BSP_NAND_D, .miso_io_num=BSP_NAND_Q, .sclk_io_num=BSP_NAND_CLK,
+        .quadhd_io_num=GPIO_NUM_NC, .quadwp_io_num=GPIO_NUM_NC,
+        .max_transfer_sz=APP_STORAGE_TRANSFER_BYTES,
+    };
+    esp_err_t err = spi_bus_initialize(BSP_NAND_SPI_HOST, &bus, SPI_DMA_CH_AUTO);
+    if (err != ESP_OK) return err;
+    const spi_device_interface_config_t device = {
+        .command_bits=8, .clock_speed_hz=20000000, .mode=0, .spics_io_num=BSP_NAND_CS,
+        .queue_size=1, .flags=SPI_DEVICE_HALFDUPLEX,
+    };
+    spi_device_handle_t spi = NULL;
+    err = spi_bus_add_device(BSP_NAND_SPI_HOST, &device, &spi);
+    if (err == ESP_OK) {
+        storage_metrics_bind(spi, 0);
+        err = mosaico_nand_prepare_quad(spi);
+        storage_metrics_bind(NULL, 0);
+        esp_err_t release = spi_bus_remove_device(spi);
+        if (err == ESP_OK) err = release;
+    }
+    esp_err_t release = spi_bus_free(BSP_NAND_SPI_HOST);
+    return err == ESP_OK ? release : err;
+}
+#endif
+
 static void nand_cleanup_partial(app_storage_context_t *ctx)
 {
     if (ctx->blockdev != NULL && !ctx->mounted) {
@@ -73,13 +107,21 @@ static esp_err_t ensure_mounted(app_storage_context_t *ctx, bool format)
 
     ESP_RETURN_ON_ERROR(release_control_pin(BSP_NAND_HOLD), TAG, "release NAND HOLD");
     ESP_RETURN_ON_ERROR(release_control_pin(BSP_NAND_WP), TAG, "release NAND WP");
+#if CONFIG_IRIS_FACTORY_NAND_QIO
+    ESP_RETURN_ON_ERROR(prepare_quad(), TAG, "enable QE before routing NAND data pins");
+#endif
 
     const spi_bus_config_t bus_config = {
         .mosi_io_num = BSP_NAND_D,
         .miso_io_num = BSP_NAND_Q,
         .sclk_io_num = BSP_NAND_CLK,
+#if CONFIG_IRIS_FACTORY_NAND_QIO
+        .quadhd_io_num = BSP_NAND_HOLD,
+        .quadwp_io_num = BSP_NAND_WP,
+#else
         .quadhd_io_num = GPIO_NUM_NC,
         .quadwp_io_num = GPIO_NUM_NC,
+#endif
         .max_transfer_sz = APP_STORAGE_TRANSFER_BYTES,
     };
     esp_err_t err = spi_bus_initialize(BSP_NAND_SPI_HOST, &bus_config, SPI_DMA_CH_AUTO);
@@ -89,7 +131,8 @@ static esp_err_t ensure_mounted(app_storage_context_t *ctx, bool format)
     ctx->bus_initialized = true;
 
     const spi_device_interface_config_t device_config = {
-        .clock_speed_hz = BSP_NAND_FLASH_DEFAULT_CLOCK_HZ,
+        .command_bits = 8,
+        .clock_speed_hz = CONFIG_IRIS_FACTORY_NAND_CLOCK_MHZ * 1000000,
         .mode = 0,
         .spics_io_num = BSP_NAND_CS,
         .queue_size = BSP_NAND_FLASH_DEFAULT_QUEUE_SIZE,
@@ -104,17 +147,28 @@ static esp_err_t ensure_mounted(app_storage_context_t *ctx, bool format)
     spi_nand_flash_config_t nand_config = {
         .device_handle = ctx->spi,
         .gc_factor = 0,
+#if CONFIG_IRIS_FACTORY_NAND_QIO
+        .io_mode = SPI_NAND_IO_MODE_QIO,
+#else
         .io_mode = SPI_NAND_IO_MODE_SIO,
+#endif
         .flags = SPI_DEVICE_HALFDUPLEX,
     };
     storage_metrics_bind(ctx->spi, 0);
     const int64_t driver_started = esp_timer_get_time();
     err = spi_nand_flash_init_with_layers(&nand_config, &ctx->blockdev);
     if (err != ESP_OK) {
+        ESP_LOGE(TAG, "NAND driver initialization failed: %s", esp_err_to_name(err));
         nand_cleanup_partial(ctx);
         return err;
     }
     ESP_LOGI("boot_perf", "nand_driver_us=%lld", (long long)(esp_timer_get_time() - driver_started));
+#if CONFIG_IRIS_FACTORY_IO_DIAGNOSTICS
+    int actual_khz = 0;
+    if (spi_device_get_actual_freq(ctx->spi, &actual_khz) == ESP_OK)
+        ESP_LOGI(TAG, "NAND SPI actual_khz=%u io_mode=%u", (unsigned)actual_khz,
+                 (unsigned)nand_config.io_mode);
+#endif
     uint64_t volume_bytes = ctx->blockdev->geometry.disk_size;
     if (!format) {
         /* Preserve existing geometry during normal mounts. Explicit recovery
@@ -138,6 +192,14 @@ static esp_err_t ensure_mounted(app_storage_context_t *ctx, bool format)
     ctx->blockdev->geometry.disk_size = volume_bytes;
 
     if (format) {
+        /* Explicitly confirmed, with external users drained: reset the FTL as
+         * well as LittleFS. A normal mount NEVER clears logical mappings. */
+        uint32_t confirm = MOSAICO_NAND_DISCARD_CONFIRM;
+        err = ctx->blockdev->ops->ioctl(ctx->blockdev, MOSAICO_NAND_DISCARD_ALL, &confirm);
+        if (err != ESP_OK) {
+            nand_cleanup_partial(ctx);
+            return err;
+        }
         err = esp_littlefs_format_blockdev(ctx->blockdev);
         if (err != ESP_OK) {
             nand_cleanup_partial(ctx);
@@ -227,6 +289,24 @@ esp_err_t app_storage_info(uint64_t *total, uint64_t *used)
     if (err == ESP_OK) { *total = t; *used = u; }
     return err;
 }
+
+esp_err_t app_storage_reclaim(void)
+{
+#if CONFIG_IRIS_FACTORY_NAND_RECLAIM
+    app_storage_context_t *ctx = &s_storage;
+    if (!ctx->mounted || !ctx->busy) return ESP_ERR_INVALID_STATE;
+    storage_reclaim_stats_t stats = {0};
+    int64_t started = esp_timer_get_time();
+    esp_err_t err = mosaico_littlefs_with_fs(ctx->blockdev, storage_reclaim_run, &stats);
+    ESP_LOGI("nand_perf", "reclaim_us=%lld live=%u examined=%u discarded=%u result=%d",
+             (long long)(esp_timer_get_time() - started), (unsigned)stats.live_pages,
+             (unsigned)stats.examined_pages, (unsigned)stats.discarded_pages, (int)err);
+    return err;
+#else
+    return ESP_ERR_NOT_SUPPORTED;
+#endif
+}
+
 esp_err_t app_storage_reserve(void)
 {
     app_storage_context_t *ctx = &s_storage;
@@ -262,6 +342,7 @@ esp_err_t app_storage_status(void) { return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t app_storage_access_status(void) { return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t app_storage_error(void) { return ESP_OK; }
 esp_err_t app_storage_format(void) { return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t app_storage_reclaim(void) { return ESP_ERR_NOT_SUPPORTED; }
 esp_err_t app_storage_info(uint64_t *total, uint64_t *used)
 {
     (void)total; (void)used;

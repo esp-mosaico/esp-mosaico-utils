@@ -19,6 +19,9 @@ idf_component_register(
     PRIV_INCLUDE_DIRS "private"
     PRIV_REQUIRES app_settings app_network app_http_client app_storage app_nand_update app_system app_system_update esp_iris esp_http_client esp-tls esp_timer spi_flash app_update bootloader_support esp_app_format esp_mosaico_boot nvs_flash espressif__cjson mbedtls
 )
+if(CONFIG_IRIS_FACTORY_IO_DIAGNOSTICS)
+    target_compile_definitions(${COMPONENT_LIB} PRIVATE LOG_LOCAL_LEVEL=ESP_LOG_INFO)
+endif()
 
 if(CONFIG_IRIS_FACTORY_IDEAS_CA_FILE)
     target_compile_definitions(${COMPONENT_LIB} PRIVATE IDEAS_PRIVATE_CA=1)

@@ -898,7 +898,7 @@ int main(int argc, char **argv) {
             assert(env->cancels == 1 && env->idle_hits == 1);
         } else {
             assert(snapshot().failed && snapshot().error == ESP_ERR_TIMEOUT && !snapshot().count);
-            assert(env->idle_hits >= 500);
+            assert(env->idle_hits >= 20 && env->idle_hits < 150);
         }
         assert(!env->installs && !env->restarts);
     } else

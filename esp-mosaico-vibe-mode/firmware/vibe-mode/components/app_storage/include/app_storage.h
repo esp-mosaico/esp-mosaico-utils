@@ -25,6 +25,10 @@ esp_err_t app_storage_acquire(void);
 void app_storage_release(void);
 /* Read filesystem usage while holding a storage reservation. */
 esp_err_t app_storage_info(uint64_t *total, uint64_t *used);
+/* Optional maintenance after a committed mutation, while holding a reservation.
+ * Skips with INVALID_STATE if files/directories are still open. Never formats,
+ * changes geometry, or removes any reachable file. Runs under the VFS lock. */
+esp_err_t app_storage_reclaim(void);
 
 /* Initialization/physical read failure requiring user attention; OK while pending.
  * Missing files, package validation and network failures are not media failures. */

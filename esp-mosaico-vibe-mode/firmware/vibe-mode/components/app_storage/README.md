@@ -1,14 +1,8 @@
 # app_storage：NAND 文件系统与访问控制
 
-独占 SPI NAND 挂载状态，提供本地工作任务的非阻塞占用和释放。
+管理 SPI NAND 挂载、本地任务占用、读取缓存和事务后回收。
 
-## 依赖与边界
-
-BSP、SPI NAND、LittleFS；没有应用组件依赖。
-
-公共头文件仅在 `include/`，内部头文件通过 `PRIV_INCLUDE_DIRS` 使用。其他组件不得包含 `private/` 或持有本组件内部结构。
-
-## 最小用法
+## 用法
 
 ```c
 if (app_storage_acquire() == ESP_OK) {
@@ -17,79 +11,46 @@ if (app_storage_acquire() == ESP_OK) {
 }
 ```
 
-实际调用者必须处理返回值，完整启动顺序由 `main` 组装。
+所有路径均须释放占用并处理返回值。`app_storage_error()` 提供初始化及底层读取故障。
+本地 reservation 不保护已打开的远端流；流生命周期由 Iris 管理。
 
-## 约束
+## 配置
 
-占用者在全部路径释放；普通挂载失败不会自动格式化。注册 Iris 文件卷属于 app_iris。
-`app_storage_access_status()` 使新文件请求在本地任务持有 reservation 时立即返回 BUSY，
-避免在全卷容量统计后才创建已被主机超时丢弃的句柄。检查不持有租约，不为已经打开的
-远端流提供与后续本地任务之间的完整互斥；流生命周期仍由 Iris 管理。
+- `CONFIG_IRIS_FACTORY_NAND_CLOCK_MHZ` / `CONFIG_IRIS_FACTORY_NAND_QIO`：
+  [固件默认配置](../../sdkconfig.recovery.defaults)使用 QIO 80MHz；单线板需关闭 QIO。
+  本组件自行初始化 SPI3，工作频率独立于 BSP NAND API 的默认值。
+- `CONFIG_IRIS_FACTORY_NAND_READ_CACHE_KIB`：默认 64KiB PSRAM，0 禁用，上限 128KiB；
+  缓存分配失败回退为直接读取。写入/擦除使相关页失效，错误、ioctl 和同步清空缓存。
+- `CONFIG_IRIS_FACTORY_NAND_RECLAIM`：在下载、删除、保存开发 Idea及批量更新每项成功后回收。
+- `CONFIG_IRIS_FACTORY_NAND_POLL_SHORT`：使用 polling 执行页加载和 READY 短事务。
+- `CONFIG_IRIS_FACTORY_IO_DIAGNOSTICS`：启用 IO/存储计时日志，默认关闭。
 
-挂载前通过 LittleFS 公开 raw API 只读探测已有卷的容量，探测卸载后才注册 VFS，
-不同时挂载两份文件系统。Dhara 恢复坏块估计后可能改变可用逻辑页数；VFS 使用已有卷
-的持久化容量，并核对其不超过当前介质容量。探测回调不能写入或擦除，不自动扩容；
-损坏卷、空介质及容量不足均保留原数据并返回错误。此路径要求 LittleFS 1.23 或更新版本。
+LittleFS lookahead 为 8192 字节，覆盖现有约 6 万个逻辑块。四线初始化先保持 WP/HOLD 为高，
+以单线 20MHz 开启并核验 QE，再连接 IO2/IO3。ECC、坏块策略及磁盘格式保持不变。
+逻辑擦除使用 TRIM，由 Dhara 自动 GC 管理物理回收。
 
-主机容量兼容回归使用真实 LittleFS；未构建固件依赖时，将 `LITTLEFS_SOURCE_DIR` 指向
-LittleFS 源码目录。CI 使用固定的 v2.11.2 源码，不依赖下载后的 managed component。
+## 挂载、格式化与回收
 
-`app_storage_error()` 提供初始化及底层读取故障；网络、缺失文件和包校验错误不属于此状态。
+普通挂载只读探测已有卷容量，不自动格式化、扩容或迁移；失败保留数据并返回错误。
 
-用户明确确认后，Ideas worker 取得本地存储和系统更新读租约，停止并排空 Iris 文件访问，
-调用 `app_storage_format()` 重建 LittleFS 并挂载，最后恢复 Iris。该接口不能在渲染任务
-或未排空外部 VFS 用户的情况下调用。失败保留错误状态并允许重新尝试；成功清除读取
-故障和旧列表缓存。格式化清除整个 NAND 文件系统，不触碰 NOR 应用、身份、Wi-Fi 或设置。
-本地 reservation 本身不保护远程文件句柄；格式化的互斥依赖上述停止及排空流程。
+格式化仅在用户确认后执行：Ideas worker 取得本地存储和系统更新读租约，停止并排空
+Iris 文件访问，调用 `app_storage_format()` 清除 FTL 映射并重建 LittleFS，最后恢复 Iris。
+此操作清空 NAND，不触碰 NOR 应用、身份、Wi-Fi 或设置；不能在渲染任务中调用。
 
-## 读取缓存与 SPI
+回收持有 LittleFS VFS 锁，先完成一致性处理并同步，再遍历数据、元数据及 orphans，
+仅 TRIM 不可达逻辑页。任何文件或目录仍打开时跳过，维护失败不撤销已提交的 Idea。
+候选位图和存活位图各约 8KiB PSRAM；分配失败不会丢弃映射。
+首次扫描覆盖历史映射，可能耗时较长；扫描期间让出 CPU，但持续持有文件系统锁。
 
-固件将 `CONFIG_LITTLEFS_LOOKAHEAD_SIZE` 设为 8192 字节，覆盖现有约 6 万个逻辑块。
-默认 128 字节只能跟踪 1024 个块，保存应用时会反复遍历已使用空间。真实 LittleFS
-回归对比两种位图，检查旧文件完整性并统计相同写入的读取次数；这不代表 NAND 总线吞吐量。
+## 维护与诊断
 
-`CONFIG_IRIS_FACTORY_NAND_READ_CACHE_KIB` 默认 64，在 LittleFS 与 Dhara 之间缓存逻辑页。
-页数据只分配在 PSRAM，标签与互斥量使用内部 RAM；缓存分配失败回退到直接读取。
-0 禁用缓存，128 为配置上限。介质几何、LittleFS 磁盘格式和 NAND ECC 均保持原有语义。
+本地 LittleFS、SPI NAND、Dhara 的版本和补丁见[第三方依赖说明](../../third_party/README.md)。
+依赖通过 `override_path` 直接构建，不修改 `managed_components`。
+升级或修改回收逻辑时需检查重复覆盖、重启、打开句柄和错误路径的数据完整性。
+主机容量回归默认使用本地 LittleFS；`LITTLEFS_SOURCE_DIR` 可选择其他核心进行兼容验证。
 
-缓存仅由成功的介质读取填充，不缓冲写入。所有 write、erase、ioctl 和 sync 在转发前
-清空缓存，包括失败或部分完成的操作；读取错误也清空缓存。这样下载持久化后的校验
-不会复用写入数据。每个块设备操作在同一互斥量内完成，覆盖本地任务和 Iris 文件服务。
-释放由 LittleFS 的卸载/挂载失败路径负责，包装器同时释放底层设备。
-
-`CONFIG_IRIS_FACTORY_NAND_POLL_SHORT` 只改变本 NAND SPI 句柄的 page-load 与 READY
-短事务。数据读取继续通过中断/DMA；写入、擦除、驱动 BUSY 超时和 ECC 检查继续由原驱动
-处理。使用公开 SPI API 的链接包装，避免修改 managed_components。原驱动每次同步事务
-返回后才发下一条命令，因此切换 polling 时不存在未完成的队列事务；失败不自动重试。
-
-## 计时口径
-
-每次成功的 `app_storage_acquire/release` 输出两行 `nand_perf`。计数为该时间窗口内
-整个 NAND 设备的增量，可能包含并发 Iris 文件访问，不是调用任务的独占计时。
-
-- `logical_pages/hits/misses`：LittleFS 请求的页数及逻辑页缓存命中/未命中。
-- `raw_data/raw_meta`：实际 SPI page-load 到 cache-read 的完整页/部分页读取次数。
-  部分页包括 Dhara 元数据；其他操作的 OOB 标记读取也可能计入，不能当作纯文件有效字节。
-- `raw_bytes`：上述数据阶段接收的字节，包含驱动的 DMA 对齐填充。
-- `logical_us` 包含底层映射和读取；`raw_us` 是页加载命令开始到数据事务结束；
-  `ready_us` 是页加载命令结束到 READY 状态返回。这些字段嵌套，不能相加。
-- `page_us/status_us/data_us/other_us`：各类同步 SPI API 调用的累计墙钟时间，包含调度等待，
-  不是逻辑分析仪测得的总线占用时间。`spi_bytes` 不含命令、地址和 dummy clocks。
-- `io_errors` 为逻辑读取失败次数，`spi_errors` 为 SPI API 失败次数；设备 ECC 拒绝读取
-  会继续传递到文件读取失败。日志不关闭或跳过任何完整性检查。
-
-物理层计数直接观察 SPI 命令，避免 LTO 内联 NAND 私有函数导致漏记。
-
-## EMVM-76015 实机验证
-
-2026-10-19 在 ESP32-S31（MAC `30:ed:a0:f4:0c:10`）通过消费工作区
-`test/EMVM-76015-e2e/mosaico.py` 完成验证。临时测试组件注入驱动初始化失败、
-底层读取失败及格式化时重新初始化失败；真实 UI 的中英文确认、取消不格式化、
-失败提示和重试均通过。用户授权清空原有 6 个 Ideas 后，真实 LittleFS 格式化及
-重新挂载成功，应用库清空；恢复正式固件后重新下载并保存 Idea `200046`（1.12.2）。
-
-最终固件不含故障注入组件，ELF SHA-256 为
-`c420961c31edf4baaad0b5c3fd033b17ee974eee85b9ab1f5893cc906eec0df3`，
-报告 HEALTHY、崩溃计数 0，bootloader、分区表摘要及原 Wi-Fi 保持不变。
-消费工作区 `.codex-runs/emvm76015/validation-summary.json` 保存验证断言、操作 ID、
-截图索引及测试辅助代码启动异常的修复记录。错误由测试组件注入，本次未模拟电气故障。
+`nand_perf` 统计占用窗口内整个设备的增量，可能包含并发 Iris IO。
+时间字段存在嵌套，不能相加；`programs/erases` 包含 FTL 搬移，不能当作应用有效数据量。
+指标定义见 [storage_metrics.c](src/storage_metrics.c)。
+Idea 传输和回读使用 16KiB 缓冲，按 20ms 预算让出 CPU；同一下载任务复用 HTTPS 连接，
+读空闲 20s 后进入有界重试。

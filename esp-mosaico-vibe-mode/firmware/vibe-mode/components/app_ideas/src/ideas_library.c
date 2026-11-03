@@ -95,7 +95,7 @@ static esp_err_t flash_hash(uint32_t offset, uint32_t size, const char *expected
             ctx->state->received += n;
             xSemaphoreGive(ctx->lock);
         }
-        vTaskDelay(1);
+        factory_io_cooperate(&metrics);
     }
     uint8_t digest[32];
     size_t n;
@@ -361,7 +361,7 @@ esp_err_t ideas_load_library(ideas_context_t *ctx) {
     return ctx->library_loaded ? ESP_OK : ideas_scan(ctx, false);
 }
 
-esp_err_t ideas_run_local(ideas_context_t *ctx, job_t *job) {
+static esp_err_t run_local(ideas_context_t *ctx, job_t *job) {
     if (job->startup) {
         /* Mount is already complete. Discover only the NOR app description;
          * NAND packages (including interrupted transactions) are inspected
@@ -543,5 +543,20 @@ esp_err_t ideas_prepare_row(ideas_context_t *ctx, job_t *job) {
     ++ctx->state->generation;
     xSemaphoreGive(ctx->lock);
     ideas_free_pending(pending);
+    return err;
+}
+
+/* Common path also covers each committed item in Update All. */
+esp_err_t ideas_run_local(ideas_context_t *ctx, job_t *job) {
+    esp_err_t err = run_local(ctx, job);
+    if (err == ESP_OK && (job->command == IDEAS_DOWNLOAD ||
+        job->command == IDEAS_DELETE || job->command == IDEAS_SAVE_DEVELOPMENT)) {
+        /* Local files are closed. Existing remote handles defer maintenance.
+         * A maintenance failure never undoes an already committed Idea. */
+        esp_err_t maintenance = app_storage_reclaim();
+        if (maintenance != ESP_OK && maintenance != ESP_ERR_INVALID_STATE &&
+            maintenance != ESP_ERR_NOT_SUPPORTED)
+            ESP_LOGW("ideas", "NAND maintenance deferred: %s", esp_err_to_name(maintenance));
+    }
     return err;
 }

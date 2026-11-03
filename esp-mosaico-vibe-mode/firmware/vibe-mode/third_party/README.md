@@ -11,15 +11,16 @@
 | ESP-Iris | 同仓库 `ESP-Iris/components/esp_iris` | app_iris 平台钩子和产品服务 |
 | ESP-Mosaico BSP | Git `05e067de0613a0aa3fe2af42e75616804decbf4b` | app_system 静音、app_storage NAND、app_ui 显示 |
 | esp_display_present | 1.1.1 | app_ui 提交 wrapper，用于按需截图 |
-| mDNS / cJSON / LittleFS | 1.12.0 / ^1.7.19 / ^1.22.0 | 使用公共 API |
+| mDNS / cJSON | 1.12.0 / ^1.7.19 | 使用公共 API |
+| LittleFS | 本地 `components/joltwallet__littlefs`，基线 1.23.0 | VFS 锁内同步回调，核心和磁盘格式不变 |
+| SPI NAND | 本地 `components/espressif__spi_nand_flash`，基线 1.4.4 | QE 引导、格式化映射清除、删除重复 GC |
+| Dhara | 本地 `components/espressif__dhara`，基线 1.1.0 | 对无映射 TRIM 跳过无效 GC |
 
 显式固定 presenter 1.1.1，防止组件图重算时将已验证的传递依赖升级为 1.1.2。
 轻量 UI 的字体与图片在作者工具中用 Pillow / Zopfli 编译；普通构建不需要这些包。
 设备端 Deflate 使用 ESP-IDF 提供的 ROM API，PC 端使用 zlib；PNG 容器及滤波由项目代码处理。
 固件不再依赖 ESP-GSP、GSPC 或其触摸适配器，也不修改任何托管组件源码。
 
-如需第三方源码修正，将版本、来源、校验值、修改原因和统一 diff 一起提交到
-本目录的 `patches/<原组件名>/`。先从锁定来源复制到独立构建目录，校验补丁基线，
-应用补丁后通过 Component Manager 的 `override_path` 使用该副本；补丁不匹配时停止构建。
-禁止在 managed_components 中手工改代码，禁止修改包缓存或静默忽略补丁失败。
-没有源码补丁时不引入补丁执行框架。
+本地 NAND 组件通过 `main/idf_component.yml` 的 `override_path` 统一选择。
+各组件的 `LOCAL_CHANGES.md` 记录基线、补丁及原始源码哈希；manifest 版本表示上游基线。
+升级时移植补丁并执行存储回归与固件构建，保留许可证；不修改 managed_components 或组件缓存。
