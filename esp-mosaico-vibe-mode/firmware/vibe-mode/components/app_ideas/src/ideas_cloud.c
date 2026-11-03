@@ -10,9 +10,17 @@
  * request. */
 static struct {
     char etag[68], retry_after[96], media[192];
-    bool invalid, encoded;
+    bool invalid, encoded, close;
     unsigned etags, media_count;
 } headers;
+static esp_http_client_handle_t s_client;
+void ideas_cloud_cleanup(void) {
+    if (s_client) {
+        esp_http_client_close(s_client);
+        esp_http_client_cleanup(s_client);
+        s_client = NULL;
+    }
+}
 static esp_err_t header_event(esp_http_client_event_t *event) {
     if (event->event_id != HTTP_EVENT_ON_HEADER)
         return ESP_OK;
@@ -28,6 +36,17 @@ static esp_err_t header_event(esp_http_client_event_t *event) {
             headers.invalid = true;
         else
             strcpy(headers.media, event->header_value);
+    } else if (!strcasecmp(event->header_key, "Connection")) {
+        const char *p = event->header_value;
+        while (*p) {
+            while (*p == ',' || *p == ' ' || *p == '\t') ++p;
+            const char *end = p;
+            while (*end && *end != ',') ++end;
+            const char *trim = end;
+            while (trim > p && (trim[-1] == ' ' || trim[-1] == '\t')) --trim;
+            if (trim - p == 5 && !strncasecmp(p, "close", 5)) headers.close = true;
+            p = end;
+        }
     } else if (!strcasecmp(event->header_key, "Retry-After"))
         snprintf(headers.retry_after, sizeof(headers.retry_after), "%s", event->header_value);
     return ESP_OK;
@@ -149,7 +168,12 @@ static esp_err_t fetch_http(ideas_context_t *ctx, uint32_t request, const char *
         config.cert_pem = ideas_ca;
         config.crt_bundle_attach = NULL;
 #endif
-        esp_http_client_handle_t client = esp_http_client_init(&config);
+        esp_http_client_handle_t client = s_client;
+        if (client && esp_http_client_set_url(client, url) != ESP_OK) {
+            ideas_cloud_cleanup();
+            client = NULL;
+        }
+        if (!client) client = s_client = esp_http_client_init(&config);
         if (!client) {
             err = ESP_ERR_NO_MEM;
             break;
@@ -157,6 +181,10 @@ static esp_err_t fetch_http(ideas_context_t *ctx, uint32_t request, const char *
         esp_http_client_set_header(client, "Accept-Encoding", "identity");
         if (preview)
             esp_http_client_set_header(client, "Accept", "multipart/related");
+        else
+            esp_http_client_delete_header(client, "Accept");
+        esp_http_client_set_timeout_ms(client, timeout_ms(deadline, 10000));
+        int64_t connecting = factory_io_now();
         err = factory_http_client_set_common_headers(client);
         if (err == ESP_OK) {
             err = esp_http_client_open(client, 0);
@@ -170,6 +198,7 @@ static esp_err_t fetch_http(ideas_context_t *ctx, uint32_t request, const char *
                 retry = true;
             }
         }
+        metrics.begin += factory_io_now() - connecting;
         if (err == ESP_OK) {
             int status = esp_http_client_get_status_code(client);
             if (status != 200) {
@@ -198,6 +227,7 @@ static esp_err_t fetch_http(ideas_context_t *ctx, uint32_t request, const char *
             if (!file)
                 err = ESP_FAIL;
         }
+        int64_t last_data = esp_timer_get_time();
         while (err == ESP_OK) {
             if (cancelled(ctx, request)) {
                 err = ESP_ERR_INVALID_STATE;
@@ -219,6 +249,11 @@ static esp_err_t fetch_http(ideas_context_t *ctx, uint32_t request, const char *
             int count = esp_http_client_read(client, target, want);
             metrics.read += factory_io_now() - started;
             if (count == -ESP_ERR_HTTP_EAGAIN) {
+                if (esp_timer_get_time() - last_data >= 20000000LL) {
+                    err = ESP_ERR_TIMEOUT;
+                    retry = true;
+                    break;
+                }
                 vTaskDelay(1);
                 continue;
             }
@@ -252,7 +287,9 @@ static esp_err_t fetch_http(ideas_context_t *ctx, uint32_t request, const char *
             used += count;
             if (file)
                 progress(ctx, count);
-            vTaskDelay(1);
+            /* Time spent writing NAND is not a network read-idle timeout. */
+            last_data = esp_timer_get_time();
+            factory_io_cooperate(&metrics);
         }
         if (err == ESP_OK && (!esp_http_client_is_complete_data_received(client) ||
                               (length >= 0 && used != length) || (!root && used != capacity))) {
@@ -286,8 +323,9 @@ static esp_err_t fetch_http(ideas_context_t *ctx, uint32_t request, const char *
         }
         }
         psa_hash_abort(&hash);
-        esp_http_client_close(client);
-        esp_http_client_cleanup(client);
+        /* Only a completely consumed, valid response can retain its socket.
+         * Every job releases the worker-owned handle, including cancellation. */
+        if (err != ESP_OK || headers.close) ideas_cloud_cleanup();
         if (err == ESP_OK) {
             if (size)
                 *size = used;

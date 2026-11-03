@@ -323,28 +323,29 @@ esp_err_t esp_iris_format_device_id(char out[33]) {
     strcpy(out, env.device_id ? env.device_id : "4553502d495249530100001122334455");
     return ESP_OK;
 }
-esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *config) {
-    assert(env.network);
-    assert(!strncmp(config->url, "https://ideas.test/api/v1/ideas/", 30));
-    assert(config->disable_auto_redirect && config->crt_bundle_attach == esp_crt_bundle_attach);
-    struct mock_http *client = calloc(1, sizeof(*client));
-    assert(client);
-    client->event_handler = config->event_handler;
-    assert(config->method == HTTP_METHOD_GET);
-    if (strstr(config->url, "/manifest.json?")) {
-        assert(strstr(config->url, "profile=esp-mosaico%2Fv2&chip_id=32&flash_size="
+esp_err_t esp_http_client_set_url(esp_http_client_handle_t client, const char *url) {
+    assert(env.network && !client->closed);
+    assert(!strncmp(url, "https://ideas.test/api/v1/ideas/", 30));
+    esp_err_t (*handler)(esp_http_client_event_t *) = client->event_handler;
+    bool device_header = client->device_header;
+    free(client->data);
+    memset(client, 0, sizeof(*client));
+    client->event_handler = handler;
+    client->device_header = device_header;
+    if (strstr(url, "/manifest.json?")) {
+        assert(strstr(url, "profile=esp-mosaico%2Fv2&chip_id=32&flash_size="
                                    "16777216&recovery_version=0.2.0"));
         assert(!env.lease);
-        memcpy(client->code, config->url + strlen("https://ideas.test/api/v1/ideas/"), 6);
+        memcpy(client->code, url + strlen("https://ideas.test/api/v1/ideas/"), 6);
         client->code[6] = 0;
         strcpy(client->file, "resolve");
         strcpy(client->alias, "resolve");
         env.resolves++;
-        strcpy(client->locale, strstr(config->url, "&locale=zh-CN") ? "zh-CN" : "en");
-        assert(strstr(config->url, "&locale="));
-        assert(!strstr(config->url, "device_id="));
+        strcpy(client->locale, strstr(url, "&locale=zh-CN") ? "zh-CN" : "en");
+        assert(strstr(url, "&locale="));
+        assert(!strstr(url, "device_id="));
     } else {
-        const char *file = strrchr(config->url, '/') + 1;
+        const char *file = strrchr(url, '/') + 1;
         char sha[65];
         assert(strcspn(file, "?") == 64);
         memcpy(sha, file, 64);
@@ -393,6 +394,15 @@ esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *co
         if (env.fault_limit && env.fault_hits > env.fault_limit)
             client->fault = MOCK_OK;
     }
+    return ESP_OK;
+}
+esp_http_client_handle_t esp_http_client_init(const esp_http_client_config_t *config) {
+    assert(config->disable_auto_redirect && config->crt_bundle_attach == esp_crt_bundle_attach);
+    assert(config->method == HTTP_METHOD_GET);
+    struct mock_http *client = calloc(1, sizeof(*client));
+    assert(client);
+    client->event_handler = config->event_handler;
+    assert(esp_http_client_set_url(client, config->url) == ESP_OK);
     env.http_live++;
     return client;
 }
@@ -413,6 +423,7 @@ esp_err_t esp_http_client_set_header(esp_http_client_handle_t c, const char *key
     return ESP_OK;
 }
 esp_err_t esp_http_client_delete_header(esp_http_client_handle_t c, const char *key) {
+    if (!strcmp(key, "Accept")) return ESP_OK;
     assert(!strcmp(key, "X-Device-ID"));
     bool present = c->device_header;
     c->device_header = false;

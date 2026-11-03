@@ -52,3 +52,5 @@ Iris 文件访问，调用 `app_storage_format()` 清除 FTL 映射并重建 Lit
 `nand_perf` 统计占用窗口内整个设备的增量，可能包含并发 Iris IO。
 时间字段存在嵌套，不能相加；`programs/erases` 包含 FTL 搬移，不能当作应用有效数据量。
 指标定义见 [storage_metrics.c](src/storage_metrics.c)。
+Idea 传输和回读使用 16KiB 缓冲，按 20ms 预算让出 CPU；同一下载任务复用 HTTPS 连接，
+读空闲 20s 后进入有界重试。

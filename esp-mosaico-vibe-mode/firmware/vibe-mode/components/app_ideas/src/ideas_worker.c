@@ -87,6 +87,7 @@ static void run_job(job_t *job) {
             }
         }
     }
+    ideas_cloud_cleanup();
     xSemaphoreTake(ctx->lock, portMAX_DELAY);
     bool stale = preparing && job->request_id != ctx->state->preview_id;
     if (remote && !stale && err == ESP_OK) {

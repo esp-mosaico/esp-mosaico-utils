@@ -72,7 +72,7 @@ esp_err_t ideas_hash_file_progress(const char *path, uint32_t size, const char *
     factory_io_metrics_t metrics = {.started = factory_io_now()};
     FILE *file = fopen(path, "rb");
     esp_err_t err = file ? ESP_OK : errno == ENOENT ? ESP_ERR_NOT_FOUND : ESP_FAIL;
-    unsigned char *buffer = err == ESP_OK ? malloc(4096) : NULL, digest[32];
+    unsigned char *buffer = err == ESP_OK ? malloc(FACTORY_IO_CHUNK_BYTES) : NULL, digest[32];
     hash_state_t state = {0};
     if (err == ESP_OK && !buffer) err = ESP_ERR_NO_MEM;
     if (err == ESP_OK && !begin(&state)) err = ESP_FAIL;
@@ -80,7 +80,7 @@ esp_err_t ideas_hash_file_progress(const char *path, uint32_t size, const char *
     if (err == ESP_OK && progress) err = progress(0, ctx);
     while (err == ESP_OK) {
         int64_t started = factory_io_now();
-        size_t n = fread(buffer, 1, 4096, file);
+        size_t n = fread(buffer, 1, FACTORY_IO_CHUNK_BYTES, file);
         metrics.read += factory_io_now() - started;
         if (!n) {
             if (ferror(file)) err = ESP_FAIL;
@@ -93,9 +93,7 @@ esp_err_t ideas_hash_file_progress(const char *path, uint32_t size, const char *
         metrics.hash += factory_io_now() - started;
         if (err == ESP_OK && progress)
             err = progress((uint32_t)total, ctx);
-#ifdef ESP_PLATFORM
-        vTaskDelay(1);
-#endif
+        factory_io_cooperate(&metrics);
     }
     if (err == ESP_OK && total != size) err = ESP_ERR_INVALID_SIZE;
     if (err == ESP_OK && !finish(&state, digest)) err = ESP_FAIL;
@@ -107,7 +105,7 @@ esp_err_t ideas_hash_file_progress(const char *path, uint32_t size, const char *
         if (strcmp(actual, expected)) err = ESP_ERR_INVALID_CRC;
     }
     metrics.bytes = total;
-    factory_io_report("nand_hash", path, &metrics, buffer, 4096, err);
+    factory_io_report("nand_hash", path, &metrics, buffer, FACTORY_IO_CHUNK_BYTES, err);
     free(buffer);
     return err;
 }
