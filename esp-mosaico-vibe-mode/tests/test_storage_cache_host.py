@@ -15,8 +15,8 @@ def test_existing_volume_geometry(tmp_path, case):
     component = root / "firmware/vibe-mode/components/app_storage"
     fixture = root / "tests/host_storage"
     littlefs = Path(os.environ.get("LITTLEFS_SOURCE_DIR", str(
-        root / "firmware/vibe-mode/managed_components/joltwallet__littlefs/src/littlefs")))
-    assert (littlefs / "lfs.c").is_file(), "Build Vibe Mode first or set LITTLEFS_SOURCE_DIR"
+        root / "firmware/vibe-mode/components/joltwallet__littlefs/src/littlefs")))
+    assert (littlefs / "lfs.c").is_file(), "Local LittleFS component is missing"
     for name in ("esp_blockdev.h", "esp_log.h"):
         (tmp_path / name).write_text('#include "sdk.h"\n')
     exe = tmp_path / "volume"
@@ -36,7 +36,7 @@ def test_storage_cache(tmp_path):
     root = Path(__file__).resolve().parents[1]
     component = root / "firmware/vibe-mode/components/app_storage"
     fixture = root / "tests/host_storage"
-    headers = ["esp_blockdev.h", "esp_heap_caps.h", "esp_log.h", "esp_timer.h",
+    headers = ["esp_err.h", "esp_blockdev.h", "esp_heap_caps.h", "esp_log.h", "esp_timer.h",
                "freertos/FreeRTOS.h", "freertos/semphr.h", "driver/spi_master.h"]
     for name in headers:
         header = tmp_path / name
@@ -47,6 +47,7 @@ def test_storage_cache(tmp_path):
         shutil.which("cc"), "-std=gnu11", "-Wall", "-Wextra", "-Wno-unused-parameter",
         "-Werror", *SANITIZERS, "-g", "-pthread",
         "-I" + str(tmp_path), "-I" + str(fixture), "-I" + str(component / "private"),
+        "-I" + str(component.parent / "espressif__spi_nand_flash/include"),
         str(component / "src/storage_blockdev.c"), str(fixture / "cache.c"), "-o", str(exe),
     ], check=False, text=True, capture_output=True)
     assert result.returncode == 0, result.stdout + result.stderr
@@ -97,6 +98,8 @@ def test_deferred_storage_mount(tmp_path):
         "-Wno-unused-function", "-Wno-unused-variable", "-Werror", *SANITIZERS, "-g", "-pthread",
         f'-DSTORAGE_SOURCE="{(component / "src/app_storage.c").as_posix()}"',
         "-I" + str(tmp_path), "-I" + str(fixture), "-I" + str(component / "private"),
+        "-I" + str(component.parent / "espressif__spi_nand_flash/include"),
+        "-I" + str(component.parent / "joltwallet__littlefs/include"),
         "-I" + str(component / "include"), str(fixture / "mount.c"), "-o", str(exe),
     ], check=False, text=True, capture_output=True)
     assert result.returncode == 0, result.stdout + result.stderr

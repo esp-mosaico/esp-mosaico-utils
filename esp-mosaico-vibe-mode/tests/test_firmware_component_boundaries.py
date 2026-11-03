@@ -5,8 +5,16 @@ from pathlib import Path
 
 RECOVERY = Path(__file__).resolve().parents[1] / "firmware/vibe-mode"
 COMPONENTS = RECOVERY / "components"
+VENDORED_COMPONENTS = {"joltwallet__littlefs", "espressif__spi_nand_flash", "espressif__dhara"}
 OPTIONS = {"SRCS", "INCLUDE_DIRS", "PRIV_INCLUDE_DIRS", "REQUIRES",
            "PRIV_REQUIRES", "WHOLE_ARCHIVE", "EMBED_FILES"}
+
+
+def application_components():
+    # Vendored components retain their upstream source and CMake layout.
+    # Every other directory still has to satisfy the application contract.
+    return [path for path in COMPONENTS.iterdir()
+            if path.is_dir() and path.name not in VENDORED_COMPONENTS]
 
 
 def registration(component):
@@ -25,7 +33,7 @@ def registration(component):
 
 def test_application_dependency_graph_is_acyclic_and_never_points_to_main():
     applications = {path.name: registration(path)
-                    for path in COMPONENTS.iterdir() if path.is_dir()}
+                    for path in application_components()}
     assert applications
     assert all(name.startswith("app_") for name in applications)
     # This name belongs to the SDK OTA component; shadowing it breaks OTA APIs.
@@ -58,7 +66,7 @@ def test_private_headers_and_mutable_state_do_not_cross_components():
                for path in COMPONENTS.glob("*/private/*.h")}
     public = {path.name: path.parents[1].name
               for path in COMPONENTS.glob("*/include/*.h")}
-    for component in COMPONENTS.iterdir():
+    for component in application_components():
         fields = registration(component)
         dependencies = set(fields.get("REQUIRES", []) + fields.get("PRIV_REQUIRES", []))
         for path in list(component.rglob("*.c")) + list(component.rglob("*.h")):

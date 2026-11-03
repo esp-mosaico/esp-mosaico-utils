@@ -6,7 +6,7 @@ idf_component_register(
         "src/storage_volume.c"
     INCLUDE_DIRS "include"
     PRIV_INCLUDE_DIRS "private"
-    PRIV_REQUIRES esp-mosaico-bsp esp_lcd_touch esp_blockdev spi_nand_flash joltwallet__littlefs esp_driver_spi esp_driver_gpio esp_timer
+    PRIV_REQUIRES esp-mosaico-bsp esp_lcd_touch esp_blockdev espressif__spi_nand_flash joltwallet__littlefs esp_driver_spi esp_driver_gpio esp_timer
 )
 if(CONFIG_IRIS_FACTORY_NAND_SYSTEM_UPDATE)
     # Observe only this NAND's SPI handle. Count physical reads from commands:
