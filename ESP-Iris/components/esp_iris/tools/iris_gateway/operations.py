@@ -418,7 +418,7 @@ class OperationManager:
             operation = self._transition(
                 pending.operation_id,
                 "outcome_unknown" if interrupted.get("action") in {
-                    "firmware.ota", "firmware.system_update", "device.restart", "rpc.raw", "host.recovery"
+                    "firmware.ota", "firmware.system_update", "device.restart", "rpc.raw", "host.recovery", "host.flash"
                 } else "interrupted",
                 error="gateway task was interrupted; device writes were not replayed",
                 finished_ns=time.time_ns(),

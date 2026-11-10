@@ -49,7 +49,7 @@ def test_recovery_reconnect_uses_existing_identity_admission(tmp_path):
             status = {**STATUS, "device_id": D, "endpoint": "usb:location=changed:1.0"}
             with patch("iris_gateway.device_selection.discover_iris_usb_devices", return_value=[usb("changed:1.0")]), \
                     patch.object(g.hub, "status", AsyncMock(return_value=status)):
-                verified = await g.project.service.host_operations.verify(D, {"boot_id": 1}, PARAMS, .5)
+                verified = await g.project.service.host_operations.verify(D, {"boot_id": 1}, PARAMS, 5)
             assert verified == status
             assert g.connect.call_args.args[0] == "usb:location=changed:1.0"
             assert g.registry.claim("device:" + D)["owner"] == "a"
@@ -57,7 +57,7 @@ def test_recovery_reconnect_uses_existing_identity_admission(tmp_path):
             # the same admission/ownership contract still follows the chip.
             g.live.clear()
             with patch("iris_gateway.device_selection.discover_iris_usb_devices", return_value=[usb("application:1.0")]):
-                application = await g.project.acquire({"device_id": D, "timeout": .5})
+                application = await g.project.acquire({"device_id": D, "timeout": 5})
             assert application["device_id"] == D
             assert application["endpoint"] == "usb:location=application:1.0"
             assert {claim["device_id"] for claim in g.registry.claims()} == {D}

@@ -22,7 +22,11 @@ size_t heap_caps_get_minimum_free_size(unsigned c) { return 10000; }
 esp_reset_reason_t esp_reset_reason(void) { return ESP_RST_UNKNOWN; }
 static bool allow_restart;
 static unsigned restart_calls;
-void esp_restart(void) { assert(allow_restart); ++restart_calls; }
+static void (*restart_hook)(void);
+void esp_restart(void) {
+    assert(allow_restart); ++restart_calls;
+    if (restart_hook) restart_hook();
+}
 esp_err_t iris_identity_load_or_create(iris_runtime_t *r) { return ESP_OK; }
 esp_err_t iris_log_vfs_init(iris_runtime_t *r) { return ESP_OK; }
 esp_err_t iris_log_vfs_deinit(void) { return ESP_OK; }

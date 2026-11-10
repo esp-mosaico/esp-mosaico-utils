@@ -1,4 +1,4 @@
-"""Streaming ZIP transport with bounded attempts and upload identities."""
+"""Streaming Agent API transport; writes are never automatically replayed."""
 from __future__ import annotations
 
 from email.utils import parsedate_to_datetime
@@ -6,22 +6,24 @@ import hashlib
 import http.client
 import json
 import random
+import re
 import ssl
 import time
 from urllib.parse import urlsplit
 import uuid
 
 from .ideas_content import encoded, require
-from .platform_client import PlatformError, server_url
+from .platform_client import PlatformError, contains_token, server_url
 
 
-def retry_after(value):
+def retry_after(value, *, default=0.0):
     if not value:
-        return 0.0
+        return default
     try:
+        value = value.strip()
         return max(0.0, float(int(value))) if value.isdigit() else max(0.0, parsedate_to_datetime(value).timestamp() - time.time())
     except (ValueError, TypeError, OverflowError):
-        return 0.0
+        return default
 
 
 class ReleaseClient:
@@ -29,7 +31,36 @@ class ReleaseClient:
         self.server, self.token = server_url(server), token
         self.context = ssl.create_default_context(cafile=ca_file)
 
-    def _send(self, method, path, metadata=None, package=None, key=None, budget_deadline=None):
+    def _response_error(self, response, value=None):
+        """HTTP rejection semantics survive missing or malformed error JSON."""
+        value = value if isinstance(value, dict) else {}
+        code = value.get("code", "HTTP_" + str(response.status))
+        if (not isinstance(code, str) or not code.replace("_", "").isalnum() or len(code) > 80
+                or contains_token(code, self.token)):
+            code = "HTTP_" + str(response.status)
+        identifier = value.get("request_id", "")
+        if (not isinstance(identifier, str) or len(identifier) > 128
+                or not all(c.isalnum() or c in "-_.:" for c in identifier)
+                or contains_token(identifier, self.token)):
+            identifier = ""
+        details = {}
+        supplied = value.get("details")
+        if isinstance(supplied, dict):
+            for field in ("path", "field", "reason"):
+                item = supplied.get(field)
+                if field == "field" and type(item) is int and item > 0:
+                    item = str(item)
+                if (isinstance(item, str) and re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_./\[\]-]{0,191}", item)
+                        and ".." not in item and not contains_token(item, self.token)):
+                    details[field] = item
+        delay = retry_after(response.getheader("Retry-After"), default=None)
+        if delay is not None:
+            details["retry_after_seconds"] = delay
+        error = PlatformError(code, response.status, identifier, details=details)
+        error.retry_after = delay or 0.0
+        return error
+
+    def _send(self, method, path, metadata=None, package=None, budget_deadline=None):
         origin = urlsplit(self.server)
         connection = (http.client.HTTPSConnection(origin.hostname, origin.port, timeout=10, context=self.context)
                       if origin.scheme == "https" else http.client.HTTPConnection(origin.hostname, origin.port, timeout=10))
@@ -39,16 +70,13 @@ class ReleaseClient:
         headers = {"Accept": "application/json", "Accept-Encoding": "identity"}
         if self.token:
             headers["Authorization"] = "Bearer " + self.token
-        if key:
-            headers["Idempotency-Key"] = key
         prefix = suffix = b""
         if package:
             boundary = "mosaico-" + uuid.uuid4().hex
-            prefix = ("--" + boundary + '\r\nContent-Disposition: form-data; name="request"\r\nContent-Type: application/json\r\n\r\n').encode() + encoded(metadata)
-            prefix += ("\r\n--" + boundary + '\r\nContent-Disposition: form-data; name="package"; filename="release.zip"\r\nContent-Type: application/zip\r\n\r\n').encode()
+            prefix = ("--" + boundary + '\r\nContent-Disposition: form-data; name="release"; filename="release.zip"\r\nContent-Type: application/zip\r\n\r\n').encode()
             suffix = ("\r\n--" + boundary + "--\r\n").encode()
             headers["Content-Type"] = "multipart/form-data; boundary=" + boundary
-            headers["Content-Length"] = str(len(prefix) + metadata["archive"]["size"] + len(suffix))
+            headers["Content-Length"] = str(len(prefix) + metadata["size"] + len(suffix))
         elif metadata is not None:
             prefix = encoded(metadata)
             headers["Content-Type"] = "application/json"
@@ -61,6 +89,7 @@ class ReleaseClient:
             if connection.sock:
                 connection.sock.settimeout(min(60, remaining))
 
+        response = None
         try:
             connection.connect()
             budget()
@@ -76,15 +105,16 @@ class ReleaseClient:
                     while block := source.read(65536):
                         budget()
                         total += len(block)
-                        require(total <= metadata["archive"]["size"], "ZIP changed after validation")
+                        require(total <= metadata["size"], "ZIP changed after validation")
                         check.update(block)
                         connection.send(block)
-                require(total == metadata["archive"]["size"] and check.hexdigest() == metadata["archive"]["sha256"],
+                require(total == metadata["size"] and check.hexdigest() == metadata["sha256"],
                         "ZIP changed after validation")
                 budget()
                 connection.send(suffix)
             budget()
             response = connection.getresponse()
+            success = response.status == (201 if method == "POST" and package else 200)
             data = bytearray()
             while True:
                 budget()
@@ -93,36 +123,40 @@ class ReleaseClient:
                     break
                 data.extend(block)
                 if len(data) > 2*1024*1024:
-                    raise PlatformError("INVALID_RESPONSE")
+                    if not 200 <= response.status < 300:
+                        raise self._response_error(response)
+                    raise PlatformError("INVALID_RESPONSE", response.status)
             try:
                 value = json.loads(data)
             except (ValueError, UnicodeError):
+                if not 200 <= response.status < 300:
+                    raise self._response_error(response) from None
                 raise PlatformError("INVALID_RESPONSE", response.status) from None
+            if not success:
+                raise self._response_error(response, value)
             if not isinstance(value, dict):
                 raise PlatformError("INVALID_RESPONSE", response.status)
-            if response.status not in (200, 202):
-                code = value.get("code", "HTTP_" + str(response.status))
-                if not isinstance(code, str) or not code.replace("_", "").isalnum() or len(code) > 80:
-                    code = "HTTP_" + str(response.status)
-                identifier = value.get("request_id", "")
-                if not isinstance(identifier, str) or len(identifier) > 128 or not all(c.isalnum() or c in "-_.:" for c in identifier):
-                    identifier = ""
-                error = PlatformError(code, response.status, identifier)
-                error.retry_after = retry_after(response.getheader("Retry-After"))
-                raise error
             return value
         except (OSError, TimeoutError, http.client.HTTPException):
-            raise PlatformError("NETWORK_ERROR") from None
+            if response is not None and not 200 <= response.status < 300:
+                raise self._response_error(response) from None
+            raise PlatformError("NETWORK_ERROR", response.status if response is not None else 0) from None
         finally:
             connection.close()
 
-    def request(self, method, path, metadata=None, *, package=None, key=None, deadline=None):
+    def request(self, method, path, metadata=None, *, package=None, deadline=None):
         for attempt in range(4):
             try:
-                return self._send(method, path, metadata, package, key, deadline)
+                return self._send(method, path, metadata, package, deadline)
             except PlatformError as error:
-                retryable = error.code in ("NETWORK_ERROR", "UPLOAD_IN_PROGRESS") or error.status in (429, 502, 503, 504)
-                if not retryable or attempt == 3 or (method != "GET" and key is None):
+                retryable = error.code == "NETWORK_ERROR" or error.status in (429, 502, 503, 504)
+                # No server idempotency contract exists. A delayed PATCH replay
+                # could also overwrite a newer explicit upload.
+                if not retryable or attempt == 3 or method != "GET":
+                    if method != "GET" and (error.status in (0, 408)
+                                            or 200 <= error.status < 300 or error.status >= 500):
+                        error.details["outcome"] = "unknown"
+                        error.details["diagnostic"] = "Check the project on the website before uploading again; this request was not retried."
                     raise
                 base = 2**attempt
                 pause = max(base + random.uniform(0, base), getattr(error, "retry_after", 0))

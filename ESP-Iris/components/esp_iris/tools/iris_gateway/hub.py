@@ -143,6 +143,8 @@ class IrisHub:
         self._links: dict[str, dict[str, DeviceSession]] = {}
         self._last_boot_id: dict[str, int] = {}
         self._endpoint_tasks: dict[str, asyncio.Task[None]] = {}
+        self._retired_endpoints: set[str] = set()
+        self._admission_lock: asyncio.Lock | None = None
         self._locks: dict[str, EndpointLock] = {}
         self._endpoint_states: dict[str, dict[str, Any]] = {}
         self._endpoint_configs: dict[str, tuple[LinkOpener, str | None]] = {}
@@ -330,6 +332,7 @@ class IrisHub:
         pairing_token: str | None = None,
         metadata: dict[str, Any] | None = None,
         defer_lock: bool = False,
+        startup_reset: asyncio.Future | None = None,
     ) -> None:
         if self._closing:
             raise RuntimeError("ESP-Iris Hub is closing")
@@ -369,6 +372,8 @@ class IrisHub:
             },
         )
         state.update(metadata or {})
+        if endpoint in self._retired_endpoints:
+            return
         prior_task = self._endpoint_tasks.get(endpoint)
         if prior_task is not None:
             if not prior_task.done():
@@ -398,7 +403,7 @@ class IrisHub:
             updated_monotonic_ns=time.monotonic_ns(),
         )
         self._endpoint_tasks[endpoint] = asyncio.create_task(
-            self._run_supervisor(endpoint, opener, pairing_token),
+            self._run_supervisor(endpoint, opener, pairing_token, startup_reset=startup_reset),
             name=f"iris-supervisor-{endpoint}",
         )
 
@@ -413,6 +418,7 @@ class IrisHub:
 
     async def _run_supervisor(
         self, endpoint: str, opener: LinkOpener, pairing_token: str | None,
+        *, startup_reset: asyncio.Future | None = None,
     ) -> None:
         # Keep unexpected library/session failures observable and recoverable,
         # including failures outside _supervise's normal connection retry loop.
@@ -420,11 +426,16 @@ class IrisHub:
         try:
             while True:
                 try:
-                    await self._supervise(endpoint, opener, pairing_token)
+                    if startup_reset is None:
+                        await self._supervise(endpoint, opener, pairing_token)
+                    else:
+                        await self._supervise(endpoint, opener, pairing_token, startup_reset=startup_reset)
                     return
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:  # noqa: BLE001 - boundary logs the full traceback
+                    if startup_reset is not None and not startup_reset.done():
+                        startup_reset.set_exception(exc)
                     self._record_supervisor_failure(endpoint, exc)
                     state = self._endpoint_states[endpoint]
                     self._set_endpoint_state(
@@ -592,6 +603,8 @@ class IrisHub:
             discovery is not None and state.get("discovery") != discovery
         ):
             return
+        # Discovery must not recreate a writer while cancellation closes it.
+        self._retired_endpoints.add(endpoint)
         await self._stop_supervisor(endpoint)
         lock = self._locks.pop(endpoint, None)
         if lock is not None:
@@ -599,6 +612,7 @@ class IrisHub:
         self._endpoint_states.pop(endpoint, None)
         self._endpoint_configs.pop(endpoint, None)
         self._host_endpoints.discard(endpoint)
+        self._retired_endpoints.discard(endpoint)
         self._pending_usb.pop(endpoint, None)
 
     def host_endpoint(self, identifier: str) -> dict[str, Any]:
@@ -683,6 +697,22 @@ class IrisHub:
             )
         return state.copy()
 
+    def configure_host_console(self, identifier: str, *, baudrate: int = 115200,
+                               validate_only: bool = False) -> None:
+        """Prepare no-reset console attachment, including a board without Iris."""
+        resolved = self.host_endpoint(identifier)
+        state = self._endpoint_states[resolved["endpoint"]]
+        serial_jtag = state.get("vid") == 0x303A and state.get("pid") == 0x1001
+        uart = bool(state.get("uart")) or (state.get("vid") is not None and state.get("vid") != 0x303A)
+        if not serial_jtag and not uart:
+            raise ValueError("native flash currently requires UART or USB Serial/JTAG")
+        if not 9600 <= baudrate <= 3000000:
+            raise ValueError("invalid console baud rate")
+        if validate_only:
+            return
+        state.update(usb_selection="explicit", allow_serial_jtag=serial_jtag, uart=uart,
+                     baudrate=baudrate, transport_name="USB Serial/JTAG" if serial_jtag else "UART")
+
     def yield_host_lock(self, endpoint: str) -> None:
         """Let the supervised writer acquire the physical lock; retain ownership."""
         if endpoint not in self._host_endpoints:
@@ -691,27 +721,42 @@ class IrisHub:
         if lock is not None:
             lock.close()
 
-    async def resume_after_host(self, endpoint: str, *, connect: bool = False) -> None:
+    async def resume_after_host(self, endpoint: str, *, connect: bool = False,
+                                reset: bool = False) -> dict | None:
+        if reset and not connect:
+            raise ValueError("post-flash reset requires console connection")
         if endpoint not in self._host_endpoints:
-            return
+            if reset:
+                raise RuntimeError("post-flash console was already resumed; reset was not replayed")
+            return None
         if not connect and not self._endpoint_states[endpoint].get("resume_after_host", False):
             await self._remove_endpoint(endpoint)
             if self.ownership is not None:
                 self.ownership.release(endpoint)
-            return
+            return None
         if connect:
             try:
                 metadata = await to_thread(resolve_usb_port, endpoint)
             except OSError:
                 metadata = None
-            if metadata is None or not iris_usb_allowed(metadata, allow_serial_jtag=True):
+            if metadata is None or not iris_usb_allowed(metadata, allow_serial_jtag=True,
+                    explicit=self._endpoint_states[endpoint].get("usb_selection") == "explicit"):
                 # Re-enumeration may replace the interface key. Keep ownership
                 # history, but let identity admission create the new supervisor.
                 await self._remove_endpoint(endpoint)
-                return
+                if reset:
+                    raise RuntimeError("post-flash console is unavailable for startup capture")
+                return None
         opener, pairing_token = self._endpoint_configs[endpoint]
         self._host_endpoints.remove(endpoint)
-        self._add_supervisor(endpoint, opener, pairing_token=pairing_token, defer_lock=True)
+        startup_reset = asyncio.get_running_loop().create_future() if reset else None
+        self._add_supervisor(endpoint, opener, pairing_token=pairing_token, defer_lock=True,
+                             startup_reset=startup_reset)
+        if startup_reset is not None:
+            # Timeout cancels the request, so a later reconnect cannot reset
+            # unexpectedly. A reset already attempted is never retried.
+            return await asyncio.wait_for(startup_reset, 10)
+        return None
 
     def _set_endpoint_state(
         self,
@@ -742,6 +787,7 @@ class IrisHub:
         endpoint: str,
         opener: LinkOpener,
         pairing_token: str | None,
+        *, startup_reset: asyncio.Future | None = None,
     ) -> None:
         attempt = 0
         delay = self.reconnect_min_seconds
@@ -753,6 +799,7 @@ class IrisHub:
                 self._set_endpoint_state(
                     endpoint, "connecting", attempt=attempt, error=None
                 )
+                self._endpoint_states[endpoint].pop("observed_device_id", None)
                 try:
                     if self.ownership is not None:
                         self.ownership._require(endpoint)
@@ -765,13 +812,29 @@ class IrisHub:
                         self._on_ready,
                         self._on_event,
                         on_media=self._on_media,
+                        on_unready=self._on_unready,
                         pairing_token=pairing_token,
                         owner_id=self._owner_id,
                     )
                     self._endpoint_sessions[endpoint] = active_session
-                    run_task = asyncio.create_task(active_session.run())
+                    pending_reset = startup_reset if startup_reset is not None and not startup_reset.done() else None
+                    startup_reset = None  # Consume once, including a failed reset.
+                    console_start = asyncio.Event() if pending_reset is not None else None
+                    run_task = asyncio.create_task(active_session.run(console_start=console_start))
                     ready_task = asyncio.create_task(active_session.wait_ready(self.hello_timeout_seconds))
                     try:
+                        if pending_reset is not None:
+                            assert console_start is not None
+                            try:
+                                result = await self.hardware_reset(endpoint, "run")
+                            except (OSError, RuntimeError, ValueError, asyncio.TimeoutError) as error:
+                                if not pending_reset.done():
+                                    pending_reset.set_exception(error)
+                            else:
+                                if not pending_reset.done():
+                                    pending_reset.set_result(result)
+                            finally:
+                                console_start.set()
                         done, _ = await asyncio.wait(
                             (run_task, ready_task), return_when=asyncio.FIRST_COMPLETED
                         )
@@ -846,8 +909,16 @@ class IrisHub:
         await self._on_event(result)
         return result
 
-    async def _drop_session(self, session: DeviceSession) -> None:
-        if session._console:
+    async def _on_unready(self, session: DeviceSession) -> None:
+        await self._drop_session(session, capture_continues=True)
+        endpoint = session.link.endpoint
+        self._endpoint_states[endpoint]["device_id"] = None
+        self._set_endpoint_state(endpoint, "console_only",
+            attempt=self._endpoint_states[endpoint]["attempt"],
+            error="Iris session unavailable; raw capture continues")
+
+    async def _drop_session(self, session: DeviceSession, *, capture_continues: bool = False) -> None:
+        if session._console and not capture_continues:
             await self._on_event({"kind": "console_gap", "capture_id": session.capture_id,
                 "endpoint": session.link.endpoint, "device_id": session.info.device_id if session.info else None, "boot_id": None,
                 "reason": "console disconnected; bytes emitted while absent are unavailable",
@@ -883,6 +954,14 @@ class IrisHub:
         })
 
     async def _on_ready(self, session: DeviceSession) -> None:
+        # Python 3.8 binds locks on construction. A hub may be constructed before
+        # its event loop starts, so create the shared lock on first admission.
+        if self._admission_lock is None:
+            self._admission_lock = asyncio.Lock()
+        async with self._admission_lock:
+            await self._bind_ready(session)
+
+    async def _bind_ready(self, session: DeviceSession) -> None:
         assert session.info is not None
         info = session.info
         endpoint_state = self._endpoint_states[session.link.endpoint]
@@ -896,19 +975,6 @@ class IrisHub:
                 "mDNS device_id does not match the ESP-Iris HELLO identity"
             )
         self._endpoint_states[session.link.endpoint]["firmware_mode"] = info.firmware_mode
-        role = "control" if session._console else "data"
-        links = self._links.get(info.device_id, {})
-        existing = links.get(role)
-        if existing is not None and existing is not session:
-            await session.close()
-            raise RuntimeError(f"device {info.device_id} already has a {role} session")
-        for peer in links.values():
-            if peer is session:
-                continue
-            if (peer.info is None or peer.info.boot_id != info.boot_id
-                    or peer.owner_id != session.owner_id):
-                await session.close()
-                raise ProtocolError("control/data boot or authenticated owner binding differs")
         if info.hardware_mac:
             for other_id, other in self._devices.items():
                 if (other is not session and other.info is not None
@@ -923,8 +989,40 @@ class IrisHub:
             try:
                 self.ownership.bind(session.link.endpoint, info.device_id)
             except RuntimeError:
+                # Preserve the authenticated identity for admission to resolve
+                # an idle owner. A descriptor alone cannot authorize handoff.
+                endpoint_state["observed_device_id"] = info.device_id
                 await session.close()
                 raise
+        role = "control" if session._console else "data"
+        links = self._links.get(info.device_id, {})
+        for peer in list(links.values()):
+            if peer is session or peer.info is None or peer.info.boot_id == info.boot_id:
+                continue
+            if peer.owner_id != session.owner_id:
+                await session.close()
+                raise ProtocolError("control/data authenticated owner binding differs")
+            # An authenticated new boot makes every old-boot request invalid.
+            # Stop old reconnect/probe writers before admitting its transport.
+            self._retired_endpoints.add(peer.link.endpoint)
+            if peer._console:
+                await peer.invalidate(capture_only=True)
+            else:
+                await peer.close()
+                await self._stop_supervisor(peer.link.endpoint)
+                await self._drop_session(peer)
+        links = self._links.get(info.device_id, {})
+        existing = links.get(role)
+        if existing is not None and existing is not session:
+            await session.close()
+            raise RuntimeError(f"device {info.device_id} already has a {role} session")
+        for peer in links.values():
+            if peer is session:
+                continue
+            if (peer.info is None or peer.info.boot_id != info.boot_id
+                    or peer.owner_id != session.owner_id):
+                await session.close()
+                raise ProtocolError("control/data boot or authenticated owner binding differs")
         links = self._links.setdefault(info.device_id, {})
         links[role] = session
         control = links.get("control")
@@ -1047,6 +1145,9 @@ class IrisHub:
         if self.ownership is None:
             raise RuntimeError("project ownership is unavailable")
         self.ownership._require(endpoint)
+        if endpoint in self._retired_endpoints:
+            await self._remove_endpoint(endpoint)
+            self._retired_endpoints.discard(endpoint)
         if endpoint.startswith("usb:"):
             selector = endpoint if endpoint.startswith("usb:location=") else metadata.get("path", endpoint)
             await self.add_usb(
@@ -1061,6 +1162,19 @@ class IrisHub:
             await self.add_tcp(host, int(port), pairing_token=pairing_token, metadata=metadata)
         else:
             raise ValueError("unsupported project endpoint")
+
+    async def suspend_owned(self, device_id: str) -> None:
+        """Stop old writers before an explicitly selected transport is opened."""
+        assert self.ownership is not None
+        control = self._links.get(device_id, {}).get("control")
+        if control is not None:
+            await control.release_binding()
+        endpoints = [claim["resource"] for claim in self.ownership.claims()
+                     if claim["owner"] == self.ownership.session_id and claim["device_id"] == device_id
+                     and not claim["resource"].startswith("device:")]
+        for endpoint in endpoints:
+            await self._remove_endpoint(endpoint)
+            self._retired_endpoints.add(endpoint)
 
     async def detach_owned(self, device_id: str) -> None:
         """Cancel supervisors before releasing locks; preserve discovery hints."""

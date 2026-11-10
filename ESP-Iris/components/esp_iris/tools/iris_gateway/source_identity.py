@@ -10,7 +10,8 @@ from typing import Any
 
 def source_identity(source: pathlib.Path) -> dict[str, Any]:
     source = source.resolve()
-    component = source / "components/esp_iris"
+    # Accept the historical Iris checkout root and standalone component roots.
+    component = source if (source / "tools/iris_gateway").is_dir() else source / "components/esp_iris"
     tools = component / "tools"
     files = [component / "idf_component.yml", tools / "esp_iris.py", tools / "requirements.lock",
              tools / "rpc_catalog.json"]
@@ -19,11 +20,16 @@ def source_identity(source: pathlib.Path) -> dict[str, Any]:
     digest = hashlib.sha256()
     for path in sorted(files):
         if path.is_file():
-            digest.update(path.relative_to(source).as_posix().encode() + b"\0")
+            # Preserve sha256-runtime-v1 for existing source checkouts while
+            # making the digest independent of the installation directory.
+            name = pathlib.PurePosixPath("components/esp_iris") / path.relative_to(component).as_posix()
+            digest.update(name.as_posix().encode() + b"\0")
             digest.update(hashlib.sha256(path.read_bytes()).digest())
+    if not (tools / "iris_gateway").is_dir():
+        raise ValueError(f"ESP-Iris runtime not found under {source}")
     revision = None
     try:
-        result = subprocess.run(["git", "-C", str(source), "log", "-1", "--format=%H", "--", "."],
+        result = subprocess.run(["git", "-C", str(component), "log", "-1", "--format=%H", "--", "."],
                                 capture_output=True, text=True, timeout=5, check=False)
         if result.returncode == 0:
             revision = result.stdout.strip() or None
@@ -36,4 +42,4 @@ def source_identity(source: pathlib.Path) -> dict[str, Any]:
 def running_source() -> dict[str, Any]:
     # Snapshot once at process start; later edits must not rewrite provenance
     # of an already running Gateway.
-    return source_identity(pathlib.Path(__file__).resolve().parents[4])
+    return source_identity(pathlib.Path(__file__).resolve().parents[2])

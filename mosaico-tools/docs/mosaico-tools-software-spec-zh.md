@@ -1,241 +1,239 @@
-# mosaico-tools 软件规格书
+# mosaico-tools software specification
 
-| 项目 | 内容 |
+| Item | Description |
 | --- | --- |
-| 文档修订 | 第 2 版：0.2 实现与验证状态 |
-| 修订日期 | 2026-10-09 |
-| 文档状态 | 0.2 实现已落地；验证范围见第 11 节 |
-| 产品定位 | ESP-Mosaico 工程、构建、设备操作和交付工具 |
-| 目标版本 | mosaico-tools 0.2.0，配套 ESP-Iris 0.2 设备与主机 |
-| 兼容边界 | 与 0.1 不互通，仅提供文档迁移，无运行时兼容层 |
-| 参考环境 | Python 3.10+、ESP32-S31、ESP-IDF `7b9cc1ac79f865983f59bb8ff3ff43eb74ff1dbe` |
+| Revision | Edition 2: 0.2 implementation and validation status |
+| Revised | 2026-10-09 |
+| Status | 0.2 implemented; validation scope in section 11 |
+| Product role | ESP-Mosaico project, build, device-operation and delivery tools |
+| Target version | mosaico-tools 0.2.0 with ESP-Iris 0.2 devices and host |
+| Compatibility boundary | No 0.1 interoperability; documented migration only, no runtime compatibility layer |
+| Reference environment | Python 3.10+, ESP32-S31, ESP-IDF `7b9cc1ac79f865983f59bb8ff3ff43eb74ff1dbe` |
 
-## 1. 目的与模块边界
+## 1. Purpose and module boundaries
 
-mosaico-tools 提供工作区入口 `mosaico.py`、工程与游戏模板、构建集成、设备选择、产品更新和证据流程。工具使用 ESP-Iris 的公共主机 API 与 Recovery 产品契约，不维护第二套设备协议、Flash 写入策略或保留固件实现。
+mosaico-tools provides workspace entry point `mosaico.py`, project/game templates, build integration, device selection, product updates and evidence workflows. It uses ESP-Iris public host APIs and the Recovery product contract, without maintaining another device protocol, Flash-write policy or reserved-firmware implementation.
 
-- [ESP-Iris 规格](../../ESP-Iris/docs/esp-iris-software-spec-zh.md)拥有 console、控制／数据链路、Gateway、Workbench、通用 RPC、媒体、文件、诊断与主机 API。
-- [Vibe Mode 规格](../../esp-mosaico-vibe-mode/docs/esp-mosaico-vibe-mode-software-spec-zh.md)拥有 Vibe Mode、分区、启动、应用适配 ABI、产品更新后端与基础包。
-- 本规格拥有工程入口、默认流程、原生工具互操作、操作编排、用户提示及 0.1 → 0.2 文档迁移。
+- The [ESP-Iris specification](../../ESP-Iris/docs/esp-iris-software-spec-zh.md) owns console, control/data links, Gateway, Workbench, generic RPC, media, files, diagnostics and host APIs.
+- The Vibe Mode specification owns Vibe Mode, partitions, boot, application-adapter ABI, product update backends and base bundles.
+- This specification owns project entry points, default workflows, native-tool interoperability, operation orchestration, user prompts and documented 0.1 → 0.2 migration.
 
-本文中的“必须／不得”为验收要求。0.2 参数、输出、配置和制品契约已在命令帮助、README 与公共集成指南中同步；不以规格文字替代实机验证。
+"Must" and "must not" denote acceptance requirements. Command help, README and public integration guides reflect 0.2 arguments, outputs, configuration and artifacts; specification prose does not replace hardware validation.
 
-## 2. 已确认的需求
+## 2. Confirmed requirements
 
-| 编号 | 要求 |
+| ID | Requirement |
 | --- | --- |
-| TOOL-BR-01 | Mosaico 工程默认使用 `mosaico.py` 更新，同时允许标准 `idf.py flash monitor` 与 OpenOCD/JTAG。 |
-| TOOL-BR-02 | 原版 monitor 不需要安装工具、Iris 扩展或启动 Gateway；第三方工程不需要修改分区表或集成 Iris。 |
-| TOOL-BR-03 | monitor 与 Gateway 互斥使用控制端口；释放设备后不自动抢回，不要求全局协议模式切换。 |
-| TOOL-BR-04 | 自动发现并验证数据端点，不增加用户配对端口或经控制链路确认数据连接的步骤。首次凭据配置仍按授权要求完成。 |
-| TOOL-BR-05 | 无数据链路时保留按需截图、RPC 与日志；连续媒体、文件和固件 Iris 传输不可用时明确说明。 |
-| TOOL-BR-06 | Gateway 的 UART／Serial-JTAG 自动重连、启动日志采集和硬件复位通过公共 API 暴露给 CLI 与 Workbench。 |
-| TOOL-BR-07 | 保留工程创建、构建、仿真、默认更新、恢复、证据、设备协同与应用上传等现有工具能力。 |
-| TOOL-BR-08 | 工具及配套 Iris 进入 0.2；旧协议、配置转换、路径转发、命令兼容别名与自动降级不进入新实现。 |
+| TOOL-BR-01 | Mosaico projects default to `mosaico.py` updates while allowing standard `idf.py flash monitor` and OpenOCD/JTAG. |
+| TOOL-BR-02 | Original monitor requires no tools installation, Iris extension or Gateway; third-party projects require no partition-table changes or Iris integration. |
+| TOOL-BR-03 | Monitor and Gateway exclusively share a control port; release must not trigger automatic reacquisition or require global protocol-mode switching. |
+| TOOL-BR-04 | Discover and validate data endpoints automatically, without manual port pairing or control-link data confirmation. Initial credential setup still follows authorization requirements. |
+| TOOL-BR-05 | Without a data link, retain on-demand screenshots, RPC and logs; clearly report unavailable continuous media, file and firmware Iris transfers. |
+| TOOL-BR-06 | Expose Gateway UART/Serial-JTAG reconnect, boot-log capture and hardware reset to CLI/Workbench through public APIs. |
+| TOOL-BR-07 | Preserve project creation, build, simulation, default update, recovery, evidence, device collaboration and application upload capabilities. |
+| TOOL-BR-08 | Tools and matching Iris move to 0.2 without old protocols, configuration conversion, path forwarding, command compatibility aliases or automatic downgrade. |
 
-## 3. 工程、模板与构建
+## 3. Projects, templates and builds
 
-### 3.1 工程所有权
+### 3.1 Project ownership
 
-| 编号 | 规格 |
+| ID | Specification |
 | --- | --- |
-| TOOL-PROJ-01 | 用户工程位于宿主工作区 `projects/`，工作区设置位于 `.mosaico.json`；公共模板、工具和配置 Schema 由本模块维护。 |
-| TOOL-PROJ-02 | `project init` 使用本模块 Hello World 模板；`game create` 使用公共游戏模板或明确选择的 BSP 完整示例，不复制 Vibe Mode 作为用户应用。 |
-| TOOL-PROJ-03 | 创建前检查名称、目标目录、依赖与模板参数；支持预览，失败回滚本次创建，不覆盖既有工程。 |
-| TOOL-PROJ-04 | 工程创建不要求连接设备，纯模板创建不要求已完成 ESP-IDF 构建环境；构建与仿真分别检查实际依赖。 |
-| TOOL-PROJ-05 | 可移植模板使用声明的路径锚点与版本约束；GSP、游戏引擎和 BSP 依赖按对应模板管理，不混用 Vibe Mode 的独立依赖。 |
-| TOOL-PROJ-06 | 保留构建、资源生成与模拟器入口；验证共用 UI／游戏逻辑，不能用模拟器通过替代烧录、USB 或 JTAG 实机结果。 |
+| TOOL-PROJ-01 | User projects live in host-workspace `projects/`, with workspace settings in `.mosaico.json`; this module owns public templates, tools and configuration schemas. |
+| TOOL-PROJ-02 | `project init` uses this module's Hello World template; `game create` uses public game templates or explicitly selected complete BSP examples, never copying Vibe Mode as a user application. |
+| TOOL-PROJ-03 | Check names, target directories, dependencies and template parameters before creation; support preview, roll back failed creation and never overwrite existing projects. |
+| TOOL-PROJ-04 | Project creation needs no device; template-only creation needs no configured ESP-IDF build environment. Builds and simulation check their own dependencies. |
+| TOOL-PROJ-05 | Portable templates use declared path anchors and version constraints. Manage GSP, game-engine and BSP dependencies per template, without mixing Vibe Mode's independent dependencies. |
+| TOOL-PROJ-06 | Preserve build, resource generation and simulator entry points. Validate shared UI/game logic; simulation success cannot replace flashing, USB or JTAG hardware results. |
 
-### 3.2 应用集成与环境检查
+### 3.2 Application integration and environment checks
 
-`doctor` 和构建集成验证 Python、准确 SDK revision、目标支持、依赖、有效 sdkconfig 及产品契约。参考工作区使用上表固定 SDK；通用 Iris 支持范围独立维护，不把产品固定版本写入 Iris 规格。
+`doctor` and build integration validate Python, exact SDK revision, target support, dependencies, effective sdkconfig and product contracts. The reference workspace uses the pinned SDK above; generic Iris support is maintained separately, without imposing the product's fixed SDK version on Iris specifications.
 
-正常应用集成公共 Recovery 适配、默认经 Vibe Mode 更新、产品角色／板型／布局／ABI 声明，以及外部资源构建。工具读取 Recovery 发布契约，不复制一份硬编码的分区地址表。复用构建产物也须检查配置、布局与哈希。
+Ordinary applications integrate the public Recovery adapter, default updates through Vibe Mode, product role/board/layout/ABI declarations and external-resource builds. Tools read the Recovery release contract rather than duplicating hardcoded partition addresses. Reused build artifacts still require configuration, layout and hash checks.
 
-S31 产品模板和验收固件统一选择 QIO，与 Vibe Mode 及 bootloader 保持一致。工具检查实际 `CONFIG_ESPTOOLPY_FLASHMODE_QIO=y`，复用旧构建也不能跳过；不得把 SDK 为 ROM 加载阶段生成的 `--flash-mode dio` 误判为 DIO 运行配置或强行覆盖该参数。
+S31 product templates and acceptance firmware use QIO consistently with Vibe Mode and the bootloader. Tools check actual `CONFIG_ESPTOOLPY_FLASHMODE_QIO=y`, including reused builds. Do not misinterpret the SDK's ROM-load-stage `--flash-mode dio` as DIO runtime configuration or forcibly override it.
 
-CMake 继续生成 System Update 产物，但 0.2 不再笼统拒绝 `flash`／`app-flash`。应生成符合 Recovery 启动契约的原生目标并验证完整写入清单；删除错误提示而不修复目标选择与 bootloader 不算完成。
+CMake still generates System Update artifacts, but 0.2 no longer blanket-rejects `flash`/`app-flash`. Generate native targets conforming to Recovery boot contracts and validate complete write lists. Removing the error without fixing target selection and bootloader behavior is insufficient.
 
-## 4. 设备访问与主机生命周期
+## 4. Device access and host lifecycle
 
-### 4.1 Gateway 与客户端
+### 4.1 Gateway and clients
 
-| 编号 | 规格 |
+| ID | Specification |
 | --- | --- |
-| TOOL-GW-01 | 同一项目的 CLI、Workbench、Agent 使用共享 Gateway；客户端独立保活，退出单个客户端不终止其他客户端或进行中的写入。 |
-| TOOL-GW-02 | 无客户端及活动任务时按发布策略退出；长操作保持执行器和锁的生命周期，不因命令等待超时被当作完成或可重试。 |
-| TOOL-GW-03 | 保留被动主机状态、设备枚举、实时状态、领取／释放和接管能力；查询历史或被动状态不自动连接设备。 |
-| TOOL-GW-04 | 设备领取不等于永久保活；明确运行入口可保持主机服务，释放后后台不得自动重新领取。 |
-| TOOL-GW-05 | 通过公共 Iris API 调用服务、查询操作和保存制品；原版 monitor 直接访问设备，不经工具代理。 |
-| TOOL-GW-06 | JSON 和退出码稳定、可自动化；区分主机状态、设备实时状态、历史证据、协议不支持、未授权与能力不足。 |
+| TOOL-GW-01 | CLI, Workbench and Agents for one project share a Gateway. Clients maintain independent liveness; one client exiting must not stop others or active writes. |
+| TOOL-GW-02 | Exit according to published policy when no clients/tasks remain. Long operations retain executor/lock lifetime; command wait timeouts do not mean completion or safe retry. |
+| TOOL-GW-03 | Preserve passive host state, enumeration, live status, claim/release and takeover. History or passive-state queries must not connect automatically. |
+| TOOL-GW-04 | Claiming a device is not permanent keepalive; explicit run entry points may keep services alive. Background work must not reclaim released devices. |
+| TOOL-GW-05 | Invoke services, query operations and save artifacts through public Iris APIs. Original monitor accesses devices directly, without a tools proxy. |
+| TOOL-GW-06 | JSON and exit codes remain stable and automatable, distinguishing host state, live device state, historical evidence, unsupported protocols, missing authorization and insufficient capabilities. |
 
-### 4.2 设备选择、绑定和互斥
+### 4.2 Device selection, binding and exclusion
 
-| 编号 | 规格 |
+| ID | Specification |
 | --- | --- |
-| TOOL-DEV-01 | 显式设备、硬件身份或端点选择严格生效；连接失败不改选其他设备。自动选择仅在候选唯一且满足准入条件时进行。 |
-| TOOL-DEV-02 | 按验证后的 `device_id` 聚合同一设备的端点，不将相邻串口或同一 IP 当作设备归属证明。 |
-| TOOL-DEV-03 | 独立数据发现与握手由 Iris 完成；工具接收绑定结果并展示控制／数据可用状态，不先发送控制确认请求。 |
-| TOOL-DEV-04 | 数据连接可早于控制会话；提交任务前仍校验设备、启动、任务、授权和设备所有权，多个链路不能产生多个 Writer。 |
-| TOOL-DEV-05 | OS 锁与同用户所有权记录协调项目之间的访问；不得强行停止另一 Gateway 或关闭其他客户端来获取端口。 |
-| TOOL-DEV-06 | 原生工具使用前可释放设备及相关传输，停止后台重连；原生工具退出后再由用户请求领取，不进行盲目自动接管。 |
-| TOOL-DEV-07 | 控制短暂掉线与显式释放区分；健康数据任务按其声明策略继续／暂停，明确交还设备时结束相关任务并释放锁。 |
-| TOOL-DEV-08 | 接管期间停止新修改请求并等待活动写入；超时保留原所有者，不杀死 Writer。按原接管／操作标识查询与恢复，不重复创建动作。 |
+| TOOL-DEV-01 | Honor explicit device, hardware identity or endpoint selections strictly; connection failure must not select another device. Auto-selection requires one eligible candidate. |
+| TOOL-DEV-02 | Group endpoints by verified `device_id`; adjacent ports or a shared IP do not prove device ownership. |
+| TOOL-DEV-03 | Iris owns independent data discovery/handshake. Tools consume binding results and show control/data availability without sending prior control confirmation. |
+| TOOL-DEV-04 | Data may connect before control; verify device, boot, task, authorization and ownership before submission. Multiple links must not create multiple writers. |
+| TOOL-DEV-05 | OS locks and same-user ownership records coordinate projects. Never force-stop another Gateway or close other clients to obtain a port. |
+| TOOL-DEV-06 | Release devices/transports and stop reconnect before native tools. After they exit, reclaim only on user request, without blind automatic takeover. |
+| TOOL-DEV-07 | Distinguish brief control disconnect from explicit release. Healthy data tasks continue/pause per declared policy; explicit handoff ends related tasks and releases locks. |
+| TOOL-DEV-08 | During takeover, stop new mutations and wait for active writes. Timeout retains the original owner rather than killing the writer. Query/recover using original takeover/operation IDs instead of duplicating actions. |
 
-无需同时开着原版 monitor 和 Web/AI 操作设备。退出 monitor 或释放 Gateway 属于正常资源交接，不是切换设备协议模式；主机不新增“进入 Iris 通信模式”命令。
+Original monitor and Web/AI device operations need not run simultaneously. Exiting monitor or releasing Gateway is normal resource handoff, not a protocol-mode switch; add no host "enter Iris communication mode" command.
 
-## 5. 日志、复位、截图与证据
+## 5. Logs, reset, screenshots and evidence
 
-### 5.1 日志与硬件复位
+### 5.1 Logs and hardware reset
 
-| 编号 | 规格 |
+| ID | Specification |
 | --- | --- |
-| TOOL-LOG-01 | `logs` 保留历史、索引、轮转和 Follow，包含握手前原始串口日志；无 Iris 固件仍可按接口能力采集。 |
-| TOOL-LOG-02 | UART／Serial-JTAG 自动重连同一设备，端点可读即保存原始字节，不等待应用 Iris 就绪；日志展示来源、捕获段和身份确定程度。 |
-| TOOL-LOG-03 | 提供“先开始读取，再复位并采集”的操作；不在复位后清空接收缓存。只有接口覆盖且实际未丢失时，才能报告完整 bootloader 启动日志。 |
-| TOOL-LOG-04 | 断连、USB 重枚举或缓存溢出留下的缺口明确呈现；主机无法补回设备未留存的字节，不把自动重连视为完整回放。 |
-| TOOL-LOG-05 | 提供正常复位、ROM 下载入口和不复位附着，复用 Gateway 的目标策略；UART 使用 DTR/RTS，USB Serial/JTAG 使用适用时序。 |
-| TOOL-LOG-06 | 不依赖 Iris RPC 执行硬件复位；能力不足、端口占用及写入冲突明确返回，普通重连和调试暂停不自动复位。 |
+| TOOL-LOG-01 | `logs` retains history, indexing, rotation and Follow, including pre-handshake raw serial logs; firmware without Iris may still be captured according to interface capabilities. |
+| TOOL-LOG-02 | UART/Serial-JTAG reconnect to the same device and save raw bytes as soon as readable, without waiting for Iris. Show source, capture segment and identity confidence. |
+| TOOL-LOG-03 | Provide read-first-then-reset capture without clearing receive buffers after reset. Claim complete bootloader logs only when interface coverage and actual capture show no loss. |
+| TOOL-LOG-04 | Expose gaps from disconnect, USB reenumeration and overflow. Hosts cannot recover bytes the device did not retain; reconnect is not complete replay. |
+| TOOL-LOG-05 | Provide normal reset, ROM download entry and attach-without-reset through Gateway target policies: DTR/RTS for UART and appropriate USB Serial/JTAG timing. |
+| TOOL-LOG-06 | Hardware reset must not depend on Iris RPC. Report unavailable capabilities, busy ports and write conflicts. Ordinary reconnect/debug pause must not reset automatically. |
 
-上述为 0.2 所需 API／CLI 能力，新增命令名与参数在详细设计中确定，不把示意名称当成当前可执行命令。
+These are required 0.2 API/CLI capabilities. Detailed design determines new command names/arguments; illustrative names are not current executable commands.
 
-### 5.2 按需截图与诊断
+### 5.2 On-demand screenshots and diagnostics
 
-`screenshot` 优先使用数据链路；仅控制链路时读取一致快照的有界分块，核对设备／启动身份、偏移、长度及完整性，完成后保存图像与元数据。超时依据对象大小、实际速率及进度设置；支持取消、释放和未完成制品的明确失败状态。
+`screenshot` prefers the data link. With control only, read bounded chunks of a consistent snapshot, verify device/boot identity, offsets, lengths and integrity, then save image and metadata. Timeouts reflect object size, actual rate and progress. Support cancellation, release and explicit failure for incomplete artifacts.
 
-不把单次 RPC 响应上限当成整张图片上限，不通过多个不断变化的帧拼图。数据传输中断后改走控制路径，必须确认仍是同一有效快照，否则重新拍摄并说明原因。低速 UART 可能需要较长时间，界面显示路径和进度；原版 monitor 不承担图片重组和显示。
+A single RPC response limit is not a whole-image limit. Never assemble changing frames into one image. Switching from interrupted data transfer to control requires confirming the same valid snapshot, otherwise recapture and explain why. Slow UART may take longer; show path and progress. Original monitor does not reconstruct/display images.
 
-保留 `memory`、`crash`、`rpc`、`device-status`、`operation-status` 及底层已注册服务的入口。Core Dump 的控制导出仅在设备声明有界诊断读取能力时启用，不能因截图支持控制分块就假定全部文件和固件也支持。
+Preserve `memory`, `crash`, `rpc`, `device-status`, `operation-status` and registered-service entry points. Enable control Core Dump export only when the device declares bounded diagnostic reads. Control-chunked screenshots do not imply generic file/firmware support.
 
-### 5.3 操作与证据
+### 5.3 Operations and evidence
 
-| 编号 | 规格 |
+| ID | Specification |
 | --- | --- |
-| TOOL-EVID-01 | 保存 Operation、原始日志、Artifact 和结构化结果，关联实际设备、启动、配置及产物哈希；缓存和历史显示不得证明当前健康。 |
-| TOOL-EVID-02 | 更新成功要求同设备、预期新启动、镜像身份、产品契约和健康条件；端口重现、上传成功或 Vibe Mode 可达不能代替。 |
-| TOOL-EVID-03 | 查询失败或未知操作保留其真实状态；命令查询成功不把被查询的失败操作改为成功。 |
-| TOOL-EVID-04 | 超时、崩溃和重启后按原 Operation 查询；终态不可变，补充核验作为关联证据，不自动重新写入。 |
-| TOOL-EVID-05 | CLI 直接保存设备截图；Workbench 页面截图不作为设备图像证据。凭据不出现在输出、日志或制品中。 |
-| TOOL-EVID-06 | 未经过本工具的原生烧录不伪造受管 Operation；可以导入用户提供的日志作为外部证据，并明确来源和未验证部分。 |
+| TOOL-EVID-01 | Save Operations, raw logs, Artifacts and structured results tied to actual device, boot, configuration and artifact hashes. Cached/history displays cannot prove current health. |
+| TOOL-EVID-02 | Successful updates require the same device, expected new boot, image identity, product contract and health. Port reappearance, upload success or reachable Vibe Mode is insufficient. |
+| TOOL-EVID-03 | Failed queries and unknown operations retain truthful state. A successful query cannot turn a failed queried operation into success. |
+| TOOL-EVID-04 | After timeout, crash or restart, query the original Operation. Terminal states are immutable; supplemental verification is linked evidence, never automatic rewriting. |
+| TOOL-EVID-05 | CLI saves device screenshots directly. Workbench page screenshots are not device-image evidence. Credentials must not appear in output, logs or artifacts. |
+| TOOL-EVID-06 | Native flashing outside these tools must not fabricate a managed Operation. User logs may be imported as external evidence with clear source and unverified portions. |
 
-## 6. 更新与恢复流程
+## 6. Update and recovery flows
 
-### 6.1 默认更新选择
+### 6.1 Default update selection
 
-| 情况 | 默认路径 | 前置条件 |
+| Situation | Default path | Prerequisites |
 | --- | --- | --- |
-| 仅应用代码变化 | `iris app-update` | 完整分区表一致，产品契约与镜像角色匹配 |
-| 新应用、布局或外部资源变化 | `iris system-update` | 完整目标计划、资源与产品布局规则有效 |
-| 设备无有效产品固件、第三方接管后返回、跨代基础安装 | `recover` | 配套基础包、可用 ROM 入口与已确认硬件身份 |
-| Vibe Mode 自更新 | 专用产品更新包或基础恢复 | 明确支持自更新，声明单副本风险及 ROM 兜底 |
+| Application code only | `iris app-update` | Identical complete partition table, matching product contract and image role |
+| New application, layout or external resources | `iris system-update` | Valid complete target plan, resources and product layout rules |
+| No valid product firmware, return after third-party use, or cross-generation base installation | `recover` | Matching base bundle, usable ROM entry and confirmed hardware identity |
+| Vibe Mode self-update | Dedicated product update bundle or base recovery | Explicit self-update support, single-copy risk and ROM fallback explained |
 
-| 编号 | 规格 |
+| ID | Specification |
 | --- | --- |
-| TOOL-UPD-01 | 本地工程、bundle 和 NAND 路径按声明格式预检；准备产物、构建和验证先于需要设备写入的阶段。 |
-| TOOL-UPD-02 | 不通过改分区表把 system-update 伪装为 app-update；布局不匹配报告两端信息和适用路径。 |
-| TOOL-UPD-03 | 正常应用默认进入 Vibe Mode，由产品后端写入，再验证返回健康正常应用；工具不把 Writer 复制到应用侧。 |
-| TOOL-UPD-04 | Iris 更新需要已认证数据链路。只有 UART／Serial-JTAG 时说明不支持，用户仍可选择原生 ROM 路径；不能静默把固件编码到 console。 |
-| TOOL-UPD-05 | 更新清单显示组件角色、目标范围、大小及哈希，使用 Recovery 契约验证保留区和资源；普通应用不替换维护固件。 |
-| TOOL-UPD-06 | 活动写入由单一执行器持锁；取消、超时、Gateway 或客户端退出按操作状态机处理，不强制杀死 Writer 或重复提交。 |
-| TOOL-UPD-07 | 多设备可独立操作，同一设备串行修改；数据自动绑定不绕过这一规则。 |
+| TOOL-UPD-01 | Preflight local projects, bundles and NAND sources by declared formats. Prepare, build and validate artifacts before device-write stages. |
+| TOOL-UPD-02 | Do not disguise system-update as app-update by altering partition tables. Report both layouts and the appropriate path on mismatch. |
+| TOOL-UPD-03 | Ordinary applications default to entering Vibe Mode, writing through the product backend, then verifying return to a healthy application. Do not duplicate the writer in applications. |
+| TOOL-UPD-04 | Iris updates require an authenticated data link. Explain unsupported UART/Serial-JTAG-only configurations while allowing native ROM alternatives; never silently encode firmware into console traffic. |
+| TOOL-UPD-05 | Update plans show component roles, ranges, sizes and hashes. Validate reserved regions/resources through the Recovery contract; ordinary applications do not replace maintenance firmware. |
+| TOOL-UPD-06 | One executor holds the lock during active writes. Cancellation, timeout and Gateway/client exit follow the operation state machine; never kill writers or resubmit forcibly. |
+| TOOL-UPD-07 | Different devices may operate independently; mutations on one device are serial. Automatic data binding does not bypass this rule. |
 
 ### 6.2 recover
 
-`recover` 负责准备并安装完整基础包，通过 ROM 路径写入匹配 bootloader、分区表、启动选择与 Vibe Mode，然后验证产品服务。默认使用已评审包；源码构建是明确选择，不自动覆盖或替换评审包。
+`recover` prepares and installs a complete base bundle through ROM, writing matching bootloader, partition table, boot selection and Vibe Mode, then validating product services. Reviewed bundles are the default; source builds require explicit choice and do not automatically overwrite/replace them.
 
-- 正常 0.2 设备可使用现有实时证据协调释放与保存日志；无 Iris、旧代际或第三方固件必须能直接通过 ROM 入口执行，不要求先完成 Iris 握手。
-- 使用 ROM 可读取的硬件身份选择目标，写入前重新核对，重枚举后核对同一硬件及产品身份。独立烧录口不能只按端口邻近性或缓存配对。
-- 保存完整写入日志、Operation 与恢复后证据；准备基础包和范围预检在实际复位／写入前完成。
-- 不默认全片擦除，不隐式销毁凭据、身份或产品数据；跨代不再适用的数据按文档列出的范围显式重建。
-- 超时不表示执行器停止；查询原操作后再决定后续动作。物理 ROM 入口作为无法自动进入时的硬件路径，不与进入 Vibe Mode 混淆。
+- Normal 0.2 devices may use live evidence for coordinated release and log preservation. Devices without Iris, older-generation devices and third-party firmware must support direct ROM entry without a prior Iris handshake.
+- Select targets by ROM-readable hardware identity, recheck before writing and verify the same hardware/product identity after reenumeration. Separate flashing ports cannot be paired solely by proximity or cache.
+- Save complete write logs, Operations and post-recovery evidence. Prepare bundles and preflight ranges before actual reset/write.
+- No default chip erase or implicit destruction of credentials, identity or product data. Explicitly reconstruct incompatible cross-generation data within documented scopes.
+- Timeout does not mean the executor stopped; query the original operation before further action. Physical ROM entry is the fallback when automatic entry fails, distinct from entering Vibe Mode.
 
-0.2 的 recover 可以由本地主机服务记录操作，但不要求该服务懂得旧 Iris 协议。ROM 下载协议不是 0.1 Iris 兼容层。
+0.2 recover may record operations in a local host service without requiring it to understand old Iris protocols. ROM download is not a 0.1 Iris compatibility layer.
 
-## 7. 原生 IDF、JTAG 与第三方工程
+## 7. Native IDF, JTAG and third-party projects
 
-### 7.1 Mosaico 工程
+### 7.1 Mosaico projects
 
-工具生成的工程保留直接运行 `idf.py flash monitor` 的路径，不要求先启动 Gateway。匹配的 bootloader、分区表、otadata、应用与资源写入清单须由构建集成正确生成，遵守 Recovery 规格；flash 与 app-flash 的实际覆盖范围分别说明。
+Generated projects retain direct `idf.py flash monitor` without starting Gateway. Build integration must generate matching bootloader, partition-table, otadata, application and resource write lists under the Recovery contract, documenting the distinct actual scopes of flash and app-flash.
 
-已有匹配基础固件时原生应用烧录必须保留 Vibe Mode。空白设备或基础契约不匹配时，指南明确使用 recover 安装基础包，或使用包含匹配基础固件的完整原生安装清单；不能仅写入 main_app 就声称基础恢复入口已建立。默认应用更新仍使用第 6 节流程。
+Native application flashing must preserve matching base Vibe Mode firmware. For blank or incompatible devices, guides specify recover or a complete native installation list containing matching base firmware. Writing only main_app cannot establish base recovery. Default updates still follow section 6.
 
-OpenOCD/GDB 保留识别、暂停、继续、单步、断点与内存访问。Gateway 放弃相冲突的端口并暂停重连；硬件允许时 JTAG 与 monitor 并行使用，调试暂停不触发自动恢复。
+OpenOCD/GDB retain identification, halt, resume, stepping, breakpoints and memory access. Gateway releases conflicting ports and pauses reconnect. JTAG and monitor may coexist where hardware permits; debug pauses must not trigger automatic recovery.
 
-### 7.2 第三方工程
+### 7.2 Third-party projects
 
-支持目标芯片的第三方 ESP-IDF 示例使用自己的工程和分区表，直接 `idf.py flash monitor`，不需要 Iris、Mosaico 模板、公共 Recovery 适配或产品更新包。
+Third-party ESP-IDF examples supporting the chip use their own projects/partition tables and direct `idf.py flash monitor`, without Iris, Mosaico templates, public Recovery adapters or product update bundles.
 
-这一路径允许替换产品 bootloader、分区布局、Vibe Mode 和数据；工具不得向第三方注入保留分区要求。文档说明影响，Gateway 释放端口后不阻断原生工具。第三方不提供 Iris 服务时，不能用缺少应答判定损坏或伪造产品健康证据。
+This path may replace product bootloader, layout, Vibe Mode and data. Tools must not inject reserved-partition requirements. Document the effects; after Gateway releases the port, do not block native tools. Missing Iris responses from third-party firmware neither prove corruption nor justify fabricated product-health evidence.
 
-返回 Mosaico 使用 recover 重装基础固件，再安装目标应用；不承诺恢复已被第三方覆盖的数据。该流程与“Mosaico 工程原生烧录仍保留 Vibe Mode”分别验收。
+Returning to Mosaico requires recover followed by the target application, without promising restoration of overwritten data. Validate this separately from native Mosaico-project flashing that preserves Vibe Mode.
 
-## 8. 应用制品、仿真与上传
+## 8. Application artifacts, simulation and upload
 
-| 编号 | 规格 |
+| ID | Specification |
 | --- | --- |
-| TOOL-ART-01 | 工程、游戏、UI 和外部资源按模板生成可追溯的构建产物；固件、布局、配置与资源哈希可关联到更新操作。 |
-| TOOL-ART-02 | bundle 构建使用 Recovery 的 0.2 契约，正常应用包不能携带未授权维护固件或任意 Flash 写入。 |
-| TOOL-ART-03 | 保留本地模拟器和资源校验入口，模拟器、板级适配与设备后端有明确边界。 |
-| TOOL-ART-04 | 保留 Mosaico Ideas 应用草稿上传，包含 README、封面、资源及附件；路径限于项目，不允许逃逸或泄露凭据。 |
-| TOOL-ART-05 | 草稿上传不自动发布、送审或烧录设备；服务端 bundle 契约与设备代际匹配，旧制品不能仅改版本号后重新提交。 |
-| TOOL-ART-06 | 不兼容的模板、配置、上传服务或制品格式在文档中给出重新生成步骤；0.2 不保留旧 Schema 转换器。 |
+| TOOL-ART-01 | Projects, games, UI and external resources generate traceable artifacts from templates; firmware/layout/configuration/resource hashes link to update operations. |
+| TOOL-ART-02 | Bundle builds use Recovery's 0.2 contract; ordinary application bundles cannot carry unauthorized maintenance firmware or arbitrary Flash writes. |
+| TOOL-ART-03 | Preserve local simulator/resource-validation entry points with clear boundaries between simulation, board adapters and device backends. |
+| TOOL-ART-04 | Preserve Mosaico Ideas draft uploads with README, covers, resources and attachments; constrain paths to the project and prevent escapes/credential disclosure. |
+| TOOL-ART-05 | Draft upload does not publish, submit for review or flash devices. Server bundle contracts must match device generations; old artifacts cannot be resubmitted by changing version strings alone. |
+| TOOL-ART-06 | Document regeneration for incompatible templates, configuration, upload services or artifacts. 0.2 keeps no old-schema converters. |
 
-上传服务、仿真引擎和资源格式有各自版本，不因为 Iris 升到 0.2 就盲目改写所有版本号；变化的公共契约须在发布矩阵中明确。
+Upload services, simulation engines and resource formats have independent versions. Do not rewrite them merely because Iris moves to 0.2; identify changed public contracts in the release matrix.
 
-## 9. 0.2 边界与文档迁移
+## 9. 0.2 boundaries and documented migration
 
-### 9.1 不互通规则
+### 9.1 Non-interoperability rules
 
-mosaico-tools 0.2 仅使用配套 Iris 0.2 Gateway／设备 API 和新的产品契约。旧设备服务、旧 Gateway、旧应用包与旧配置不自动适配；可以通过协议无关日志或 ROM 路径处理设备，但不调用旧 Iris API。
+mosaico-tools 0.2 uses only matching Iris 0.2 Gateway/device APIs and new product contracts. It does not adapt old services, Gateways, bundles or configuration automatically. Protocol-independent logs and ROM paths may handle devices without calling old Iris APIs.
 
-禁止保留旧协议解析器、双协议探测、自动降级、旧命令兼容别名、旧模块路径转发、数据库升级脚本或运行时配置／布局转换。未改变的正式命令名称可以继续使用，这不意味着支持旧版本的参数和语义。
+No legacy parsers, dual-protocol detection, automatic downgrade, old-command aliases, module forwarding, database upgrades or runtime configuration/layout conversion. Unchanged public command names may remain, without retaining old arguments or semantics.
 
-0.2 配置、数据库、Token、配对状态和运行目录与 0.1 隔离，不读取或重写旧数据库。旧日志与制品保留在旧目录或归档；需要导出时使用隔离的旧工具，不将旧导出解析器打包进 0.2。
+Isolate 0.2 configuration, databases, tokens, pairing state and runtime directories from 0.1; do not read/rewrite old databases. Retain old logs/artifacts in original directories or archives; export through isolated old tools, never by bundling legacy export parsers in 0.2.
 
-### 9.2 用户迁移指南
+### 9.2 User migration guide
 
-1. 记录旧工作区及 utils revision、硬件身份、固件和布局；按需用旧工具导出项目配置、日志、Core Dump、制品及业务数据，关闭旧 Gateway 并释放端口。
-2. 保留旧环境归档，安装配套 0.2 工具与 Iris；新建独立配置和状态目录，依据新 Schema 手动重建 `.mosaico.json` 和连接设置，不自动导入旧数据库。
-3. 依据新模板和 [Vibe Mode 规格](../../esp-mosaico-vibe-mode/docs/esp-mosaico-vibe-mode-software-spec-zh.md)修改旧工程的公共集成入口、分区及 ABI 声明，重新构建应用和资源；替换脚本中已移除的入口，不保留本地兼容转发层。
-4. 准备完整 0.2 基础包及明确的保留／重建数据清单，通过 recover 的 ROM 路径完成跨代安装。该步骤不要求新 Gateway 先连上旧 Iris。
-5. 验证同一硬件、Vibe Mode 新启动和目标产品契约，按新规则重新配对、创建 Token 和权限，再安装正常应用。
-6. 验证默认更新闭环、控制截图、数据自动绑定、启动日志与复位，以及不启动 Gateway 的原生 monitor；按产品路径验证原生 flash 和 JTAG。
-7. 按 0.2 契约更新自动化的 CLI JSON、HTTP API、Operation 和 Artifact 处理；旧历史保留作离线资料，不混入新的运行状态。
+1. Record the old workspace/utils revision, hardware identity, firmware and layout. Export needed configuration, logs, Core Dumps, artifacts and application data using old tools, then stop the old Gateway and release ports.
+2. Archive the old environment, install matching 0.2 tools/Iris and create separate configuration/state. Manually recreate `.mosaico.json` and connection settings under the new schema, without automatic database import.
+3. Update old projects' public integration, partitions and ABI declarations according to new templates and the Vibe Mode specification; rebuild applications/resources. Replace removed script entry points without local compatibility forwarding.
+4. Prepare a complete 0.2 base bundle and explicit retained/reconstructed data lists, then install through recover's ROM path. The new Gateway need not connect to old Iris first.
+5. Verify the same hardware, new Vibe Mode boot and target product contract; pair again and recreate tokens/permissions under new rules before installing the ordinary application.
+6. Verify the default update cycle, control screenshots, automatic data binding, boot logs/reset and native monitor without Gateway. Validate native flash/JTAG through product workflows.
+7. Update automation for 0.2 CLI JSON, HTTP API, Operation and Artifact contracts. Retain old history as offline reference, separate from new runtime state.
 
-第三方工程继续使用原生 IDF，不需要执行应用集成迁移；只有返回 Mosaico 时执行基础恢复。发布迁移指南须给出最终目录、配置样例、已移除入口替代表和实际命令；本规格不虚构未实现参数或提供自动转换命令。
+Third-party projects continue using native IDF without application-integration migration; base recovery is needed only when returning to Mosaico. Published migration guides must include final paths, sample configuration, replacement entry points and actual commands. This specification invents neither unimplemented arguments nor automatic converters.
 
-## 10. 验收与发布条件
+## 10. Acceptance and release conditions
 
-| 编号 | 场景 | 通过条件 |
+| ID | Scenario | Passing condition |
 | --- | --- | --- |
-| TOOL-AC-01 | 工程创建 | 无设备创建应用／游戏成功，依赖和路径有效；冲突不覆盖，失败可回滚 |
-| TOOL-AC-02 | 无扩展原生工具 | 不启动 Gateway、不安装 Iris 主机即可 monitor；Mosaico 原生清单正确，JTAG 可用 |
-| TOOL-AC-03 | 默认更新 | app-update 与 system-update 按前置条件选择，资源正确、同设备健康闭环、证据完整 |
-| TOOL-AC-04 | 端口与协同 | 多客户端共享 Gateway，显式选择不漂移；释放后无抢占，活动写入不被超时或接管强杀 |
-| TOOL-AC-05 | 自动数据绑定 | 控制尚未连接时数据可发现并验证，无人工端口配对；错误身份／授权不接受 |
-| TOOL-AC-06 | 仅控制截图 | UART／Serial-JTAG 可保存完整图片并验证身份、完整性；日志、取消及状态仍可用 |
-| TOOL-AC-07 | 启动采集 | 先读后复位、自动重连、原始日志和缺口标记通过；无 Iris 应用也可用硬件复位 |
-| TOOL-AC-08 | 第三方 | 原工程不改分区表、不接 Iris 可 native flash monitor；返回产品使用 recover 并核验身份 |
-| TOOL-AC-09 | 跨代恢复 | 新工具无需理解 0.1 协议完成 ROM 基础安装；旧包／旧状态不自动转换，归档不被删除 |
-| TOOL-AC-10 | 错误与结果 | 失败、未知、超时、未授权和能力不足有稳定输出；操作查询不重放写入或伪造成功 |
-| TOOL-AC-11 | 工具功能回归 | 模板、构建、仿真、制品、文件／媒体入口、诊断与草稿上传能力保留 |
-| TOOL-AC-12 | 干净版本边界 | 源码、依赖、安装包无 0.1 兼容层或转发路径，发布文档和样例均指向 0.2 契约 |
+| TOOL-AC-01 | Project creation | Device-free app/game creation succeeds with valid dependencies/paths; conflicts never overwrite and failures roll back |
+| TOOL-AC-02 | Unextended native tools | Monitor works without Gateway or Iris host installation; Mosaico native write lists are correct and JTAG works |
+| TOOL-AC-03 | Default updates | app-update/system-update selected by prerequisites, correct resources, healthy same-device verification and complete evidence |
+| TOOL-AC-04 | Ports and collaboration | Shared multi-client Gateway, stable explicit selection, no reacquisition after release, no writer killed by timeout/takeover |
+| TOOL-AC-05 | Automatic data binding | Data discovered/validated before control without manual pairing; wrong identity/authorization rejected |
+| TOOL-AC-06 | Control-only screenshots | UART/Serial-JTAG save complete images with identity/integrity checks while logs, cancellation and status remain available |
+| TOOL-AC-07 | Boot capture | Read-before-reset, reconnect, raw logs and gap markers pass; hardware reset works without Iris firmware |
+| TOOL-AC-08 | Third-party | Original projects native-flash/monitor without partition changes or Iris; returning uses recover and identity validation |
+| TOOL-AC-09 | Cross-generation recovery | New tools install through ROM without understanding 0.1; old bundles/state are not converted and archives remain |
+| TOOL-AC-10 | Errors and results | Stable failures, unknowns, timeouts, authorization/capability errors; queries never replay writes or fabricate success |
+| TOOL-AC-11 | Tool regressions | Templates, builds, simulation, artifacts, file/media entry points, diagnostics and draft uploads retained |
+| TOOL-AC-12 | Clean version boundary | No 0.1 compatibility/forwarding in source, dependencies or packages; release docs/examples use 0.2 contracts |
 
-记录准确 SDK 与 utils revision、脏树、环境、配置、镜像／布局哈希、硬件身份、Boot ID、日志和操作结果。工程、主机、Recovery、前端和真实硬件分别报告；三份规格的功能矩阵不得以历史结果充当 0.2 验收。
+Record exact SDK/utils revisions, dirty state, environment, configuration, image/layout hashes, hardware identity, Boot ID, logs and results. Report project, host, Recovery, frontend and hardware separately; historical results in the three specification matrices are not 0.2 acceptance.
 
-## 11. 实现、验证范围与参考
+## 11. Implementation, validation scope and references
 
-旧路径转发与身份迁移层已移除。状态目录使用 0.2，项目配置 schema 为 2，
-Gateway API 为 2；原生 flash 清单检查替代旧的整体禁用。正常应用与 test
-维护分区的启动契约、schema 3 基础包和默认 Mosaico 更新流程已完成验证。
+Old path-forwarding and identity-migration layers are removed. State directories use 0.2, project schema is 2,
+and Gateway API is 2. Native flash-list checks replace blanket prohibition. Boot contracts for ordinary applications and the test
+maintenance partition, schema 3 base bundles and default Mosaico updates have been validated.
 
-主机、模拟后端与三块设备的结果见[0.2 验证记录](../../esp-mosaico-vibe-mode/docs/validation-0.2.md)。
-JTAG 按要求跳过；外部 Bridge 0.2 服务及其他未测场景单独标记。标准 monitor
-无需 Iris 扩展，S31 High-Speed USB 烧录后首次枚举的时序限制须按实测记录说明。
+Old three-board and nine-device acceptance records are absent from the checkout; consult Git history as needed.
+JTAG was skipped as requested; external Bridge 0.2 services and other untested scenarios are marked separately. Standard monitor
+requires no Iris extension. Document measured first-enumeration timing limitations after S31 High-Speed USB flashing.
 
-- [当前工具说明](../README.md)
-- [当前应用集成](application-integration.md)
-- [当前 System Update 构建集成](../cmake/system_update.cmake)
-- [产品契约](../../esp-mosaico-vibe-mode/product_contract.json)
-- [Vibe Mode 当前功能](../../esp-mosaico-vibe-mode/firmware/vibe-mode/README.md)
-- [模块边界](../../docs/component-boundaries.md)
+- [Current tools guide](../README.md)
+- [Current application integration](application-integration.md)
+- [Current System Update build integration](../cmake/system_update.cmake)
+- [Product contract](../../mosaico-tools/product_contract.json)

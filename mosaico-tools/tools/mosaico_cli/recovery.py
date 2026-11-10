@@ -29,6 +29,25 @@ _ROM_MAC = re.compile(
 )
 
 
+def source_project(source: str, path: str | None, *, option: str = "--source-path") -> Path | None:
+    """Resolve an explicitly selected candidate project relative to the caller's cwd."""
+    if source != "current":
+        if path is not None:
+            raise SelectionError(f"{option} is only valid with the current source.")
+        return None
+    if not path or not path.strip():
+        raise SelectionError(f"The current source requires {option} PATH to the Vibe Mode firmware project.")
+    project = Path(path).expanduser().resolve()
+    required = ("CMakeLists.txt", "sdkconfig.defaults", "sdkconfig.recovery.defaults", "main/idf_component.yml")
+    missing = [name for name in required if not (project / name).is_file()]
+    if missing:
+        raise SelectionError(
+            f"{option} must name a Vibe Mode firmware project: {project}",
+            details={"missing": missing},
+        )
+    return project
+
+
 def _verification_key(device_id: str) -> str:
     return hashlib.sha256(device_id.encode("utf-8")).hexdigest()
 

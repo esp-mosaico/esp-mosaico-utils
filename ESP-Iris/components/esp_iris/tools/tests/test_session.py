@@ -30,16 +30,6 @@ from iris_gateway.protocol import (
 from iris_gateway.session import DeviceSession
 
 
-@pytest.fixture
-def without_clock_sync(monkeypatch):
-    # These protocol fakes do not answer liveness probes. Disable them before
-    # the handshake: Python 3.8 wait_for can swallow cancellation at readiness.
-    async def disabled(self):
-        pass
-
-    monkeypatch.setattr(DeviceSession, "_clock_loop", disabled)
-
-
 def test_status_decodes_spiram_watermarks_and_old_firmware() -> None:
     async def scenario() -> None:
         async def discard(value: object) -> None:
@@ -145,6 +135,29 @@ class FakeLink:
         self.closed = True
 
 
+@pytest.mark.parametrize("turns", [1, 2, 3, 4])
+def test_cancel_ready_clock_keeps_session_open(turns: int) -> None:
+    async def scenario() -> None:
+        async def discard(value: object) -> None:
+            pass
+
+        session = DeviceSession(FakeLink(), discard, discard)
+        session.info = SimpleNamespace(session_id=7)
+        session._ready.set()
+        task = asyncio.create_task(session._clock_loop())
+        for _ in range(turns):
+            await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, 0.1)
+        assert not session._closed
+        assert session._ready.is_set()
+        assert not session._pending
+        assert not session._write_lock.locked()
+
+    asyncio.run(scenario())
+
+
 def test_media_credit_does_not_block_receive_behind_rpc_writer() -> None:
     async def scenario() -> None:
         async def discard(value: object) -> None:
@@ -197,7 +210,9 @@ def test_credit_tasks_are_cancelled_on_close_and_write_failure(yield_before_clos
             raise OSError("write failed")
         session._send = fail
         session._queue_credit(Channel.SCREEN, 1024)
-        await asyncio.wait_for(asyncio.gather(*session._credit_tasks.values()), 0.1)
+        # The first error also formats a traceback; slow Windows source reads
+        # are not a credit-task latency guarantee. Still bound task completion.
+        await asyncio.wait_for(asyncio.gather(*session._credit_tasks.values()), 2)
         assert not session._credit_tasks
         assert session._closed and session.link.closed
 
@@ -601,7 +616,6 @@ def test_ota_data_window_rejects_a_truncated_response_batch(monkeypatch) -> None
     asyncio.run(scenario())
 
 
-@pytest.mark.usefixtures("without_clock_sync")
 def test_event_time_fields_crash_metadata_and_chunk_download() -> None:
     async def scenario() -> None:
         link = FakeLink()
@@ -642,6 +656,11 @@ def test_event_time_fields_crash_metadata_and_chunk_download() -> None:
             )
         )
         info = await session.wait_ready()
+        assert session._clock_task is not None
+        session._clock_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await session._clock_task
+        session._clock_task = None
 
         event_payload = encode_tlv(
             [
@@ -1052,7 +1071,6 @@ def test_usb_serial_jtag_keeps_link_after_unanswered_clock_probes() -> None:
     asyncio.run(scenario())
 
 
-@pytest.mark.usefixtures("without_clock_sync")
 def test_rpc_jobs_screenshot_media_ota_and_restart() -> None:
     async def scenario() -> None:
         link = FakeLink()
@@ -1103,6 +1121,11 @@ def test_rpc_jobs_screenshot_media_ota_and_restart() -> None:
             )
         )
         await session.wait_ready()
+        assert session._clock_task is not None
+        session._clock_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await session._clock_task
+        session._clock_task = None
 
         control_sequence = 1
         rpc_task = asyncio.create_task(

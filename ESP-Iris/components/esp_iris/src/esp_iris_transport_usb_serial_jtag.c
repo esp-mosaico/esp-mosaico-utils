@@ -35,11 +35,9 @@ static esp_err_t usb_serial_jtag_start(iris_runtime_t *runtime,
 #endif
     state->driver_owned = !usb_serial_jtag_is_driver_installed();
 
-    usb_serial_jtag_driver_config_t config = {
-        .tx_buffer_size = CONFIG_ESP_IRIS_USB_SERIAL_JTAG_TX_BUFFER_BYTES,
-        .rx_buffer_size = CONFIG_ESP_IRIS_USB_SERIAL_JTAG_RX_BUFFER_BYTES,
-        .intr_priority = 0,
-    };
+    usb_serial_jtag_driver_config_t config = USB_SERIAL_JTAG_DRIVER_CONFIG_DEFAULT();
+    config.tx_buffer_size = CONFIG_ESP_IRIS_USB_SERIAL_JTAG_TX_BUFFER_BYTES;
+    config.rx_buffer_size = CONFIG_ESP_IRIS_USB_SERIAL_JTAG_RX_BUFFER_BYTES;
     esp_err_t err = state->driver_owned ? usb_serial_jtag_driver_install(&config) : ESP_OK;
     if (err != ESP_OK) {
         return err;

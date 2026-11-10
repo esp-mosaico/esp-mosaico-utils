@@ -1,5 +1,0 @@
-# Authored-resource hashes must survive Windows core.autocrlf checkouts.
-*.py text eol=lf
-*.h text eol=lf
-*.json text eol=lf
-*.svg text eol=lf

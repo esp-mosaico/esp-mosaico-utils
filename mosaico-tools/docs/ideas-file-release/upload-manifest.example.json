@@ -2,16 +2,13 @@
   "schema": "mosaico-ideas/release/1",
   "project": {
     "title": "Weather Station",
-    "categories": [
-      "display",
-      "sensors"
-    ],
+    "category_id": 123,
     "boards": [],
     "tags": [
       "weather"
     ],
-    "license": "Apache-2.0",
-    "external_links": []
+    "external_links": [],
+    "content_type": "software"
   },
   "firmware": {
     "path": "firmware/app.irisfw",

@@ -224,4 +224,4 @@ def version_satisfies(running, minimum):
     if minimum is None:
         return True
     required = version_tuple(minimum)
-    return current[0] == required[0] and current >= required
+    return current >= required

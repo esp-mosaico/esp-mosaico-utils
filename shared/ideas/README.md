@@ -2,7 +2,7 @@
 
 This host library shapes text and generates display/1 JSON, MIFF/1 font subsets
 and optional PNG icons. It has no ESP-IDF, GSP, CLI or firmware-source dependency.
-Vibe Mode owns the [device format](../../esp-mosaico-vibe-mode/docs/ideas-display-format.md).
+Vibe Mode owns the device display format.
 
 Install `requirements.txt` and system libraqm >= 0.9. Importing the public
 package does not load these optional libraries; generation does.
@@ -21,8 +21,7 @@ files = generate_resources(
 )
 ```
 
-The caller writes returned bytes or inserts them into its archive. The firmware's
-`prepare_idea_presentation.py` remains a thin file-output command.
+The caller writes returned bytes or inserts them into its archive.
 
 ## Contract
 

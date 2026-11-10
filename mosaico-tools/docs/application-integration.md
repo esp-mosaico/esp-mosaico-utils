@@ -7,7 +7,7 @@ ABI 2 and the `mosaico-retained-test-2m-v2` layout. See the
 [0.2 migration guide](migration-0.2.md).
 
 For Vibe Mode installation and optional Iris logging in an existing application,
-start with the [migration guide (中文)](../../docs/recovery-iris-migration.zh-CN.md).
+start with the [migration guide](../../docs/recovery-iris-migration.md).
 The integration below adds the complete Mosaico application update workflow.
 
 The tools repository owns `templates/hello_world/mosaico-template.json` and the
@@ -49,9 +49,9 @@ for USB startup, screenshot/pointer registration and first-frame health acceptan
 GSP canvas placeholder or external resource partition. Host and native use the
 same `raylib_lite_game_module_v1()` implementation.
 
-Normal apps include `esp-mosaico-vibe-mode/cmake/mosaico_idf_project.cmake`
+Normal apps include `mosaico-tools/cmake/mosaico_idf_project.cmake`
 before project(), supplying MOSAICO_BSP_ROOT for the board-owned splash handoff.
-Add `esp-mosaico-vibe-mode/components/esp_mosaico_app_recovery` to
+Add `mosaico-tools/components/esp_mosaico_app_recovery` to
 EXTRA_COMPONENT_DIRS and call iris_ota_support_start(). This component has no
 GSP, BSP or display dependency. Its configure gate validates the effective
 configuration, including existing sdkconfig files; the OTA writer stays in Vibe Mode.
@@ -86,7 +86,7 @@ Acquisition lives in `shared/gsp`; tools select application versions through
 Raylib integration defaults live in `cmake/defaults/raylib_lite_iris.defaults`;
 that profile is not a separate project template.
 Include `cmake/system_update.cmake` after project() to declare System Update
-artifacts and verify the native `flash`/`app-flash` layout. Other resources
+artifacts. Other resources
 use MOSAICO_SYSTEM_UPDATE_DATA_LABELS and per-label IMAGE/TARGET global properties.
 No normal application bundle replaces the retained bootloader.
 
@@ -110,16 +110,65 @@ The pinned IDF Monitor 1.9.0 exits if its first port-open occurs during that
 gap; start stock `idf.py monitor` after the application port appears. UART and
 USB Serial/JTAG keep their native combined flash/monitor workflow.
 
+For a local UART or USB Serial/JTAG development connection, the workspace
+launcher can delegate native IDF flashing to Gateway and resume the existing
+Iris console afterwards:
+
+```sh
+python mosaico.py iris flash --project /path/to/app --endpoint /dev/ttyUSB0 --monitor
+python mosaico.py iris app-flash --project /path/to/app --endpoint /dev/ttyUSB0 --monitor
+```
+
+`flash` and `app-flash` execute the corresponding IDF target. IDF owns initial
+configuration, incremental builds, image selection, validation and reset policy.
+The wrapper does not prebuild, inspect images, enforce a Mosaico partition layout
+or hash build outputs. Custom resources registered with an IDF target retain that
+target's native behavior. `--skip-build` remains a compatibility no-op; IDF still
+runs the target's dependencies. Product installation checks belong to
+`system-update`, `app-update` and `recover`.
+
+Pass IDF options unchanged after `--`, for example:
+
+```sh
+python mosaico.py iris flash --project /path/to/app --endpoint /dev/ttyUSB0 -- -b 460800 -D SDKCONFIG_DEFAULTS=custom.defaults
+```
+
+Select the serial port with `--endpoint` so Gateway can coordinate its ownership.
+Native output is streamed (to stderr in JSON mode), and a failing IDF process
+retains its exit code. The wrapper's `--timeout` bounds observation only; it does
+not terminate a writer still holding the port.
+
+An explicit `--endpoint` requires no working Iris handshake; `--device-id` can
+select a connected board instead. Console baud defaults to 115200, with `--baudrate` as an override; this is
+independent of IDF's `-b` flash baud rate. `--monitor` follows the physical
+console even before HELLO. Without it, Gateway still restores capture/RPC, subject
+to the normal project session lifetime. `--reconnect-timeout` only bounds the
+connection observation; it does not change the native flash result. After writing,
+`--monitor` starts without waiting for an Iris handshake by default
+(`--reconnect-timeout 0`; without `--monitor` the default is 10 seconds). A successful
+write with a missing/mismatched Iris connection is reported separately. Inspect
+`iris operation-status OPERATION_ID` after a timeout instead of blindly replaying
+the write. Gateway resumes the console without issuing an additional reset.
+The native tool owns startup timing, so early boot output may precede attachment.
+An attach failure is reported independently of the successful native command.
+After a Gateway interruption, `iris operation-reconcile OPERATION_ID` can
+confirm a completed worker result separately from the current Iris connection;
+it does not repeat the flash or reset.
+
+The generic operation and writer live in ESP-Iris; Mosaico supplies the build
+environment and project selection. No Recovery ABI or wire protocol
+changes are involved. This path has host test coverage; hardware acceptance is
+still required for each supported UART adapter / USB Serial/JTAG board.
+
 System Update bundles use `esp-iris-system-update/0.2`. The old `/v1` and `/v2`
 manifest names are rejected. Rebuild old applications and bundles with the
 matching tools instead of relabeling their manifests.
 
-Vibe Mode's `product_contract.json` owns host identity and fixed partition values.
-The C ABI remains in `esp-mosaico-vibe-mode/include/mosaico_recovery_contract.h`;
+`mosaico-tools/product_contract.json` owns host identity and fixed partition values.
+The C ABI remains in `mosaico-tools/include/mosaico_recovery_contract.h`;
 contract tests compare the product manifest, configuration and partition tables.
 
-Host validation: run `pytest mosaico-tools/tests` and
-`pytest esp-mosaico-vibe-mode/tests/test_*.py` separately. Vibe Mode UI tests use the native lightweight backend without GSP.
+Host validation: run `pytest mosaico-tools/tests`.
 Hardware acceptance remains separate from these host checks.
 No consumer workspace source is needed. Old workspace paths have no forwarding
 layer; consumers migrate to these public entry points and rebuild.

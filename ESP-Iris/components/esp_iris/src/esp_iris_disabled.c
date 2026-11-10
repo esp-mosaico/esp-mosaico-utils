@@ -63,6 +63,11 @@ esp_err_t esp_iris_schedule_restart(uint32_t delay_ms)
     return ESP_ERR_NOT_SUPPORTED;
 }
 
+esp_err_t esp_iris_restart_now(void)
+{
+    return ESP_ERR_NOT_SUPPORTED;
+}
+
 esp_err_t esp_iris_rpc_register(uint16_t service_id, uint16_t method_id,
                                 esp_iris_rpc_handler_t handler,
                                 void *user_ctx)

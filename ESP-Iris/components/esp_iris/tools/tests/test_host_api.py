@@ -1,5 +1,8 @@
 """Consumer-facing host API must not depend on server imports or mutate queries."""
+import hashlib
+import importlib.util
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -69,3 +72,35 @@ def test_source_fingerprint_is_scoped_and_detects_uncommitted_runtime_changes(tm
     assert second["fingerprint"] != first["fingerprint"]
     (tools / "rpc_catalog.json").write_text("{}")
     assert source_identity(iris)["fingerprint"] != second["fingerprint"]
+
+
+def test_source_fingerprint_survives_component_installation(tmp_path):
+    checkout = tmp_path / "ESP-Iris"
+    component = checkout / "components/esp_iris"
+    runtime = component / "tools/iris_gateway"
+    runtime.mkdir(parents=True)
+    (runtime / "gateway.py").write_text("version = 1\n")
+    identity_module = Path(__file__).parents[1] / "iris_gateway/source_identity.py"
+    shutil.copy2(identity_module, runtime / "source_identity.py")
+    # sha256-runtime-v1 remains compatible with fingerprints of source trees.
+    legacy = hashlib.sha256()
+    for path in sorted(runtime.glob("*.py")):
+        legacy.update(path.relative_to(checkout).as_posix().encode() + b"\0")
+        legacy.update(hashlib.sha256(path.read_bytes()).digest())
+    expected = source_identity(checkout)["fingerprint"]
+    assert expected == legacy.hexdigest()
+    installed = tmp_path / "project/managed_components/espressif__esp_iris"
+    shutil.copytree(component, installed)
+    assert source_identity(installed)["fingerprint"] == expected
+    spec = importlib.util.spec_from_file_location("installed_identity", installed / "tools/iris_gateway/source_identity.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.running_source()["fingerprint"] == expected
+    (installed / "tools/iris_gateway/gateway.py").write_text("version = 2\n")
+    assert source_identity(installed)["fingerprint"] != expected
+    assert module.running_source()["fingerprint"] == expected
+
+
+def test_source_fingerprint_rejects_missing_runtime(tmp_path):
+    with pytest.raises(ValueError, match="runtime not found"):
+        source_identity(tmp_path)

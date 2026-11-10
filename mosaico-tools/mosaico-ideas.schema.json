@@ -15,8 +15,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "title",
-        "categories"
+        "title"
       ],
       "properties": {
         "title": {
@@ -24,21 +23,10 @@
           "minLength": 1,
           "maxLength": 200
         },
-        "categories": {
-          "type": "array",
-          "minItems": 1,
-          "maxItems": 6,
-          "uniqueItems": true,
-          "items": {
-            "enum": [
-              "smart-home",
-              "sensors",
-              "display",
-              "audio",
-              "communication",
-              "motor"
-            ]
-          }
+        "category_id": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Site category ID from GET /api/v1/categories?group=<content_type>. Required by project upload; the server checks existence, enabled status and group."
         },
         "boards": {
           "type": "array",
@@ -63,11 +51,6 @@
             "minLength": 1,
             "maxLength": 50
           }
-        },
-        "license": {
-          "type": "string",
-          "minLength": 0,
-          "maxLength": 500
         },
         "external_links": {
           "type": "array",
@@ -104,6 +87,14 @@
               }
             }
           }
+        },
+        "content_type": {
+          "type": "string",
+          "enum": [
+            "hardware",
+            "software"
+          ],
+          "default": "software"
         }
       }
     },
@@ -190,7 +181,6 @@
                   "additionalProperties": false,
                   "required": [
                     "name",
-                    "description",
                     "font"
                   ],
                   "properties": {
@@ -205,7 +195,8 @@
                     },
                     "description": {
                       "type": "string",
-                      "maxLength": 512
+                      "maxLength": 512,
+                      "default": ""
                     },
                     "font": {
                       "type": "string",
@@ -214,7 +205,7 @@
                     },
                     "icon": {
                       "type": "string",
-                      "minLength": 1,
+                      "minLength": 0,
                       "maxLength": 1024
                     }
                   }
@@ -246,7 +237,6 @@
                   "additionalProperties": false,
                   "required": [
                     "name",
-                    "description",
                     "font"
                   ],
                   "properties": {
@@ -261,7 +251,8 @@
                     },
                     "description": {
                       "type": "string",
-                      "maxLength": 512
+                      "maxLength": 512,
+                      "default": ""
                     },
                     "font": {
                       "type": "string",
@@ -270,7 +261,7 @@
                     },
                     "icon": {
                       "type": "string",
-                      "minLength": 1,
+                      "minLength": 0,
                       "maxLength": 1024
                     }
                   }

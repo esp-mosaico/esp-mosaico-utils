@@ -2,10 +2,7 @@
   "schema": "mosaico-ideas/project-release/1",
   "project": {
     "title": "Temperature sensor",
-    "categories": [
-      "sensors"
-    ],
-    "license": "MIT"
+    "content_type": "software"
   },
   "firmware": "build/temperature-system-update.irisfw",
   "website": {

@@ -80,6 +80,8 @@ async def gateway(root, name="a", *, mock_handshake=True):
         live.append({"device_id": D, "endpoint": endpoint, "boot_id": 7})
 
     with ExitStack() as patches:
+        patches.enter_context(patch("iris_gateway.device_selection.discover_iris_usb_devices", return_value=[]))
+        patches.enter_context(patch("iris_gateway.project_gateway.discover_iris_usb_devices", return_value=[]))
         connect = None
         if mock_handshake:
             patches.enter_context(patch.object(hub, "list_devices", return_value=live))

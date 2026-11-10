@@ -113,6 +113,7 @@ def run(spec: dict) -> dict:
         for step in spec["commands"]:
             argv = [part.replace("{port}", port) for part in step["argv"]]
             environment = os.environ.copy()
+            environment["PYTHONUNBUFFERED"] = "1"
             environment.update({key: value.replace("{port}", port)
                                 for key, value in step.get("env", {}).items()})
             environment.pop("ESP_IRIS_HOST_LOCK_FDS", None)
@@ -129,7 +130,7 @@ def run(spec: dict) -> dict:
                 log.seek(offset)
                 output = log.read().decode("utf-8", errors="replace")
             if completed.returncode:
-                raise RuntimeError(f"host command exited with code {completed.returncode}; see {spec['log_path']}")
+                raise subprocess.CalledProcessError(completed.returncode, argv, output=output)
             expected = step.get("expect")
             if expected:
                 match = re.search(expected["pattern"], output)
@@ -148,6 +149,8 @@ def main() -> None:
     spec = json.load(sys.stdin)
     try:
         result = run(spec)
+    except subprocess.CalledProcessError as exc:
+        result = {"returncode": exc.returncode, "stdout": exc.output, "error": str(exc)}
     except Exception as exc:  # noqa: BLE001 - persist any executor failure for the Gateway
         result = {"returncode": 1, "error": str(exc)}
     path = pathlib.Path(spec["result_path"])

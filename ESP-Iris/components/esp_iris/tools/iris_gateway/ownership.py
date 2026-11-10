@@ -215,6 +215,11 @@ class OwnershipRegistry:
         return [{"endpoint": row[0], **json.loads(row[1])} for row in self.db.execute(
             "SELECT endpoint, metadata FROM identities WHERE device_id=?", (device_id,))]
 
+    def known_device(self, endpoint: str) -> str | None:
+        """A previous HELLO is a selection hint, never a live identity proof."""
+        row = self.db.execute("SELECT device_id FROM identities WHERE endpoint=?", (endpoint,)).fetchone()
+        return str(row[0]) if row else None
+
     def reconcile_orphan(self, resource: str) -> None:
         """Explicitly release a dead owner's ordinary claim, never a transfer
         reservation. Physical locks must also be available.
@@ -255,7 +260,8 @@ class OwnershipRegistry:
         result["metadata"] = json.loads(result["metadata"])
         return result
 
-    def prepare(self, device_id: str, target: str, transfer_id: str) -> dict[str, Any]:
+    def prepare(self, device_id: str, target: str, transfer_id: str,
+                *, preferred_endpoint: dict[str, Any] | None = None) -> dict[str, Any]:
         uuid.UUID(transfer_id)
         with self.transaction():
             try:
@@ -274,6 +280,23 @@ class OwnershipRegistry:
             if not target_session.get("lifecycle_capability") and not target_session["persistent"]:
                 raise OwnershipConflict("legacy temporary sessions cannot receive transfers")
             self._require("device:" + device_id, ("owned",))
+            if preferred_endpoint is not None:
+                resource = preferred_endpoint["resource"]
+                if not isinstance(resource, str) or not resource.startswith(("usb:", "tcp:")):
+                    raise ValueError("handoff endpoint must be a concrete USB or TCP endpoint")
+                current = self.claim(resource)
+                if current is not None:
+                    if (current["owner"] != self.session_id or current["state"] != "owned"
+                            or current["device_id"] != device_id):
+                        raise OwnershipConflict("requested handoff endpoint is already reserved")
+                else:
+                    previous_generation = self.db.execute(
+                        "SELECT value FROM generations WHERE resource=?", (resource,)).fetchone()
+                    generation = int(previous_generation[0]) + 1 if previous_generation else 1
+                    self.db.execute("INSERT INTO claims VALUES(?,?,?,'owned',?,?,NULL)", (
+                        resource, self.session_id, generation, device_id,
+                        json.dumps(preferred_endpoint["metadata"]),
+                    ))
             endpoints = [item for item in self.claims()
                          if item["device_id"] == device_id and not item["resource"].startswith("device:")]
             if not endpoints:
@@ -281,10 +304,12 @@ class OwnershipRegistry:
             now = time.time_ns()
             self.db.execute("INSERT INTO transfers VALUES(?,?,?,?,'preparing',?,?,?)", (
                 transfer_id, device_id, self.session_id, target,
-                json.dumps({"endpoints": endpoints}), now, now,
+                json.dumps({"endpoints": endpoints, **(
+                    {"preferred_endpoint": preferred_endpoint} if preferred_endpoint else {})}), now, now,
             ))
             self.db.execute("UPDATE claims SET state='preparing', transfer_id=? WHERE device_id=?",
                             (transfer_id, device_id))
+            self._remember_generations()
         return self.transfer(transfer_id)
 
     def offer(self, transfer_id: str) -> dict[str, Any]:

@@ -20,12 +20,14 @@ from mosaico_cli.errors import BuildError, EnvironmentError
 from mosaico_cli.workspace import load_workspace
 
 
-def test_doctor_decodes_utf8_output_independent_of_windows_codepage():
-    # Preserve Windows startup variables such as SystemRoot while exercising
-    # the encoding override independently of the runner's UTF-8 defaults.
-    environment = dict(os.environ, PYTHONUTF8="0", PYTHONIOENCODING="cp1252")
-    code, output = doctor._command(
-        [sys.executable, "-c", "print('中文路径')"], environment=environment)
+@pytest.mark.parametrize("explicit_environment", [False, True], ids=["inherited", "explicit"])
+def test_doctor_decodes_utf8_output_independent_of_windows_codepage(monkeypatch, explicit_environment):
+    # Keep required Windows startup variables such as SystemRoot while testing
+    # that the doctor overrides a conflicting Python output encoding.
+    monkeypatch.setenv("PYTHONUTF8", "0")
+    monkeypatch.setenv("PYTHONIOENCODING", "ascii")
+    environment = dict(os.environ) if explicit_environment else None
+    code, output = doctor._command([sys.executable, "-c", "print('中文路径')"], environment=environment)
     assert code == 0, output
     assert output == "中文路径"
 

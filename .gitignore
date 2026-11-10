@@ -39,10 +39,15 @@ htmlcov/
 
 # Local device evidence and generated reports
 **/.codex-runs/
+
+# Test and local scratch outputs
 **/test_results/
+*-results.xml
 *.log
 *.tmp
 *.temp
+
+/public-export/
 
 # Local credentials
 .env

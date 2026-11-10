@@ -24,23 +24,28 @@ def main() -> int:
         IRIS / "components" / "esp_iris" / "tools" / "system_update_bundle.py",
         ROOT / "mosaico-tools" / "mosaico.py",
         ROOT / "mosaico-tools" / "tools" / "mosaico_cli" / "__init__.py",
-        RECOVERY / "firmware" / "vibe-mode" / "prebuilt" / "recovery" / "manifest.json",
+        ROOT / "mosaico-tools" / "product_contract.json",
+        ROOT / "mosaico-tools" / "recovery" / "CMakeLists.txt",
     )
+    recovery_manifest = ROOT / "firmware" / "recovery" / "manifest.json"
+    if not RECOVERY.is_dir() or recovery_manifest.exists():
+        required += (recovery_manifest,)
     for path in required:
         if not path.is_file():
             fail(f"required file is missing: {path.relative_to(ROOT)}")
             errors += 1
 
-    manifest = RECOVERY / "firmware" / "vibe-mode" / "main" / "idf_component.yml"
-    override = re.search(
-        r"^\s*override_path:\s*(\S+)\s*$",
-        manifest.read_text(encoding="utf-8"),
-        re.MULTILINE,
-    )
-    expected_component = (IRIS / "components" / "esp_iris").resolve()
-    if override is None or (manifest.parent / override.group(1)).resolve() != expected_component:
-        fail("Recovery component manifest does not resolve the sibling ESP-Iris checkout")
-        errors += 1
+    if RECOVERY.is_dir():
+        manifest = RECOVERY / "firmware" / "vibe-mode" / "main" / "idf_component.yml"
+        override = re.search(
+            r"^\s*override_path:\s*(\S+)\s*$",
+            manifest.read_text(encoding="utf-8"),
+            re.MULTILINE,
+        )
+        expected_component = (IRIS / "components" / "esp_iris").resolve()
+        if override is None or (manifest.parent / override.group(1)).resolve() != expected_component:
+            fail("Recovery component manifest does not resolve the sibling ESP-Iris checkout")
+            errors += 1
 
     iris_manifest = (IRIS / "components" / "esp_iris" / "idf_component.yml").read_text(
         encoding="utf-8"

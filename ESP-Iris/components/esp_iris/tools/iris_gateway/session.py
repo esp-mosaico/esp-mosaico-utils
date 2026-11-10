@@ -38,6 +38,7 @@ from .protocol import (
     tlv_u32,
     tlv_u64,
 )
+from .session_observations import decode_crash_report, decode_status
 from .state_machine import SessionEvent, SessionState, session_transition
 from .system_update import SystemUpdateBundle
 
@@ -75,6 +76,7 @@ class DeviceSession:
         on_event: EventCallback,
         *,
         on_media: MediaCallback | None = None,
+        on_unready: ReadyCallback | None = None,
         pairing_token: str | bytes | None = None,
         owner_id: bytes | None = None,
         clock_sync_interval: float = 30.0,
@@ -85,6 +87,7 @@ class DeviceSession:
         self.link = link
         self.info: DeviceInfo | None = None
         self._on_ready = on_ready
+        self._on_unready = on_unready
         self._on_event = on_event
         self._on_media = on_media or _discard_media
         if isinstance(pairing_token, str):
@@ -119,6 +122,11 @@ class DeviceSession:
         self._sequence = [0] * channel_count
         self._last_rx_sequence: list[int | None] = [None] * channel_count
         self._closed = False
+        self.capture_only = False
+        self._last_protocol_rx_ns = 0
+        self._binding_generation = 0
+        self._auth_payload = b""
+        self._release_waiter: asyncio.Future[None] | None = None
         self._ready = asyncio.Event()
         self._clock_task: asyncio.Task[None] | None = None
         self._log_credit = 0
@@ -156,10 +164,10 @@ class DeviceSession:
             return {"sent": True, "bytes_written": len(wire), "endpoint": self.link.endpoint,
                     "completion": "unconfirmed"}
 
-    async def run(self) -> None:
+    async def run(self, *, console_start: asyncio.Event | None = None) -> None:
         try:
             if self._console:
-                self._hello_task = asyncio.create_task(self._console_probe_loop())
+                self._hello_task = asyncio.create_task(self._console_probe_loop(console_start))
             while not self._closed:
                 data = await self.link.read()
                 if not data:
@@ -177,7 +185,7 @@ class DeviceSession:
                 for frame in self._decoder.feed(data):
                     if isinstance(frame, bytes):
                         await self._console_log(frame)
-                    else:
+                    elif not self.capture_only and (console_start is None or console_start.is_set()):
                         await self._handle_frame(frame, time.monotonic_ns())
         finally:
             if self._hello_task is not None:
@@ -201,16 +209,21 @@ class DeviceSession:
             finally:
                 await self.link.close()
 
-    async def _console_probe_loop(self) -> None:
+    async def _console_probe_loop(self, console_start: asyncio.Event | None = None) -> None:
         # The read loop starts before discovery writes. Keep capturing even
         # when the peer runs a bootloader, a third-party app, or a slow startup.
         await asyncio.sleep(0)
+        if console_start is not None:
+            # Capture immediately, but do not bind the first boot's identity
+            # or send discovery commands while post-flash reset is pending.
+            await console_start.wait()
         while not self._closed:
             try:
                 async with self._write_lock:
                     if self._closed:
                         return
-                    await self.link.write(HELLO_COMMAND)
+                    if not self.capture_only and self._release_waiter is None:
+                        await self.link.write(HELLO_COMMAND)
             except (ConnectionError, OSError):
                 await self.link.close()
                 return
@@ -287,7 +300,9 @@ class DeviceSession:
         self._pending.clear()
 
     async def wait_ready(self, timeout: float = 5.0) -> DeviceInfo:
-        await asyncio.wait_for(self._ready.wait(), timeout)
+        # wait_for on a ready Event can swallow cancellation on Python 3.8-3.11.
+        if not self._ready.is_set():
+            await asyncio.wait_for(self._ready.wait(), timeout)
         assert self.info is not None
         return self.info
 
@@ -307,11 +322,14 @@ class DeviceSession:
         request_id: int = 0,
         stream_id: int = 0,
     ) -> None:
+        generation = self._binding_generation
         if self.info is None:
             session_id = 0
         else:
             session_id = self.info.session_id
         async with self._write_lock:
+            if self._closed or generation != self._binding_generation:
+                raise ConnectionError("ESP-Iris session invalidated before write")
             self._sequence[int(channel)] = (self._sequence[int(channel)] + 1) & 0xFFFFFFFF
             frame = Frame(
                 channel=channel,
@@ -334,8 +352,9 @@ class DeviceSession:
         *,
         stream_id: int = 0,
     ) -> Frame:
+        generation = self._binding_generation
         await self.wait_ready(timeout)
-        if self._closed:
+        if self._closed or generation != self._binding_generation:
             raise ConnectionError("ESP-Iris session closed")
         request_id = self._next_request_id()
         future = asyncio.get_running_loop().create_future()
@@ -401,6 +420,7 @@ class DeviceSession:
         *,
         stream_id: int = 0,
     ) -> Frame:
+        generation = self._binding_generation
         # These CONTROL probes cannot mutate firmware. They must remain
         # observable while a slow RPC owns the mutation lock. Request IDs
         # correlate concurrent replies and _send serializes sequence/wire order.
@@ -414,6 +434,8 @@ class DeviceSession:
             data = self._require_data_link()
             return await data._request(channel, type_, payload, timeout, stream_id=stream_id)
         async with self._request_lock:
+            if generation != self._binding_generation:
+                raise ConnectionError("ESP-Iris session invalidated while request was queued")
             return await self._request_unlocked(
                 channel,
                 type_,
@@ -524,6 +546,7 @@ class DeviceSession:
         ack_flags = 1 << 5 if self._reopen_session_id is not None else 0
         binding = expected_role + self.owner_id
         if info.auth_mode == 0:
+            self._auth_payload = binding
             await self._send(Channel.CONTROL, ControlType.HELLO_ACK, binding, flags=ack_flags)
             return
         if info.auth_mode != 1:
@@ -544,8 +567,9 @@ class DeviceSession:
             + binding
         )
         proof = hmac.new(self._pairing_token, message, hashlib.sha256).digest()
+        self._auth_payload = binding + nonce + proof
         await self._send(
-            Channel.CONTROL, ControlType.HELLO_ACK, binding + nonce + proof, flags=ack_flags
+            Channel.CONTROL, ControlType.HELLO_ACK, self._auth_payload, flags=ack_flags
         )
 
     async def _complete_ready(self) -> None:
@@ -758,8 +782,18 @@ class DeviceSession:
         return True
 
     async def _handle_frame(self, frame: Frame, host_receive_ns: int) -> None:
+        if self._release_waiter is not None:
+            if frame.channel == Channel.CONTROL and frame.type == ControlType.HELLO and self.info is not None:
+                fields = decode_tlv(frame.payload)
+                if (fields.get(TlvTag.DEVICE_ID, b"").hex() == self.info.device_id
+                        and tlv_u64(fields, TlvTag.BOOT_ID) == self.info.boot_id
+                        and frame.session_id != self.info.session_id
+                        and not self._release_waiter.done()):
+                    self._release_waiter.set_result(None)
+            return
         if frame.channel == Channel.CONTROL and frame.type == ControlType.HELLO:
             await self._handle_hello(frame)
+            self._last_protocol_rx_ns = host_receive_ns
             return
         if self._reopen_session_id is not None:
             return
@@ -767,6 +801,7 @@ class DeviceSession:
             return
         if not self._accept_sequence(frame):
             return
+        self._last_protocol_rx_ns = host_receive_ns
         if (
             frame.channel == Channel.CONTROL
             and frame.type == ControlType.AUTH_RESULT
@@ -807,63 +842,8 @@ class DeviceSession:
             raise ProtocolError("unexpected status response")
         fields = decode_tlv(frame.payload)
         assert self.info is not None
-        raw_hardware_mac = fields.get(int(TlvTag.HARDWARE_MAC), b"")
-        if raw_hardware_mac:
-            hardware_mac = ":".join(f"{byte:02x}" for byte in raw_hardware_mac)
-            if hardware_mac != self.info.hardware_mac:
-                raise ProtocolError("hardware MAC changed on a live session")
         return {
-            **self.info.as_dict(),
-            "uptime_us": tlv_u64(fields, TlvTag.UPTIME_US),
-            "free_internal": tlv_u32(fields, TlvTag.FREE_INTERNAL),
-            "min_free_internal": tlv_u32(fields, TlvTag.MIN_FREE_INTERNAL),
-            "total_internal": tlv_u32(fields, TlvTag.TOTAL_INTERNAL),
-            "total_spiram": tlv_u32(fields, TlvTag.TOTAL_SPIRAM),
-            "free_spiram": tlv_u32(fields, TlvTag.FREE_SPIRAM),
-            "min_free_spiram": tlv_u32(fields, TlvTag.MIN_FREE_SPIRAM),
-            "log_dropped_bytes": tlv_u32(fields, TlvTag.LOG_DROPPED),
-            "rx_frames": tlv_u32(fields, TlvTag.RX_FRAMES),
-            "tx_frames": tlv_u32(fields, TlvTag.TX_FRAMES),
-            "invalid_frames": tlv_u32(fields, TlvTag.INVALID_FRAMES),
-            "link_count": tlv_u32(fields, TlvTag.LINK_COUNT),
-            "task_stack_free_min_bytes": tlv_u32(
-                fields, TlvTag.TASK_STACK_FREE_MIN
-            ),
-            "worker_active_max_us": tlv_u32(
-                fields, TlvTag.WORKER_ACTIVE_MAX_US
-            ),
-            "lifecycle_state": tlv_u8(fields, TlvTag.LIFECYCLE_STATE),
-            "internal_heap_used_bytes": tlv_u32(
-                fields, TlvTag.INTERNAL_HEAP_USED
-            ),
-            "static_internal_bytes": tlv_u32(
-                fields, TlvTag.STATIC_INTERNAL_BYTES
-            ),
-            "internal_total_bytes": (
-                tlv_u32(fields, TlvTag.STATIC_INTERNAL_BYTES)
-                + tlv_u32(fields, TlvTag.INTERNAL_HEAP_USED)
-            ),
-            "crash_count": tlv_u32(fields, TlvTag.CRASH_COUNT),
-            "crash_limit": tlv_u32(fields, TlvTag.CRASH_LIMIT),
-            "crash_loop_triggered": bool(
-                tlv_u8(fields, TlvTag.CRASH_LOOP_TRIGGERED)
-            ),
-            "crash_recovery_pending": bool(
-                tlv_u8(fields, TlvTag.CRASH_RECOVERY_PENDING)
-            ),
-            "crash_origin_reset_reason": tlv_u32(
-                fields, TlvTag.CRASH_ORIGIN_RESET_REASON
-            ),
-            "crash_failed_app_address": tlv_u32(
-                fields, TlvTag.CRASH_FAILED_APP_ADDRESS
-            ),
-            "crash_failed_boot_id": tlv_u64(
-                fields, TlvTag.CRASH_FAILED_BOOT_ID
-            ),
-            "crash_failed_firmware_sha256": fields.get(
-                int(TlvTag.CRASH_FAILED_FIRMWARE_SHA256), b""
-            ).hex(),
-            "crash_state_error": tlv_u32(fields, TlvTag.CRASH_STATE_ERROR),
+            **decode_status(fields, self.info),
             "clock_offset_us": self.clock_offset_us,
             "clock_uncertainty_us": self.clock_uncertainty_us,
         }
@@ -1180,8 +1160,57 @@ class DeviceSession:
             self.clock_offset_us = host_mid_us - device_mid_us
             self.clock_uncertainty_us = rtt_us / 2.0
 
+    async def release_binding(self) -> bool:
+        """Return a committed console to negotiation before changing ports.
+
+        NEW_SESSION already authenticates the owner and renews the firmware's
+        bounded claim. Leave its new HELLO unanswered so the transport manager
+        can select another interface even when UART/USJ has no port-close event.
+        """
+        if not self.console_available or self.info is None or not self.info.capabilities & Capability.SESSION_REOPEN:
+            return False
+        if self._clock_task is not None:
+            self._clock_task.cancel()
+            await asyncio.gather(self._clock_task, return_exceptions=True)
+        self._release_waiter = asyncio.get_running_loop().create_future()
+        try:
+            await self._send(Channel.CONTROL, ControlType.HELLO_ACK, self._auth_payload, flags=1 << 5)
+            await asyncio.wait_for(self._release_waiter, 3.0)
+            return True
+        except (asyncio.TimeoutError, TimeoutError, ConnectionError, OSError):
+            # A retired firmware may no longer answer on this serial port.
+            # Close it and let the selected endpoint verify identity itself.
+            return False
+        finally:
+            self._release_waiter = None
+            await self.invalidate(capture_only=True)
+
+    async def invalidate(self, *, capture_only: bool = False) -> None:
+        """Retire the Iris binding without interrupting serial boot capture."""
+        self.capture_only = capture_only
+        self._binding_generation += 1
+        self._ready.clear()
+        self._fail_pending()
+        if self.state is SessionState.READY:
+            self.state = session_transition(self.state, SessionEvent.INVALIDATED)
+        if self._clock_task is not None and self._clock_task is not asyncio.current_task():
+            self._clock_task.cancel()
+            await asyncio.gather(self._clock_task, return_exceptions=True)
+        if self._on_unready is not None:
+            await self._on_unready(self)
+        self.info = None
+        self.data_session = None
+        self._ready_announced = False
+        self._reopen_session_id = None
+        self._reopen_requested = False
+        self._sequence = [0] * len(self._sequence)
+        self._last_rx_sequence = [None] * len(self._last_rx_sequence)
+        self.clock_offset_us = self.clock_uncertainty_us = None
+
     async def _clock_loop(self) -> None:
+        failures = 0
         while not self._closed:
+            started_ns = time.monotonic_ns()
             try:
                 await self.sync_clock(self._clock_sync_timeout)
             except (
@@ -1195,15 +1224,19 @@ class DeviceSession:
                     # Python 3.8 wait_for can deliver the pending request's
                     # failure during cancellation. Do not delay teardown.
                     return
-                if (
-                    self._console or self._request_lock.locked()
-                ):
-                    # Keep raw capture open across bootloaders/debug pauses.
-                    # Explicit HELLO queries detect a changed boot/session even
-                    # when a UART/Serial-JTAG device never re-enumerates.
+                if (self._request_lock.locked()
+                        or self.data_session is not None and self.data_session._request_lock.locked()):
+                    failures = 0
                     # An active bulk/RPC request owns its own deadline. A
                     # background clock timeout must not abort a long erase or
                     # a transfer contending with other devices on the host.
+                    await asyncio.sleep(self._clock_sync_interval)
+                    continue
+                if self._console:
+                    failures = failures + 1 if self._last_protocol_rx_ns < started_ns else 0
+                    if failures >= 2:
+                        await self.invalidate()
+                        return
                     await asyncio.sleep(self._clock_sync_interval)
                     continue
                 # A serial read timeout is handled inside SerialLink and is not
@@ -1214,6 +1247,7 @@ class DeviceSession:
                 # state after the board has switched to its normal TCP image.
                 await self.close()
                 return
+            failures = 0
             await asyncio.sleep(self._clock_sync_interval)
 
     def estimate_wall_ns(self, device_monotonic_us: int) -> int | None:
@@ -1231,54 +1265,8 @@ class DeviceSession:
         self._crash_chunk_max = tlv_u32(
             fields, TlvTag.CORE_DUMP_CHUNK_MAX, 1024
         )
-        core_sha = fields.get(int(TlvTag.CORE_DUMP_ELF_SHA256), b"").decode(
-            "ascii", errors="replace"
-        )
         assert self.info is not None
-        sha_matches = bool(core_sha) and self.info.firmware_sha256.startswith(core_sha)
-        sha_complete = bool(tlv_u8(fields, TlvTag.CORE_DUMP_ELF_SHA256_COMPLETE))
-        return {
-            "device_id": self.info.device_id,
-            "boot_id": tlv_u64(fields, TlvTag.BOOT_ID, self.info.boot_id),
-            "session_id": self.info.session_id,
-            "reset_reason": tlv_u32(fields, TlvTag.RESET_REASON),
-            "previous_boot_crash": bool(
-                tlv_u8(fields, TlvTag.PREVIOUS_BOOT_CRASH)
-            ),
-            "crash_count": tlv_u32(fields, TlvTag.CRASH_COUNT),
-            "crash_limit": tlv_u32(fields, TlvTag.CRASH_LIMIT),
-            "crash_loop_triggered": bool(
-                tlv_u8(fields, TlvTag.CRASH_LOOP_TRIGGERED)
-            ),
-            "crash_recovery_pending": bool(
-                tlv_u8(fields, TlvTag.CRASH_RECOVERY_PENDING)
-            ),
-            "crash_origin_reset_reason": tlv_u32(
-                fields, TlvTag.CRASH_ORIGIN_RESET_REASON
-            ),
-            "crash_failed_app_address": tlv_u32(
-                fields, TlvTag.CRASH_FAILED_APP_ADDRESS
-            ),
-            "crash_failed_boot_id": tlv_u64(
-                fields, TlvTag.CRASH_FAILED_BOOT_ID
-            ),
-            "crash_failed_firmware_sha256": fields.get(
-                int(TlvTag.CRASH_FAILED_FIRMWARE_SHA256), b""
-            ).hex(),
-            "crash_state_error": tlv_u32(fields, TlvTag.CRASH_STATE_ERROR),
-            "core_dump_present": bool(tlv_u8(fields, TlvTag.CORE_DUMP_PRESENT)),
-            "core_dump_valid": bool(tlv_u8(fields, TlvTag.CORE_DUMP_VALID)),
-            "core_dump_size": tlv_u32(fields, TlvTag.CORE_DUMP_SIZE),
-            "core_dump_chunk_max": self._crash_chunk_max,
-            "core_dump_elf_sha256": core_sha,
-            "core_dump_elf_sha256_complete": sha_complete,
-            "firmware_sha256": self.info.firmware_sha256,
-            "firmware_sha_matches": sha_matches,
-            "decode_eligible": sha_complete and sha_matches,
-            "panic_reason": fields.get(int(TlvTag.PANIC_REASON), b"").decode(
-                "utf-8", errors="replace"
-            ),
-        }
+        return decode_crash_report(fields, self.info, self._crash_chunk_max)
 
     async def read_core_dump_chunk(
         self, offset: int, maximum: int = 1024

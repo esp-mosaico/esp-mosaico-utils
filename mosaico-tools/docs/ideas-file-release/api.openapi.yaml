@@ -6,53 +6,31 @@ info:
 servers:
   - url: https://ideas.example/api/v1
 paths:
-  /ideas/uploads:
+  /agent/projects:
     post:
-      operationId: uploadIdeaArchive
+      operationId: createAgentProject
       security: [{bearer: []}]
-      parameters:
-        - in: header
-          name: Idempotency-Key
-          required: true
-          schema: {type: string, minLength: 1, maxLength: 128}
-      requestBody:
-        required: true
-        content:
-          multipart/form-data:
-            schema:
-              type: object
-              additionalProperties: false
-              required: [request, package]
-              properties:
-                request: {$ref: '#/components/schemas/UploadRequest'}
-                package: {type: string, format: binary, description: Frozen ZIP, at most 104857600 bytes.}
-            encoding:
-              request: {contentType: application/json}
-              package: {contentType: application/zip}
+      requestBody: {$ref: '#/components/requestBodies/Release'}
       responses:
-        '202':
-          description: Full ZIP accepted; validation pending. Request part must precede package.
-          content:
-            application/json: {schema: {$ref: '#/components/schemas/UploadState'}}
-        '200':
-          description: Replay of a terminal receipt for the same account, key and request.
-          content:
-            application/json: {schema: {$ref: '#/components/schemas/UploadState'}}
+        '201': {$ref: '#/components/responses/ProjectDraft'}
         default: {$ref: '#/components/responses/Error'}
-  /ideas/uploads/{upload_id}:
-    get:
-      operationId: getUploadState
+  /agent/projects/{public_id}:
+    patch:
+      operationId: replaceAgentProjectDraft
+      description: Last successful upload replaces the unsubmitted draft. No version precondition. Published versions are immutable.
       security: [{bearer: []}]
       parameters:
         - in: path
-          name: upload_id
+          name: public_id
           required: true
-          schema: {type: string}
+          schema: {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$'}
+      requestBody: {$ref: '#/components/requestBodies/Release'}
       responses:
-        '200':
-          description: Durable validating, complete or failed state; complete is a draft.
+        '200': {$ref: '#/components/responses/ProjectDraft'}
+        '409':
+          description: VERSION_ALREADY_PUBLISHED or PROJECT_NOT_EDITABLE. No automatic create fallback.
           content:
-            application/json: {schema: {$ref: '#/components/schemas/UploadState'}}
+            application/json: {schema: {$ref: '#/components/schemas/Error'}}
         default: {$ref: '#/components/responses/Error'}
   /ideas/{code}/manifest.json:
     get:
@@ -107,6 +85,19 @@ paths:
             application/octet-stream: {schema: {type: string, format: binary}}
         default: {$ref: '#/components/responses/Error'}
 components:
+  requestBodies:
+    Release:
+      required: true
+      content:
+        multipart/form-data:
+          schema:
+            type: object
+            additionalProperties: false
+            required: [release]
+            properties:
+              release: {type: string, format: binary, description: One mosaico-ideas/release/1 ZIP, at most 104857600 bytes.}
+          encoding:
+            release: {contentType: application/zip}
   securitySchemes:
     bearer: {type: http, scheme: bearer}
   parameters:
@@ -116,8 +107,12 @@ components:
       required: true
       schema: {type: string, pattern: '^[0-9]{6}$'}
   responses:
+    ProjectDraft:
+      description: Saved draft. Identity and app-number assignment for device publication are cloud responsibilities.
+      content:
+        application/json: {schema: {$ref: '#/components/schemas/ProjectDetail'}}
     PreviewOrManifest:
-      description: One snapshot. Multipart contains exact root, firmware manifest, selected display and all selected assets in declared order (4-6 parts); no firmware binary. Root is at most 64 KiB, firmware manifest 3072 bytes, locale resources 1 MiB, framing 4096 bytes, whole body 1121280 bytes. See preview-response.zh-CN.md for the bounded MIME profile. No fallback file GET for preview.
+      description: One snapshot. Multipart contains exact root, firmware manifest, selected display and all selected assets in declared order (4-6 parts); no firmware binary. Root includes author (a plain-text display name) for new releases; historical immutable releases may omit it. Author is frozen with the release and identical across locales. Root is at most 64 KiB, firmware manifest 3072 bytes, locale resources 1 MiB, framing 4096 bytes, whole body 1121280 bytes. See preview-response.md for the bounded MIME profile. No fallback file GET for preview.
       headers:
         ETag: {schema: {type: string}, description: Required strong quoted SHA-256 of the entire response body including multipart framing. Never use a multipart ETag as the root manifest digest.}
         Cache-Control: {schema: {const: no-store}}
@@ -128,7 +123,7 @@ components:
         application/json:
           schema: {$ref: download-manifest.schema.json}
     Manifest:
-      description: Raw device manifest, never an envelope. Latest is no-store; fixed releases immutable. No 304. Unknown or duplicate query parameters rejected.
+      description: Raw device manifest, never an envelope. Includes root-level author (a plain-text display name) for new releases; historical immutable releases may omit it. Author is frozen with the release, never injected or updated at GET time. Latest is no-store; fixed releases immutable. No 304. Unknown or duplicate query parameters rejected.
       headers:
         ETag: {schema: {type: string}, description: Required strong quoted SHA-256 of the raw manifest bytes.}
         Cache-Control: {schema: {type: string}}
@@ -136,69 +131,32 @@ components:
         application/json:
           schema: {$ref: download-manifest.schema.json}
     Error:
-      description: See protocol error table for HTTP status, stable code and retry rules.
+      description: See protocol error table for HTTP status, stable code and retry rules. A nonexistent, disabled or content_type-mismatched project.category_id returns 400 invalid_category.
       headers:
         Retry-After: {schema: {type: string}, description: Seconds or HTTP date; no retry before this delay.}
       content:
         application/json: {schema: {$ref: '#/components/schemas/Error'}}
   schemas:
     Sha256: {type: string, pattern: '^[0-9a-f]{64}$'}
-    UploadRequest:
+    ProjectDetail:
       type: object
-      additionalProperties: false
-      required: [mode, archive]
+      required: [public_id, status]
       properties:
-        mode: {enum: [create, update]}
-        archive:
-          type: object
-          additionalProperties: false
-          required: [size, sha256]
-          properties:
-            size: {type: integer, minimum: 1, maximum: 104857600}
-            sha256: {$ref: '#/components/schemas/Sha256'}
-        application_id: {type: string, maxLength: 64}
-        expected_project_version: {type: integer, minimum: 0}
-      allOf:
-        - if: {properties: {mode: {const: update}}}
-          then: {required: [application_id, expected_project_version]}
-          else:
-            not:
-              anyOf:
-                - {required: [application_id]}
-                - {required: [expected_project_version]}
-    UploadState:
-      type: object
-      required: [upload_id, status]
-      properties:
-        upload_id: {type: string}
-        archive_sha256: {$ref: '#/components/schemas/Sha256'}
-        status: {enum: [validating, complete, failed]}
-        result: {$ref: '#/components/schemas/Receipt'}
-        error: {$ref: '#/components/schemas/Error'}
-      allOf:
-        - if: {properties: {status: {const: complete}}}
-          then: {required: [archive_sha256, result]}
-        - if: {properties: {status: {const: failed}}}
-          then: {required: [archive_sha256, error]}
-    Receipt:
-      type: object
-      required: [application_id, code, revision_id, release_id, project_version, version, manifest_sha256, bundle_sha256, status, draft_url]
-      properties:
-        application_id: {type: string}
-        code: {type: string, pattern: '^[0-9]{6}$'}
-        revision_id: {type: string}
-        release_id: {type: string}
-        project_version: {type: integer, minimum: 1}
-        version: {type: string}
-        manifest_sha256: {$ref: '#/components/schemas/Sha256'}
-        bundle_sha256: {$ref: '#/components/schemas/Sha256'}
+        public_id: {type: string, pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$'}
         status: {const: draft}
+        app_number: {type: [string, 'null'], pattern: '^[0-9]{6}$'}
+        title: {type: string}
         draft_url: {type: string, format: uri-reference}
     Error:
       type: object
-      required: [code, message]
+      required: [code]
       properties:
         code: {type: string}
         message: {type: string}
         request_id: {type: string}
-        details: {type: object}
+        details:
+          type: object
+          properties:
+            reason: {type: string, description: Stable machine-readable reason such as FILE_HASH_MISMATCH.}
+            path: {type: string, description: Relative archive member path.}
+            field: {type: [string, integer], description: Related field or category ID for invalid_category.}

@@ -111,7 +111,10 @@ r.acquire("usb:location=test", {})
 print("ready", flush=True)
 sys.stdin.read()
 '''
-    process = subprocess.Popen([sys.executable, "-c", code, str(tmp_path)],
+    # Windows venv python may spawn the real interpreter as a child. Launch the
+    # base runtime so kill() terminates the process that owns the lock.
+    executable = getattr(sys, "_base_executable", sys.executable)
+    process = subprocess.Popen([executable, "-c", code, str(tmp_path)],
                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
     try:
         assert process.stdout.readline().strip() == "ready"

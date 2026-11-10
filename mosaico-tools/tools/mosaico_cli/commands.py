@@ -51,6 +51,7 @@ from .recovery import (
     recovery_verification_details,
     rom_hardware_mac,
     rom_identity_command,
+    source_project,
 )
 from .recovery_port import serial_jtag_candidate
 from .registry import select_model
@@ -73,8 +74,11 @@ _ANSI_NORMAL = "\033[0m"
 _RECOVERY_CONTROL_SERVICE_ID = "0x1202"
 _RECOVERY_WIFI_CONNECT_METHOD = "1"
 _RECOVERY_NETWORK_STATUS_METHOD = "2"
-_RECOVERY_BRIDGE_OPEN_METHOD = "4"
-_RECOVERY_BRIDGE_STATUS_METHOD = "5"
+# Retired Bridge push-based downloads were replaced by pull-based downloads
+# using a six-digit application ID on the device. These method IDs remain
+# reserved on the device and return not-supported; Tools no longer calls them.
+# _RECOVERY_BRIDGE_OPEN_METHOD = "4"
+# _RECOVERY_BRIDGE_STATUS_METHOD = "5"
 
 
 def _device_status(value: Any) -> dict[str, Any]:
@@ -178,59 +182,6 @@ def configure_recovery_network(arguments: Any, context: RunContext) -> dict[str,
         "Vibe Mode did not connect to Wi-Fi before the timeout.",
         details={"device_id": device_id, "network": latest},
     )
-
-
-def read_bridge_code(arguments: Any, context: RunContext) -> dict[str, Any]:
-    session, device_id = _recovery_control_device(arguments, context)
-    deadline = time.monotonic() + arguments.timeout
-    method = _RECOVERY_BRIDGE_OPEN_METHOD
-    timeout_message = "Bridge pairing code was not ready before the timeout."
-    snapshot: dict[str, Any] = {}
-    context.status("recovery: opening Bridge download over USB")
-    while True:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise OperationError(timeout_message, details={"bridge": snapshot})
-        try:
-            value = gateway_json(
-                context, session, "rpc-raw", device_id,
-                _RECOVERY_CONTROL_SERVICE_ID, method,
-                "--deadline-ms", str(max(1, min(2000, int(remaining * 1000)))),
-                timeout=remaining, sensitive_output=True,
-            )
-        except DeviceError:
-            # The final subprocess also shares the overall deadline. Its startup
-            # overhead can exhaust a short remaining interval before an RPC reply.
-            if time.monotonic() >= deadline:
-                raise OperationError(timeout_message, details={"bridge": snapshot}) from None
-            raise
-        method = _RECOVERY_BRIDGE_STATUS_METHOD
-        try:
-            snapshot = json.loads(_raw_rpc_payload(value).decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError) as error:
-            raise DeviceError("Vibe Mode returned invalid Bridge status JSON.") from error
-        if not isinstance(snapshot, dict):
-            raise DeviceError("Vibe Mode returned invalid Bridge status.")
-        state = snapshot.get("state")
-        if state == "NOT_CONFIGURED":
-            raise DeviceError("Vibe Mode Bridge URL or board ID is not configured; rebuild with both settings.")
-        code = snapshot.get("code")
-        if state == "PAIRING" and code:
-            if not isinstance(code, str):
-                raise DeviceError("Vibe Mode returned an invalid Bridge pairing code.")
-            if not isinstance(snapshot.get("server_url"), str) or not snapshot["server_url"].startswith("https://"):
-                raise DeviceError("Vibe Mode returned an invalid Bridge server URL.")
-            return {
-                "command": "bridge-code", "status": "succeeded",
-                "device_id": device_id, "bridge": snapshot,
-                "server_url": snapshot["server_url"],
-                "gateway_started": session.started_local, "log": str(context.log_path),
-            }
-        if state in {"PAIRED", "PRECHECK", "WRITING", "VERIFYING", "COMMITTING"}:
-            raise DeviceError("Bridge session is already paired or flashing; no new code was generated.")
-        if state not in {"WAITING_NETWORK", "REGISTERING", "PAIRING"} or snapshot.get("running") is not True:
-            raise DeviceError(f"Bridge session ended: {state}.")
-        time.sleep(min(0.25, max(0, deadline - time.monotonic())))
 
 
 def _recovery_verification_status(
@@ -665,6 +616,11 @@ def start_system_update(arguments: Any, context: RunContext) -> dict[str, Any]:
 
 def install(arguments: Any, context: RunContext) -> dict[str, Any]:
     workspace = context.workspace
+    recovery_source = getattr(arguments, "recovery_source", "reviewed")
+    candidate_project = source_project(
+        recovery_source, getattr(arguments, "recovery_source_path", None),
+        option="--recovery-source-path",
+    )
     project = resolve_project(workspace, arguments.project, Path.cwd())
     context.status(f"project: {project}")
     # Keep the project service available through a long build without opening
@@ -681,10 +637,9 @@ def install(arguments: Any, context: RunContext) -> dict[str, Any]:
         f"({artifacts.image.stat().st_size} bytes, {artifacts.target})"
     )
     model = select_model(workspace, None)
-    recovery_source = getattr(arguments, "recovery_source", "reviewed")
     recovery_directory = workspace.recovery_dir
-    if recovery_source == "current":
-        recovery_directory = workspace.recovery_project / "build-mosaico-vibe-mode" / "recovery-current"
+    if candidate_project is not None:
+        recovery_directory = candidate_project / "build-mosaico-vibe-mode" / "recovery-current"
         context.status("validation: explicitly using the current-source Vibe Mode candidate")
     recovery_manifest = load_bundle(recovery_directory, model.target)
     if artifacts.target != model.target:
@@ -787,11 +742,13 @@ def recover(arguments: Any, context: RunContext) -> dict[str, Any]:
         raise DeviceError(
             "Base firmware recovery requires the local Gateway; run recover on its host."
         )
+    recovery_project = source_project(arguments.source, getattr(arguments, "source_path", None))
+    if recovery_project is None:
+        recovery_project = workspace.recovery_project
     model = select_model(workspace, arguments.model)
     context.status(
         f"recovery: model={model.id} target={model.target} source={arguments.source}"
     )
-    recovery_project = workspace.recovery_project
     idf_path = resolve_idf_path(workspace, recovery_project)
     context.status(f"idf: environment ready at {idf_path}")
     bundle_dir = workspace.recovery_dir
@@ -917,6 +874,7 @@ def recover(arguments: Any, context: RunContext) -> dict[str, Any]:
         "status": "dry_run" if arguments.dry_run else "planned",
         "model": model.id,
         "source": arguments.source,
+        "source_path": str(recovery_project) if arguments.source == "current" else None,
         "device_id": prior_device_id,
         "hardware_mac": selected_hardware_mac,
         "target": model.target,
@@ -942,7 +900,7 @@ def recover(arguments: Any, context: RunContext) -> dict[str, Any]:
     required_recovery_components = (
         workspace.bsp_path / "components" / "esp-mosaico-bsp",
         workspace.esp_iris_path / "components" / "esp_iris",
-    )
+    ) if arguments.source == "current" else ()
     recovery_components = required_recovery_components
     missing_components = [
         str(path)
@@ -956,10 +914,11 @@ def recover(arguments: Any, context: RunContext) -> dict[str, Any]:
         )
     recovery_definitions = {
         "MOSAICO_RECOVERY_SOURCE": arguments.source,
-        "EXTRA_COMPONENT_DIRS": ";".join(
-            path.resolve().as_posix() for path in recovery_components
-        ),
     }
+    if recovery_components:
+        recovery_definitions["EXTRA_COMPONENT_DIRS"] = ";".join(
+            path.resolve().as_posix() for path in recovery_components
+        )
     defaults_fingerprint: str | None = None
     if arguments.source == "current":
         defaults_fingerprint = recovery_defaults_fingerprint(recovery_project)
@@ -1054,12 +1013,15 @@ def recover(arguments: Any, context: RunContext) -> dict[str, Any]:
     }
 
 
-def monitor(arguments: Any, context: RunContext, json_output: bool) -> int:
-    session = ensure_gateway(context, arguments.gateway_profile)
-    device = select_device(connected_devices(context, session), arguments.device_id)
-    device_id = str(device.get("device_id"))
+def monitor(arguments: Any, context: RunContext, json_output: bool, *, session=None, endpoint=None) -> int:
+    session = session or ensure_gateway(context, arguments.gateway_profile)
+    if endpoint:
+        selector = ("--endpoint", endpoint)
+    else:
+        device = select_device(connected_devices(context, session), arguments.device_id)
+        selector = ("--device", str(device.get("device_id")))
     argv = session.ctl_argv(
-        "logs", "--device", device_id, *( () if arguments.snapshot else ("--follow",) ),
+        "logs", *selector, *( () if arguments.snapshot else ("--follow",) ),
         # Always consume structured events. The ESP-Iris text formatter uses
         # print() even though event text already carries its line ending.
         json_output=True,

@@ -12,8 +12,6 @@ import pytest
 
 from shared.gsp import fetch
 
-SHARED = Path(__file__).resolve().parents[2]
-
 
 def test_windows_release_extracts_and_reuses_exe(tmp_path):
     archive = tmp_path / "gspc-0.3.0-windows-x86_64.zip"
@@ -32,9 +30,8 @@ def test_windows_release_extracts_and_reuses_exe(tmp_path):
 
 
 @pytest.mark.parametrize("product,version", [("gspc", "0.5.0"), ("sim", "1.4.0")])
-def test_explicit_release_runs_from_standalone_shared_copy(tmp_path, product, version):
-    standalone = tmp_path / "shared modules"
-    shutil.copytree(SHARED, standalone, ignore=shutil.ignore_patterns("__pycache__"))
+def test_explicit_release_runs_from_standalone_shared_copy(tmp_path, standalone_shared, product, version):
+    standalone = standalone_shared
     cache = tmp_path / "cache"
     cache.mkdir()
     executable = cache / (product + (".exe" if os.name == "nt" else ""))
@@ -64,12 +61,11 @@ def test_caller_supplies_pins_and_shared_cli_has_no_default(tmp_path):
 
 
 @pytest.mark.parametrize("mode", ["version", "toolchain", "override", "missing"])
-def test_cmake_bootstrap_is_independent_and_preserves_selection(tmp_path, mode):
+def test_cmake_bootstrap_is_independent_and_preserves_selection(tmp_path, standalone_shared, mode):
     cmake = shutil.which("cmake")
     if not cmake:
         pytest.skip("CMake unavailable")
-    standalone = tmp_path / "standalone shared"
-    shutil.copytree(SHARED / "gsp", standalone)
+    standalone = standalone_shared / "gsp"
     pins = tmp_path / "versions.json"
     pins.write_text('{"gspc": "0.6.1"}')
     for version in ("0.5.0", "0.6.1"):

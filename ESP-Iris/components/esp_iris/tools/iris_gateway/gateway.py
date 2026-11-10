@@ -102,6 +102,7 @@ GATEWAY_CLIENT_MAX_SIZE = 128 * 1024 * 1024
 GATEWAY_API = {"major": 2, "minor": 0}
 GATEWAY_CAPABILITIES = [
     "local-host-operations/v1",
+    "native-flash/v1",
     "device-states/v1",
     "device-takeover/v1",
     "system-inventory/v1",
@@ -1126,7 +1127,7 @@ def create_app(service: GatewayService) -> web.Application:
 
     async def operation_reconcile(request: web.Request) -> web.Response:
         operation = service.store.operation(request.match_info["operation_id"])
-        if operation and operation["action"] == "host.recovery":
+        if operation and operation["action"] in {"host.recovery", "host.flash"}:
             item = await service.host_operations.reconcile(operation["operation_id"], _actor(request))
             return web.json_response(item, status=201)
         item = await reconcile_operation(service.store, service.device_hub,

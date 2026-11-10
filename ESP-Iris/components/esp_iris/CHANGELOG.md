@@ -4,6 +4,14 @@ All notable ESP-Iris component changes are documented in this file.
 
 ## Unreleased
 
+- Prepare distribution as `espressif/esp_iris`, including the prebuilt Workbench
+  and excluding development logs, caches and host tests from component archives.
+- Load the minimal example's USB flash extension from managed installations and
+  preserve runtime source fingerprints outside the repository layout.
+- Keep USB Serial/JTAG driver initialization compatible with ESP-IDF 5.5.
+- Validate isolated component packages in GitLab CI and verify Registry downloads
+  against the uploaded package before running the bundled Gateway and Workbench.
+
 - Keep project Gateway history in `.gateway/`, with host-local credentials and
   explicit offline relocation of existing data. Schema 200/201 upgrades to 202;
   rollback requires complete pre-upgrade state and credentials backups.

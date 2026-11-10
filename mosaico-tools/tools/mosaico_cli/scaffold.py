@@ -7,6 +7,7 @@ import re
 from typing import Any
 
 from .errors import EnvironmentError, OperationError, SelectionError
+from .project import is_recovery_project
 from .project_defaults import management_files, merge_management_files
 from .project_git import git_executable, initialize_git
 from .project_setup import setup_result
@@ -111,8 +112,7 @@ def initialize_project(
                 "workspace.init_template is not configured; set it to a template description JSON file."
             )
         template = workspace.init_template.resolve()
-        recovery = workspace.recovery_project.resolve()
-        if template == recovery or _inside(template, recovery):
+        if any(is_recovery_project(workspace, parent) for parent in (template, *template.parents)):
             raise SelectionError(
                 "The retained Vibe Mode firmware cannot be used as an application template."
             )

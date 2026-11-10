@@ -1,6 +1,6 @@
 # ESP-Iris
 
-[中文说明](README_zh.md)
+[Additional component guide](README_zh.md)
 
 ESP-Iris reduces time lost to unnecessary build-and-flash cycles in embedded
 development. It makes device logs, state, and operation results easier for
@@ -42,8 +42,10 @@ serialized per device.
 ## Chip and transport support
 
 The component declares ESP-IDF >=5.5; this is a dependency floor, not a claim
-that every target/IDF/transport combination has been validated. CI currently
-uses the pinned ESP-IDF 6.2 development revision in `.github/workflows/ci.yml`.
+that every target/IDF/transport combination has been validated. Package CI builds
+the isolated component with IDF 5.5 / H2 USB Serial/JTAG and the pinned IDF 6.2
+development revision / S31 application USB. The source fixture matrix below
+provides additional coverage with its own validation scope.
 
 | Target | Control transport | Fixture / CI group | Validation scope |
 | --- | --- | --- | --- |
@@ -98,6 +100,68 @@ open that driver. Additional USB adapters, other IDF versions and board-level
 reset circuits need their own validation. Mosaico Recovery ABI/layout policy
 continues to belong to the product layer.
 
+### Native flash through Gateway
+
+For UART and USB Serial/JTAG, the local Gateway can run native IDF `flash` or
+`app-flash`, then resume its existing console capture and Iris RPC session.
+Build the project first in its IDF environment. The CLI accepts a prepared build:
+
+```sh
+python esp_iris.py ctl flash --build-dir /path/to/app/build --endpoint /dev/ttyUSB0 --idf-python /path/to/idf/python
+python esp_iris.py ctl operation-watch OPERATION_ID
+python esp_iris.py ctl logs --endpoint ENDPOINT_FROM_OPERATION --follow
+```
+
+Use `app-flash` for the native application-only target, or `--device DEVICE_ID`
+for an already connected board. An explicit endpoint also works without a
+responsive Iris application. The IDF environment (including PATH) is supplied by
+the submitting CLI; `--idf-path` overrides the checkout recorded in the build.
+Console baud defaults to the build's `ESP_CONSOLE_UART_BAUDRATE` (115200 when
+absent), and can be overridden with `--baudrate`. It is independent of the native
+flash baud rate. Application USB and TCP are not accepted by this operation.
+
+Gateway detaches the console and pauses its reconnect supervisor while the
+independent worker owns the port. IDF retains its native RTS/DTR reset and flash
+behavior. After a successful write, Gateway opens the console, starts its reader,
+then performs one additional run reset on that same open serial handle. Capture
+starts before reset and Iris discovery resumes after the reset sequence. The
+application may run briefly after the native tool's reset; the captured startup
+is the second boot. Ordinary reconnects do not reset the device. The one-shot
+reset outcome is recorded in `evidence.startup_reset`; failure to attach or reset
+does not undo a successful write, and cannot guarantee startup log capture.
+Native output is recorded in the operation log and exposed in progress events.
+
+The `host.flash` operation reports `evidence.write_completed` separately from
+`evidence.connection.state` (`connected`, `waiting`, `image_mismatch`,
+`identity_mismatch`, or `unavailable`). Failure to reconnect does not change a
+successful native write into a failed flash. Connection observation is bounded
+by `--reconnect-timeout`; the console supervisor continues afterwards. Recovery
+retains its separate Vibe Mode acceptance requirements. Exiting the CLI or
+stopping a wait does not cancel an active writer; inspect the operation before
+retrying. A Gateway interruption can leave the outcome unknown, never replayed.
+After the worker exits, `ctl operation-reconcile OPERATION_ID` can read its
+persisted native result and the current Iris connection snapshot. This appends
+evidence without replaying a write or reset, and preserves the original record.
+
+Consumers use the public `iris_gateway.client.prepare_native_flash()` API and
+the local `host-operation` submission path (`native-flash/v1`). Consumers build
+and apply product partition policy before submission. Queued inputs are hashed
+and checked again before native execution; do not edit/rebuild the same build
+directory concurrently with a flash, since IDF retains its normal build checks.
+No Iris firmware protocol or independent data link is required for ROM flashing.
+
+On 2026-10-30, ESP32-H2 hardware validation passed on CP2102N UART and native
+USB Serial/JTAG through a consuming workspace's `mosaico.py`: native `flash`,
+repeated `app-flash`, automatic console/RPC recovery, and raw logs from an
+application without Iris. USB Serial/JTAG also passed 100 consecutive RPCs and
+read-only operation reconciliation without another reset or write. Firmware,
+operation IDs, preservation checks and evidence hashes are recorded in the
+[native flash validation record](test_apps/native-flash-validation.json).
+After adding the extra reset, three runs on each H2 interface captured the ROM
+banner, bootloader output and application `heartbeat=0`, with RPC restored.
+See the [startup capture validation](test_apps/native-flash-startup-validation.json)
+for evidence of the second boot; the earlier record retains the original gap.
+
 ## What you get
 
 | Layer | Included capability |
@@ -137,10 +201,13 @@ Add ESP-Iris to your application's `main/idf_component.yml`:
 
 ```yaml
 dependencies:
-  lisir233/esp_iris: "^0.2.0"
+  espressif/esp_iris: "^0.2.0"
 ```
 
 Run `idf.py reconfigure` after adding or changing managed dependencies.
+The installed component, bundled Gateway, and prebuilt Workbench are under
+`managed_components/espressif__esp_iris`. To start from a published example,
+see [minimal's Registry instructions](examples/minimal/README.md#from-the-component-registry).
 
 ### 2. Select transports
 
@@ -235,21 +302,23 @@ into a product.
 
 ### 5. Start the Developer Gateway
 
-In a repository checkout:
+From the application directory after `idf.py reconfigure`:
 
 ```bash
-ESP_IRIS_COMPONENT_DIR=components/esp_iris
+ESP_IRIS_COMPONENT_DIR=managed_components/espressif__esp_iris
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -r "$ESP_IRIS_COMPONENT_DIR/tools/requirements.lock"
 
-cd "$ESP_IRIS_COMPONENT_DIR/tools/frontend"
-npm ci
-npm run build
-cd -
-
 python "$ESP_IRIS_COMPONENT_DIR/tools/esp_iris.py" web
 ```
+
+For a source checkout, set `ESP_IRIS_COMPONENT_DIR=ESP-Iris/components/esp_iris`
+from the `esp-mosaico-utils` repository root. Use `web --demo` to try the bundled
+Workbench without connecting hardware.
+
+The component includes the built Workbench, so Node.js is not needed to run it.
+Rebuild the frontend only after changing its source; see [the Gateway guide](tools/README.md#install-the-gateway).
 
 The single lock file uses Python-version markers, so pip selects the validated
 dependency set for the active interpreter. Recreate the environment when its
@@ -258,7 +327,7 @@ version required by the selected ESP-IDF release; keep the ESP-IDF tool
 environment on the version required by that release.
 
 For a managed installation, set `ESP_IRIS_COMPONENT_DIR` to
-`managed_components/lisir233__esp_iris` instead. Open
+`managed_components/espressif__esp_iris` instead. Open
 `http://127.0.0.1:8443/` after the Gateway starts.
 
 Use demo mode to evaluate the Gateway and Workbench without hardware:

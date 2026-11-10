@@ -43,6 +43,7 @@ if(NOT SDKCONFIG)
 endif()
 # Reuse the Engine's application-side Board and common native launcher.
 # The product owns required Iris services; the Board supplies hardware only.
+set(_raylib_iris_user_defaults "${SDKCONFIG_DEFAULTS}")
 set(SDKCONFIG_DEFAULTS
     "${_raylib_iris_product}/sdkconfig.defaults")
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/sdkconfig.game.defaults")
@@ -57,13 +58,16 @@ endif()
 list(APPEND SDKCONFIG_DEFAULTS
     "${_raylib_iris_product}/sdkconfig.application.defaults"
     "${_raylib_iris_tools}/cmake/defaults/raylib_lite_iris.defaults")
+# Apply caller-selected overlays after the product defaults.
+list(APPEND SDKCONFIG_DEFAULTS ${_raylib_iris_user_defaults})
+# Include dependencies for the default transports and optional serial overlays.
+set(ESP_IRIS_BUILD_PROFILE "full" CACHE STRING "Iris game transport profile" FORCE)
 # Keep Recovery and Iris on the consuming workspace's revision.
-set(ESP_IRIS_BUILD_PROFILE "usb" CACHE STRING "Iris game USB profile" FORCE)
 set(RAYLIB_LITE_NATIVE_SERVICE_COMPONENT esp_mosaico_raylib_iris)
 list(APPEND EXTRA_COMPONENT_DIRS
     "${_raylib_iris_tools}/components/esp_mosaico_raylib_iris"
     "${_raylib_iris_utils}/ESP-Iris/components/esp_iris"
-    "${_raylib_iris_utils}/esp-mosaico-vibe-mode/components/esp_mosaico_app_recovery")
+    "${_raylib_iris_utils}/mosaico-tools/components/esp_mosaico_app_recovery")
 if(NOT RAYLIB_LITE_BSP_DIR AND DEFINED ENV{MOSAICO_BSP_ROOT})
     set(RAYLIB_LITE_BSP_DIR "$ENV{MOSAICO_BSP_ROOT}")
 endif()
@@ -74,7 +78,7 @@ if(EXISTS "${_raylib_iris_game}/components")
 endif()
 set(MOSAICO_ESP_IRIS_ROOT "${_raylib_iris_utils}/ESP-Iris")
 set(MOSAICO_SYSTEM_UPDATE_CMAKE "${_raylib_iris_tools}/cmake/system_update.cmake")
-include("${_raylib_iris_utils}/esp-mosaico-vibe-mode/cmake/mosaico_idf_project.cmake")
+include("${_raylib_iris_utils}/mosaico-tools/cmake/mosaico_idf_project.cmake")
 
 # An external Game main component does not receive IDF's local-main implicit
 # dependencies. Preserve the explicit selected-Board link for its audio calls.

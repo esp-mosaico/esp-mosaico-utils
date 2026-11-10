@@ -18,6 +18,7 @@ export function useGateway() {
   const [demo, setDemo] = useState(false);
   const [health, setHealth] = useState<GatewayHealth>({ system_update_trust_configured: false });
   const [error, setError] = useState<string>("");
+  const [modeError, setModeError] = useState<string>("");
   const [connectionError, setConnectionError] = useState<string>("");
   const cursor = useRef(0);
   const refreshGeneration = useRef(0);
@@ -135,6 +136,7 @@ export function useGateway() {
   }, [auth?.authenticated, refresh]);
 
   const setMode = useCallback(async (value: "develop" | "observe") => {
+    setModeError("");
     modePending.current = true;
     setModeState((current) => ({ ...current, transitioning: true }));
     try {
@@ -142,7 +144,7 @@ export function useGateway() {
       setModeState({ ...result, transitioning: true });
       await refresh();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setModeError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       modePending.current = false;
       setModeState((current) => ({ ...current, transitioning: false }));
@@ -173,7 +175,7 @@ export function useGateway() {
     events,
     demo,
     health,
-    error: connectionError || error,
+    error: connectionError || modeError || error,
     refresh,
     refreshStatus,
     removeDevice,

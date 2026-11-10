@@ -42,14 +42,13 @@ class WorkspaceConfig:
 
     @property
     def recovery_project(self) -> Path:
-        """Return the Vibe Mode firmware source bundled with this tool version."""
-        recovery_root = self.tool_root.parent / "esp-mosaico-vibe-mode"
-        return recovery_root / "firmware" / "vibe-mode"
+        """Return the public IDF project that stages and flashes reviewed images."""
+        return self.tool_root / "recovery"
 
     @property
     def recovery_dir(self) -> Path:
         """Return the reviewed Vibe Mode bundle bundled with this tool version."""
-        return self.recovery_project / "prebuilt" / "recovery"
+        return self.tool_root.parent / "firmware" / "recovery"
 
     @property
     def idf_constraint_manifest(self) -> Path:

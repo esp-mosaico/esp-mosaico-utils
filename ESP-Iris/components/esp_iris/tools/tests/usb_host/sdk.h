@@ -121,6 +121,7 @@ static bool tud_mounted(void) { return fake_mounted; }
 static bool tud_suspended(void) { return fake_suspended; }
 static unsigned line_states[2], rx_clear[2], tx_clear[2];
 static unsigned rx_bytes[2], tx_bytes[2];
+static unsigned flush_calls;
 static void (*io_hook)(void);
 static void (*flush_hook)(void);
 static unsigned tud_cdc_n_get_line_state(unsigned itf) { return line_states[itf]; }
@@ -130,7 +131,8 @@ static esp_err_t tinyusb_cdcacm_read(unsigned itf, uint8_t *data, size_t size, s
 { ++io_calls; *received = rx_bytes[itf] < size ? rx_bytes[itf] : size; rx_bytes[itf] -= *received; if (io_hook) io_hook(); return ESP_OK; }
 static size_t tinyusb_cdcacm_write_queue(unsigned itf, const uint8_t *data, size_t size)
 { ++io_calls; tx_bytes[itf] += size; if (io_hook) io_hook(); return size; }
-static esp_err_t tinyusb_cdcacm_write_flush(unsigned itf, unsigned timeout) { return ESP_OK; }
+static esp_err_t tinyusb_cdcacm_write_flush(unsigned itf, unsigned timeout)
+{ ++flush_calls; assert(clock_enabled); return ESP_OK; }
 static void dcd_int_disable(unsigned rhport)
 { assert(rhport == 0 && stop_step == 0); stop_step = 1; }
 static void usb_utmi_ll_reset_register(void)
@@ -166,5 +168,5 @@ static esp_err_t esp_timer_restart(esp_timer_handle_t timer, uint64_t delay)
 static void set_download_boot(unsigned reg, unsigned value)
 { assert(reg == 1 && stop_step == 3 && !clock_enabled); download_boot |= value; }
 #define REG_SET_BIT(reg, bit) set_download_boot(reg, bit)
-static void esp_restart(void) { ++restart_calls; shutdown_handler(); }
+static esp_err_t esp_iris_restart_now(void) { ++restart_calls; shutdown_handler(); return ESP_OK; }
 #endif

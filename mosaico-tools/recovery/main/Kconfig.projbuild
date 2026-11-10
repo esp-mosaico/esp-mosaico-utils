@@ -1,0 +1,17 @@
+# Host handoff metadata for the reviewed device, consumed by iris_usb_flash.
+# This staging project does not compile an ESP-Iris firmware implementation.
+config ESP_IRIS_ENABLE
+    bool
+    default y
+config ESP_IRIS_TRANSPORT_USB
+    bool
+    default y
+config ESP_IRIS_USB_AUTO_DOWNLOAD
+    bool
+    default y
+config ESP_IRIS_USB_VID
+    hex
+    default 0x303A
+config ESP_IRIS_USB_PID
+    hex
+    default 0x4002

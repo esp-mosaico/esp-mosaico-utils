@@ -1,0 +1,67 @@
+{
+  "compatibility": {
+    "board_id": "esp-mosaico",
+    "chip_target": "esp32s31",
+    "layout_id": "mosaico-retained-test-2m-v2",
+    "product_contract": "esp-mosaico/v2",
+    "recovery_abi": 2
+  },
+  "idf_version": "v6.2-dev-3213-g0dbf385b4a1-dirt",
+  "images": {
+    "bootloader": {
+      "file": "bootloader.bin",
+      "offset": "0x2000",
+      "sha256": "02337c209b001e68552d7673b9bb6b2961d856dfad225d7a4ea53e395d22754b",
+      "size": 23456
+    },
+    "ota_data": {
+      "file": "ota_data_initial.bin",
+      "offset": "0x9000",
+      "sha256": "5a5d79a1c029da23a3b9cc03c111c5b72f9cbfa386877b0a5d20dc93ab42c7e1",
+      "size": 8192
+    },
+    "partition_table": {
+      "file": "partition-table.bin",
+      "offset": "0x8000",
+      "sha256": "ff7ac35a4f2e51424150a6ba56172174299baa737230a09792dd46e8f5d0bb99",
+      "size": 3072
+    },
+    "recovery": {
+      "file": "vibe-mode.bin",
+      "offset": "0x20000",
+      "sha256": "603f192496eb488c26a6140183cd208557e2fae6bdc152d74d11375e8d74c58a",
+      "size": 1743056
+    }
+  },
+  "initial_boot": {
+    "expected_mode": "recovery",
+    "ota_data_image": "ota_data_initial.bin",
+    "partition": "vibe_mode"
+  },
+  "layout": {
+    "application_partition": {
+      "name": "main_app",
+      "offset": "0x210000",
+      "subtype": "ota_0"
+    },
+    "recovery_partition": {
+      "name": "vibe_mode",
+      "offset": "0x20000",
+      "size": "0x1c0000",
+      "subtype": "test"
+    }
+  },
+  "profile": "recovery",
+  "project": "vibe-mode",
+  "schema_version": 3,
+  "security": {
+    "flash_encryption": false,
+    "secure_boot": false
+  },
+  "source": {
+    "commit": "bf4be9cb4f632156b6febd8641700cf02ddcb670",
+    "dirty": false
+  },
+  "target": "esp32s31",
+  "version": "0.3.0"
+}

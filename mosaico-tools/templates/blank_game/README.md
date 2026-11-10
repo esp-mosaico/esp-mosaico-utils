@@ -21,6 +21,19 @@ already configured; the engine starts Iris and accepts the image after its first
 frame. USB High-Speed remains owned by Iris. Physical input/display behavior
 still requires device validation after Host checks.
 
+To add an Iris UART link, run from the generated project directory with ESP-IDF
+activated:
+
+```sh
+idf.py -B build-uart -D SDKCONFIG_DEFAULTS=sdkconfig.uart.defaults build
+```
+
+For USB Serial/JTAG, replace `uart` with `usj` in the build directory and overlay
+filename. The game CMake helper loads its base defaults before the selected
+overlay. These optional overlays retain the default transports. UART uses the
+UART0 console pins at 115200 baud. Separate build directories keep each generated
+`sdkconfig` independent; changing defaults does not override an existing config.
+
 - `components/app_game`: pure C state and gameplay rules, no graphics dependency.
 - `components/app_game_runtime`: Engine input/lifecycle adapter, rendering and JSON.
 - `components/app_game_runtime/private/game_config.h`: identity, pixel dimensions

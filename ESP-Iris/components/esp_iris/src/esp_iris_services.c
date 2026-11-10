@@ -1,10 +1,12 @@
 #include "esp_iris_internal.h"
 
 #include <inttypes.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "esp_app_desc.h"
+#include "esp_attr.h"
 #include "esp_heap_caps.h"
 #include "esp_ota_ops.h"
 #include "esp_random.h"
@@ -139,6 +141,10 @@ static uint32_t s_data_cleanup_session;
  * Disconnect preserves it; explicit service deinit cancels it. */
 static int64_t s_restart_at_us;
 static bool s_restart_enabled;
+static DRAM_ATTR atomic_uint s_restart_started; /* One-way until CPU reset. */
+#ifdef CONFIG_IDF_TARGET_ESP32S31
+_Static_assert(ATOMIC_INT_LOCK_FREE == 2, "S31 restart claim must be lock-free");
+#endif
 static portMUX_TYPE s_services_lock = portMUX_INITIALIZER_UNLOCKED;
 
 static bool executor_busy(void);
@@ -906,9 +912,36 @@ esp_err_t iris_services_init(iris_runtime_t *runtime)
     esp_err_t err = ESP_OK;
 #endif
     taskENTER_CRITICAL(&s_services_lock);
+    if (s_restart_started) err = ESP_ERR_INVALID_STATE;
     s_restart_enabled = err == ESP_OK;
     taskEXIT_CRITICAL(&s_services_lock);
     return err;
+}
+
+bool IRAM_ATTR iris_services_restart_claimed(void)
+{
+    /* The S31 reset tail runs after the peer is stopped. It must not acquire
+     * RTOS locks or fetch this flag through the PSRAM mapping being reset. */
+    return atomic_load_explicit(&s_restart_started, memory_order_acquire) != 0;
+}
+
+static bool restart_claim_locked(void)
+{
+    if (s_restart_started) return false;
+    s_restart_started = true;
+    s_restart_enabled = false;
+    s_restart_at_us = 0;
+    return true;
+}
+
+esp_err_t esp_iris_restart_now(void)
+{
+    taskENTER_CRITICAL(&s_services_lock);
+    const bool restart = restart_claim_locked();
+    taskEXIT_CRITICAL(&s_services_lock);
+    if (!restart) return ESP_ERR_INVALID_STATE;
+    esp_restart();
+    return ESP_OK;
 }
 
 esp_err_t esp_iris_schedule_restart(uint32_t delay_ms)
@@ -916,7 +949,7 @@ esp_err_t esp_iris_schedule_restart(uint32_t delay_ms)
     if (delay_ms < IRIS_RESTART_MIN_DELAY_MS || delay_ms > IRIS_RESTART_MAX_DELAY_MS) return ESP_ERR_INVALID_ARG;
     const int64_t deadline = esp_timer_get_time() + (int64_t)delay_ms * 1000;
     taskENTER_CRITICAL(&s_services_lock);
-    if (!s_restart_enabled) {
+    if (!s_restart_enabled || s_restart_started) {
         taskEXIT_CRITICAL(&s_services_lock);
         return ESP_ERR_INVALID_STATE;
     }
@@ -1656,8 +1689,8 @@ void iris_services_poll(iris_runtime_t *runtime)
     taskENTER_CRITICAL(&s_services_lock);
     const bool restart = s_restart_enabled && s_restart_at_us != 0 &&
                          now >= s_restart_at_us &&
-                         (!tx_pending || now - s_restart_at_us >= IRIS_RESTART_FLUSH_GRACE_US);
-    if (restart) s_restart_at_us = 0;
+                         (!tx_pending || now - s_restart_at_us >= IRIS_RESTART_FLUSH_GRACE_US) &&
+                         restart_claim_locked();
     taskEXIT_CRITICAL(&s_services_lock);
     if (restart) esp_restart();
 }
@@ -1671,7 +1704,7 @@ uint32_t iris_services_allocated_bytes(void)
 
 uint32_t iris_services_static_bytes(void)
 {
-    return sizeof(s_services) + sizeof(s_services_lock) + sizeof(s_executor) + sizeof(s_restart_at_us) + sizeof(s_restart_enabled) +
+    return sizeof(s_services) + sizeof(s_services_lock) + sizeof(s_executor) + sizeof(s_restart_at_us) + sizeof(s_restart_enabled) + sizeof(s_restart_started) +
         iris_files_static_bytes() + iris_system_inventory_static_bytes() +
         iris_system_update_static_bytes();
 }

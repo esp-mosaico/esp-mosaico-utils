@@ -17,6 +17,7 @@ from .http_support import error_response, json_body, request_is_loopback
 from .ownership import OwnershipConflict
 
 CAPABILITY = "device-takeover/v1"
+IDLE_CAPABILITY = "idle-device-handoff/v1"
 
 
 def drain_timeout(body: dict) -> float:
@@ -85,10 +86,15 @@ async def request_handoff(project: Any, source_id: str, device_id: str, transfer
     source = local_session(project, source_id)
     try:
         async with ClientSession(timeout=ClientTimeout(total=timeout + 30)) as client:
-            await peer_state(client, source)
+            state = await peer_state(client, source)
+            if body.get("idle_only") and IDLE_CAPABILITY not in state.get("capabilities", []):
+                raise OwnershipConflict("owner requires updated host tools for automatic idle handoff")
             request = {"device_id": device_id, "target_session_id": project.registry.session_id,
                        "source_session_id": source_id, "transfer_id": transfer_id,
                        "force": body.get("force", False), "timeout": timeout}
+            for key in ("idle_only", "preferred_endpoint"):
+                if key in body:
+                    request[key] = body[key]
             async with client.post(source["url"] + "/v2/project/handoff/prepare", json=request,
                                    allow_redirects=False) as response:
                 result = await response.json()
@@ -100,6 +106,28 @@ async def request_handoff(project: Any, source_id: str, device_id: str, transfer
         raise OwnershipConflict(
             f"Takeover {transfer_id}: peer response unavailable; query its status before retrying"
         ) from error
+
+
+async def handoff_idle_owner(project: Any, claim: dict, candidate: dict | None = None) -> None:
+    """Automatic admission can transfer only an idle shared Gateway's device."""
+    if claim["state"] != "owned" or not claim.get("device_id"):
+        raise OwnershipConflict("device has a reserved takeover or has not been identified")
+    transfer_id = str(uuid.uuid4())
+    body: dict[str, Any] = {"idle_only": True, "timeout": 15}
+    if candidate is not None:
+        body["preferred_endpoint"] = {
+            "resource": candidate["endpoint"],
+            "metadata": {key: value for key, value in candidate.items() if key != "ownership"},
+        }
+    async with project.device_control[claim["device_id"]]:
+        await request_handoff(project, claim["owner"], claim["device_id"], transfer_id, body)
+        try:
+            await project.accept(transfer_id)
+        except (RuntimeError, ValueError, OSError, LookupError, asyncio.TimeoutError) as error:
+            raise OwnershipConflict(
+                f"Automatic handoff {transfer_id} could not validate the selected endpoint: {error}; "
+                "ownership remains reserved; inspect or resume this takeover"
+            ) from error
 
 
 async def resume(project: Any, transfer_id: str) -> dict:
@@ -147,6 +175,8 @@ async def takeover(project: Any, body: dict) -> dict:
     if claim["state"] != "owned":
         raise OwnershipConflict("device already has a reserved takeover; query its takeover ID")
     async with project.device_control[device_id]:
+        if endpoint:
+            body = {**body, "preferred_endpoint": {"resource": endpoint, "metadata": claim["metadata"]}}
         await request_handoff(project, claim["owner"], device_id, transfer_id, body)
         # The durable reservation, not the HTTP response, is the authority.
         return {"takeover": public_record(await project.accept(transfer_id))}

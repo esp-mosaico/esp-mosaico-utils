@@ -38,15 +38,22 @@ def _is_idf_project(path: Path) -> bool:
         return False
 
 
-def _recovery_projects(workspace: WorkspaceConfig) -> set[Path]:
-    return {workspace.recovery_project.resolve()}
+def is_recovery_project(workspace: WorkspaceConfig, path: Path) -> bool:
+    if path.resolve() == workspace.recovery_project.resolve():
+        return True
+    # Recognize explicitly supplied firmware trees without assuming where private
+    # sources are checked out. They must never be selected as normal applications.
+    defaults = path / "sdkconfig.recovery.defaults"
+    try:
+        return "CONFIG_FACTORY_RECOVERY_FIRMWARE=y" in defaults.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return False
 
 
 def resolve_project(
-    workspace: WorkspaceConfig, requested: str | None, cwd: Path
+    workspace: WorkspaceConfig, requested: str | None, cwd: Path, *, native: bool = False
 ) -> Path:
     repository = workspace.root
-    recovery_projects = _recovery_projects(workspace)
     if requested:
         path = Path(requested).expanduser()
         if not path.is_absolute():
@@ -55,7 +62,7 @@ def resolve_project(
             path = path.resolve()
         if not _is_idf_project(path):
             raise SelectionError(f"Not a valid ESP-IDF project: {path}")
-        if path in recovery_projects:
+        if not native and is_recovery_project(workspace, path):
             raise SelectionError(
                 "The retained Vibe Mode firmware project cannot "
                 "be installed as an application."
@@ -63,13 +70,13 @@ def resolve_project(
         return user_path(path)
 
     current = cwd.resolve()
-    if current in recovery_projects:
+    if not native and is_recovery_project(workspace, current):
         raise SelectionError(
             "The retained Vibe Mode firmware project cannot be used as an application; "
             "select an application project with --project PATH."
         )
     while current == repository or repository in current.parents:
-        if current != repository and current in recovery_projects:
+        if not native and current != repository and is_recovery_project(workspace, current):
             raise SelectionError(
                 "The retained Vibe Mode firmware project cannot be used as an application; "
                 "select an application project with --project PATH."
@@ -83,7 +90,7 @@ def resolve_project(
     if workspace.default_project is not None and _is_idf_project(
         workspace.default_project
     ):
-        if workspace.default_project in recovery_projects:
+        if not native and is_recovery_project(workspace, workspace.default_project):
             raise SelectionError(
                 "The configured default project is a Vibe Mode firmware project."
             )
@@ -92,7 +99,7 @@ def resolve_project(
     projects_root = workspace.projects_dir
     candidates = sorted(
         path for path in projects_root.iterdir()
-        if path.is_dir() and path.resolve() not in recovery_projects and _is_idf_project(path)
+        if path.is_dir() and (native or not is_recovery_project(workspace, path)) and _is_idf_project(path)
     ) if projects_root.is_dir() else []
     if len(candidates) == 1:
         return user_path(candidates[0])

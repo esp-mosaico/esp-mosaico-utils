@@ -18,9 +18,15 @@ issues: https://github.com/esp-mosaico/esp-mosaico-utils/issues
 changelog: https://github.com/esp-mosaico/esp-mosaico-utils/blob/main/ESP-Iris/components/esp_iris/CHANGELOG.md
 
 files:
+  include:
+    - tools/frontend/dist/**/*
   exclude:
     - agent/**/*
     - test_apps/**/*
+    - tools/tests/**/*
+    - "**/.codex-runs/**/*"
+    - "**/*.tsbuildinfo"
+    - "**/.venv*/**/*"
     - tools/**/node_modules/**/*
     - tools/**/.mypy_cache/**/*
     - tools/**/.pytest_cache/**/*

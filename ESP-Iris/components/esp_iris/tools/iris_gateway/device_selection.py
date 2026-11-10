@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from .compat import to_thread
 from .discovery import discover_iris_usb_devices, iris_usb_allowed, usb_endpoint
 from .ownership import OwnershipConflict
+from .takeover import handoff_idle_owner
 
 if TYPE_CHECKING:
     from .project_gateway import ProjectGateway
@@ -49,9 +50,17 @@ async def admit_candidates(project: ProjectGateway, candidates: list[dict[str, A
         endpoint = str(candidate["endpoint"])
         metadata = {key: value for key, value in candidate.items() if key != "ownership"}
         prior = registry.claim(endpoint)
+        hinted_device = device_id or (prior or {}).get("device_id") or registry.known_device(endpoint)
+        owner = registry.claim("device:" + hinted_device) if hinted_device else prior
+        if token is not None:
+            project.tokens[endpoint] = token
+        if owner and owner["owner"] != registry.session_id:
+            await handoff_idle_owner(project, owner, metadata)
+            return await project.wait_device(None, endpoint, timeout)
         device_existed = bool(device_id and registry.claim("device:" + device_id))
         claim = None
         accepted = False
+        foreign_owner = None
         try:
             if prior:
                 registry._require(endpoint, ("owned",))
@@ -78,6 +87,11 @@ async def admit_candidates(project: ProjectGateway, candidates: list[dict[str, A
                         return item
                 state: dict[str, Any] = next((item for item in hub.list_endpoints() if item["endpoint"] == endpoint), {})
                 if state.get("error") and state.get("updated_monotonic_ns", 0) >= attempt_started_ns:
+                    observed = state.get("observed_device_id")
+                    if observed and (not device_id or observed == device_id):
+                        foreign_owner = registry.claim("device:" + observed)
+                        if foreign_owner and foreign_owner["owner"] == registry.session_id:
+                            foreign_owner = None
                     raise ConnectionError(str(state["error"]))
                 await asyncio.sleep(0.05)
             raise TimeoutError("HELLO did not validate the selected identity before the deadline")
@@ -89,6 +103,11 @@ async def admit_candidates(project: ProjectGateway, candidates: list[dict[str, A
             if claim is not None and prior is None and not accepted:
                 await hub.disconnect_owned_endpoint(endpoint)
                 registry.release_attempt(endpoint, claim["generation"], remove_device=not device_existed)
+        if foreign_owner is not None:
+            # Close the identity probe before the owner reserves this endpoint.
+            # Only authenticated HELLO, never USB descriptors, authorizes this.
+            await handoff_idle_owner(project, foreign_owner, metadata)
+            return await project.wait_device(None, endpoint, timeout)
         if time.monotonic() >= deadline:
             break
     project.selection_error("No endpoint validated the selected Device ID; inspect candidate failures.",

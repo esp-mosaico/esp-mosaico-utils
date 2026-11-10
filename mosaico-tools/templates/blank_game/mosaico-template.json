@@ -98,6 +98,12 @@
       "source": "sdkconfig.defaults"
     },
     {
+      "source": "sdkconfig.usj.defaults"
+    },
+    {
+      "source": "sdkconfig.uart.defaults"
+    },
+    {
       "source": "components/app_game/CMakeLists.txt"
     },
     {

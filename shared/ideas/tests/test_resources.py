@@ -1,7 +1,5 @@
 """Validate the standalone publication API and optional dependency boundary."""
 import json
-from pathlib import Path
-import shutil
 import subprocess
 import sys
 
@@ -72,14 +70,12 @@ def test_icon_normalization_and_animation_rejection(inputs, tmp_path):
         generate_resources(**inputs)
 
 
-def test_api_import_needs_no_consumer_or_rendering_dependencies(tmp_path):
-    root = Path(__file__).resolve().parents[2]
-    shutil.copytree(root, tmp_path / "shared", ignore=shutil.ignore_patterns("__pycache__"))
+def test_api_import_needs_no_consumer_or_rendering_dependencies(standalone_shared):
     code = (
         "import sys; from shared.ideas import generate_resources; "
         "assert callable(generate_resources); "
         "assert not any(n.startswith(('PIL', 'freetype', 'mosaico_cli')) for n in sys.modules)"
     )
-    result = subprocess.run([sys.executable, "-S", "-c", code], cwd=tmp_path,
+    result = subprocess.run([sys.executable, "-S", "-c", code], cwd=standalone_shared.parent,
                             capture_output=True, text=True, timeout=20)
     assert result.returncode == 0, result.stderr

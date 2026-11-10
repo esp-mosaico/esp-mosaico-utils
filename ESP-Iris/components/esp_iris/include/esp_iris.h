@@ -188,8 +188,18 @@ esp_err_t esp_iris_mark_planned_restart(void);
  * The restart waits for the service callback. Both protocol TX queues get up
  * to 100 ms additional grace; a stalled receiver cannot defer it indefinitely.
  * Disconnect does not cancel it, esp_iris_stop() does. This does not select a
- * boot target or mark a planned restart: the caller owns those product steps. */
+ * boot target or mark a planned restart: the caller owns those product steps.
+ * On ESP32-S31, Iris-owned restarts also reset digital peripherals. Calls to
+ * esp_restart() without an Iris restart claim retain the SDK reset behavior. */
 esp_err_t esp_iris_schedule_restart(uint32_t delay_ms);
+
+/* Join the same one-shot restart owner immediately, including before Iris
+ * starts or after it stops. Product fallback tasks/timers use this instead of
+ * esp_restart() when they can overlap a scheduled Iris restart. A losing caller
+ * returns ESP_ERR_INVALID_STATE; the winner enters esp_restart() and does not
+ * return. The caller must finish writes, select the boot target and mark the
+ * planned restart before calling. This does not wait for protocol TX. */
+esp_err_t esp_iris_restart_now(void);
 
 /* Product recovery glue may provide strong platform hook implementations.
  * Lifecycle markers default to ESP_ERR_NOT_SUPPORTED; starting Iris never

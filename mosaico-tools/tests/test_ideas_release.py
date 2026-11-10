@@ -6,7 +6,7 @@ import hashlib
 import http.client
 import io
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import socket
 import struct
 import sys
@@ -19,7 +19,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "mosaico-tools/tools"))
-sys.path.insert(0, str(ROOT / "esp-mosaico-vibe-mode/tests/fixtures"))
+sys.path.insert(0, str(ROOT / "mosaico-tools/tests/fixtures"))
 from ideas_release import archive, descriptor, encoded, png, ref, upload
 from mosaico_cli.ideas_content import ContentError, read_archive, strict_json
 from mosaico_cli.ideas_release import validate_release
@@ -33,14 +33,32 @@ from mosaico_cli.platform_upload import upload_archive
 def test_full_closure_preserves_every_original_byte():
     _, outer, raw = upload()
     release = validate_release(raw)
-    manifest, files = release.device_release("app-one", "042731", "release-one")
+    manifest, files = release.device_release("app-one", "042731", "release-one", author="作者 Example")
     assert manifest["schema"] == "mosaico-ideas/device-release/1"
+    assert manifest["author"] == "作者 Example"
+    assert json.loads(files["manifest.json"])["author"] == "作者 Example"
     for path, data in files.items():
         if path.startswith("device/"): assert data == outer[path]
     inner = read_archive(outer["firmware/application.irisfw"])
     assert files["firmware/manifest.json"] == inner["manifest.json"]
     for component in release.firmware["components"]:
         assert files["firmware/" + component["file"]] == inner[component["file"]]
+
+
+@pytest.mark.parametrize("author", ["作"*128, "\U00010000"*128])
+def test_device_release_accepts_unicode_author_limit(author):
+    _, _, raw = upload()
+    release = validate_release(raw)
+    _, files = release.device_release("app-one", "042731", "release-one", author=author)
+    assert json.loads(files["manifest.json"])["author"] == author
+
+
+@pytest.mark.parametrize("author", [None, {}, 7, "", " \t\n", "作"*129])
+def test_device_release_rejects_invalid_author(author):
+    _, _, raw = upload()
+    release = validate_release(raw)
+    with pytest.raises(ContentError):
+        release.device_release("app-one", "042731", "release-one", author=author)
 
 
 @pytest.mark.parametrize("kind", ["extra", "missing", "hash", "size", "locale", "icon-width", "icon-rgb", "glyph", "font", "external-image", "reference", "firmware", "protected"])
@@ -118,9 +136,9 @@ def server(tmp_path):
 def publish_draft(client, directory, version="1.0.0", mode="create", **target):
     _, _, raw = upload(version)
     path = directory / (uuid.uuid4().hex + ".zip"); path.write_bytes(raw)
-    request = dict(mode=mode, archive=dict(size=len(raw), sha256=hashlib.sha256(raw).hexdigest()), **target)
-    result = upload_archive(client, path, request, directory / (uuid.uuid4().hex + ".json"), wait_seconds=10, poll_seconds=0.005)
-    return result, request, path
+    metadata = dict(size=len(raw), sha256=hashlib.sha256(raw).hexdigest())
+    result = upload_archive(client, path, sha256=metadata["sha256"], update=target.get("public_id"))
+    return result, metadata, path
 
 
 def get(server, path, accept="application/json", *, device_id=None):
@@ -140,10 +158,11 @@ CAPS = "?profile=esp-mosaico%2Fv2&chip_id=32&flash_size=16777216&recovery_versio
 def test_one_response_contains_complete_preview_of_one_snapshot(server, tmp_path, locale):
     http, client, store = server
     result, _, _ = publish_draft(client, tmp_path)
-    latest = "/api/v1/ideas/" + result["code"] + "/manifest.json"
+    assert result["app_number"] is None
+    assert get(http, "/api/v1/ideas/201000/manifest.json" + CAPS + "&locale=" + locale, "multipart/related")[0] == 404
+    result.update(store.publish(result["public_id"], author="联调作者"))
+    latest = "/api/v1/ideas/" + result["app_number"] + "/manifest.json"
     query = latest + CAPS + "&locale=" + locale
-    assert get(http, query, "multipart/related")[0] == 404
-    store.publish(result["release_id"])
     status, headers, raw = get(http, query, "multipart/related")
     assert status == 200 and headers["Cache-Control"] == "no-store" and headers["Vary"] == "Accept"
     assert headers["ETag"] == '"' + hashlib.sha256(raw).hexdigest() + '"'
@@ -157,6 +176,7 @@ def test_one_response_contains_complete_preview_of_one_snapshot(server, tmp_path
         assert len(part.get_payload(decode=True)) == int(part["Content-Length"])
     root = json.loads(files["manifest.json"])
     assert root["release_id"] == result["release_id"]
+    assert root["author"] == "联调作者"
     view = next(p for p in root["device"]["presentations"] if p["display"]["path"] == f"device/{locale}/display.json")
     refs = [root["firmware"]["manifest"], view["display"], *view["assets"]]
     assert list(files) == ["manifest.json", *[r["path"] for r in refs]]
@@ -182,26 +202,28 @@ def test_one_response_contains_complete_preview_of_one_snapshot(server, tmp_path
 def test_preview_rejects_damaged_published_asset(server, tmp_path):
     http, client, store = server
     result, _, _ = publish_draft(client, tmp_path)
-    store.publish(result["release_id"])
-    root, _ = store.manifest(result["code"], release_id=result["release_id"])
+    result.update(store.publish(result["public_id"]))
+    root, _ = store.manifest(result["app_number"], release_id=result["release_id"])
     ref = json.loads(root)["device"]["presentations"][0]["display"]
     store.blob(ref["sha256"]).write_bytes(b"damaged")
-    path = "/api/v1/ideas/" + result["code"] + "/manifest.json" + CAPS + "&locale=zh-CN"
+    path = "/api/v1/ideas/" + result["app_number"] + "/manifest.json" + CAPS + "&locale=zh-CN"
     assert get(http, path, "multipart/related")[0] == 503
 
 
 def test_draft_publication_immutable_get_and_bilingual_download(server, tmp_path):
     http, client, store = server
     result, _, _ = publish_draft(client, tmp_path)
-    latest = "/api/v1/ideas/" + result["code"] + "/manifest.json"
-    assert result["status"] == "draft" and get(http, latest + CAPS)[0] == 404
-    store.publish(result["release_id"])
+    assert result["status"] == "draft" and result["app_number"] is None
+    assert get(http, "/api/v1/ideas/201000/manifest.json" + CAPS)[0] == 404
+    result.update(store.publish(result["public_id"]))
+    latest = "/api/v1/ideas/" + result["app_number"] + "/manifest.json"
     status, headers, raw = get(http, latest + CAPS)
     assert status == 200 and headers["Cache-Control"] == "no-store"
     assert headers["ETag"] == '"' + hashlib.sha256(raw).hexdigest() + '"'
     fixed = latest.replace("/manifest.json", "/releases/" + result["release_id"] + "/manifest.json")
     assert get(http, fixed)[2] == raw
     root = json.loads(raw)
+    assert root["author"] == "Mosaico Test Account"
     refs = [root["firmware"]["manifest"]]
     for p in root["device"]["presentations"]: refs += [p["display"]] + p["assets"]
     for f in refs:
@@ -216,8 +238,8 @@ def test_draft_publication_immutable_get_and_bilingual_download(server, tmp_path
 def test_file_device_identity_preserves_published_bytes(server, tmp_path):
     http, client, store = server
     result, _, _ = publish_draft(client, tmp_path)
-    store.publish(result["release_id"])
-    raw, _ = store.manifest(result["code"], release_id=result["release_id"])
+    result.update(store.publish(result["public_id"]))
+    raw, _ = store.manifest(result["app_number"], release_id=result["release_id"])
     ref = json.loads(raw)["firmware"]["manifest"]
     path = "/api/v1/ideas/files/" + ref["sha256"]
     status, headers, expected = get(http, path)
@@ -233,51 +255,70 @@ def test_file_device_identity_preserves_published_bytes(server, tmp_path):
         assert get(http, path + "?" + query)[0] == 400
 
 
-def test_upload_idempotency_and_cas_no_duplicate_drafts(server, tmp_path):
-    http, client, store = server
-    result, request, package = publish_draft(client, tmp_path)
-    key = uuid.uuid4().hex
-    first = client.request("POST", "/ideas/uploads", request, package=package, key=key)
-    for _ in range(100):
-        state = client.request("GET", "/ideas/uploads/" + first["upload_id"])
-        if state["status"] == "complete": break
-        time.sleep(.005)
-    again = client.request("POST", "/ideas/uploads", request, package=package, key=key)
-    assert again["upload_id"] == first["upload_id"]
-    _, _, replacement = upload("9.0.0")
-    changed = copy.deepcopy(request); changed["archive"] = dict(size=len(replacement), sha256=hashlib.sha256(replacement).hexdigest())
-    package.write_bytes(replacement)
-    with pytest.raises(PlatformError) as error: client.request("POST", "/ideas/uploads", changed, package=package, key=key)
-    assert error.value.code == "IDEMPOTENCY_CONFLICT"
-    update, _, _ = publish_draft(client, tmp_path, "2.0.0", "update", application_id=result["application_id"], expected_project_version=1)
-    assert update["code"] == result["code"] and update["project_version"] == 2
+def test_draft_reuploads_are_last_write_wins_without_allocating_app_numbers(server, tmp_path):
+    _, client, store = server
+    result, _, _ = publish_draft(client, tmp_path)
+    for version in ("2.0.0", "2.0.0", "1.0.0"):
+        updated, _, _ = publish_draft(client, tmp_path, version, public_id=result["public_id"])
+        assert updated == result
+    with store.db() as db:
+        assert db.execute("SELECT COUNT(*) FROM agent_projects").fetchone()[0] == 1
+        assert db.execute("SELECT COUNT(*) FROM agent_releases").fetchone()[0] == 0
+    published = store.publish(result["public_id"])
+    raw, _ = store.manifest(published["app_number"])
+    root = json.loads(raw)
+    manifest = json.loads(store.blob(root["firmware"]["manifest"]["sha256"]).read_bytes())
+    assert manifest["release"] == "1.0.0"
+
+
+def test_published_version_is_unique_per_application_and_snapshot_is_immutable(server, tmp_path):
+    _, client, store = server
+    result, _, _ = publish_draft(client, tmp_path)
+    published = store.publish(result["public_id"], author="First Author")
+    original = store.manifest(published["app_number"], release_id=published["release_id"])
+    assert json.loads(original[0])["author"] == "First Author"
     with pytest.raises(PlatformError) as error:
-        publish_draft(client, tmp_path, "3.0.0", "update", application_id=result["application_id"], expected_project_version=1)
-    assert error.value.code == "PROJECT_VERSION_CONFLICT"
+        publish_draft(client, tmp_path, public_id=result["public_id"])
+    assert error.value.code == "VERSION_ALREADY_PUBLISHED" and error.value.status == 409
+    updated, _, _ = publish_draft(client, tmp_path, "2.0.0", public_id=result["public_id"])
+    assert updated["app_number"] == published["app_number"]
+    assert store.manifest(published["app_number"]) == original
+    second = store.publish(result["public_id"], author="Second Author")
+    assert second["release_id"] != published["release_id"]
+    assert json.loads(store.manifest(published["app_number"])[0])["author"] == "Second Author"
+    assert store.manifest(published["app_number"], release_id=published["release_id"]) == original
+    # A separate application is allowed to use the same release string.
+    other, _, _ = publish_draft(client, tmp_path)
+    assert store.publish(other["public_id"])["app_number"] != published["app_number"]
 
 
-def test_resume_receipt_survives_server_restart(tmp_path):
+def test_publish_command_freezes_author_and_invalid_author_preserves_draft(tmp_path, capsys):
+    from mosaico_cli.ideas_test_server import main
     store = Store(tmp_path / "state")
-    _,_,raw = upload(); request = dict(mode="create", archive=dict(size=len(raw), sha256=hashlib.sha256(raw).hexdigest()))
-    identifier, duplicate = store.begin("owner", "fixed-key", request)
-    assert not duplicate
-    store.received(identifier, raw)
+    _, _, raw = upload()
+    draft = store.save_draft("owner", raw)
+    args = ["--state", str(store.root), "publish", draft["public_id"], "--author"]
+    with pytest.raises(ContentError):
+        main([*args, " \t"])
+    with store.db() as db:
+        assert db.execute("SELECT COUNT(*) FROM agent_releases").fetchone()[0] == 0
+        assert db.execute("SELECT app_number FROM agent_projects").fetchone()[0] is None
+    main([*args, "测试作者"])
+    published = json.loads(capsys.readouterr().out)
+    root, sha = Store(store.root).manifest(published["app_number"])
+    assert json.loads(root)["author"] == "测试作者"
+    assert hashlib.sha256(root).hexdigest() == sha
+
+
+def test_draft_survives_restart_and_failed_validation_preserves_previous_content(tmp_path):
     store = Store(tmp_path / "state")
-    assert store.pending() == [identifier]
-    store.validate(identifier)
-    receipt = store.status(identifier, "owner")
-    assert receipt["status"] == "complete"
-    assert store.begin("owner", "fixed-key", request) == (identifier, True)
-    assert Store(tmp_path / "state").status(identifier, "owner") == receipt
-    with pytest.raises(ContentError): store.status(identifier, "another-owner")
-
-
-def test_expired_failed_receipt_remains_a_tombstone(tmp_path):
-    store = Store(tmp_path)
-    identifier, _ = store.begin("owner", "key", dict(mode="create", archive=dict(size=1, sha256="a"*64)))
-    with store.db() as db: db.execute("UPDATE uploads SET state='failed',updated=0 WHERE id=?", (identifier,))
-    with pytest.raises(ContentError, match="expired"): store.status(identifier, "owner")
-    with store.db() as db: assert db.execute("SELECT state FROM uploads WHERE id=?", (identifier,)).fetchone()[0] == "expired"
+    _, _, raw = upload()
+    result = store.save_draft("owner", raw)
+    with pytest.raises(ContentError): store.save_draft("owner", b"invalid", result["public_id"])
+    with pytest.raises(ContentError): store.save_draft("another-owner", raw, result["public_id"])
+    published = Store(store.root).publish(result["public_id"])
+    assert published["app_number"] == "201000"
+    assert Store(store.root).manifest(published["app_number"])[0]
 
 
 def test_retry_after_seconds_and_date():
@@ -287,9 +328,12 @@ def test_retry_after_seconds_and_date():
     assert retry_after("nonsense") == 0
 
 
-def test_prebuilt_packaging_is_deterministic_and_preserves_display_bytes(tmp_path):
+@pytest.mark.parametrize("category_id", [None, 123])
+def test_prebuilt_packaging_is_deterministic_and_preserves_display_bytes(tmp_path, category_id):
     from mosaico_cli.ideas_archive import package_project
     root, files, _ = upload()
+    if category_id is not None:
+        root["project"]["category_id"] = category_id
     for name, raw in files.items():
         target = tmp_path / name
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -303,6 +347,7 @@ def test_prebuilt_packaging_is_deterministic_and_preserves_display_bytes(tmp_pat
     assert package_project(tmp_path, one)["sha256"] == package_project(tmp_path, two)["sha256"]
     assert one.read_bytes() == two.read_bytes()
     result = validate_release(one)
+    assert result.manifest["project"] == config["project"]
     for locale in ("zh-CN", "en"):
         path = "device/"+locale+"/display.json"
         assert result.files[path] == files[path]
@@ -322,12 +367,13 @@ def test_account_identity_survives_token_rotation_and_restart(server, tmp_path):
     with pytest.raises(PlatformError) as error: client.request("GET", "/auth/cli/token")
     assert error.value.status == 401
     update, _, _ = publish_draft(rotated, tmp_path, mode="update",
-        application_id=result["application_id"], expected_project_version=1)
-    assert update["code"] == result["code"] and update["project_version"] == 2
-    assert Store(store.root).account_id("a-new-token-hash") == owner
+        public_id=result["public_id"])
+    assert update["public_id"] == result["public_id"] and update["app_number"] is None
+    assert Store(store.root).account_id("a-new-token-hash") == str(owner)
 
 
-def test_generated_packaging_uses_shared_resources_and_is_repeatable(tmp_path):
+@pytest.mark.parametrize("description", ["Clear skies.", "", None])
+def test_generated_packaging_uses_shared_resources_and_is_repeatable(tmp_path, description):
     from ctypes.util import find_library
     if not find_library('raqm'):
         pytest.skip('Native text shaping requires libraqm')
@@ -339,8 +385,10 @@ def test_generated_packaging_uses_shared_resources_and_is_repeatable(tmp_path):
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(files[name])
     font = tmp_path / 'font.ttf'
-    font.write_bytes((ROOT / 'esp-mosaico-vibe-mode/firmware/vibe-mode/ui/fonts/DejaVuSans.ttf').read_bytes())
-    text = dict(name='Weather', description='Clear skies.')
+    font.write_bytes((ROOT / 'mosaico-tools/templates/hello_world/components/app_hello/ui/fonts/DejaVuSans.ttf').read_bytes())
+    text = dict(name='Weather')
+    if description is not None:
+        text['description'] = description
     config = dict(schema='mosaico-ideas/project-release/1', project=root['project'],
                   firmware=root['firmware']['path'], website=dict(readme='website/readme.md'),
                   device=dict(default_locale='zh-CN', presentations={
@@ -350,5 +398,97 @@ def test_generated_packaging_uses_shared_resources_and_is_repeatable(tmp_path):
     assert package_project(tmp_path, one)['sha256'] == package_project(tmp_path, two)['sha256']
     result = validate_release(one)
     for locale in ('zh-CN', 'en'):
-        for name, data in generate_resources(locale=locale, font=font, **text).items():
+        for name, data in generate_resources(locale=locale, font=font, name=text['name'], description=description or '').items():
             assert result.files['device/' + locale + '/' + name] == data
+
+
+@pytest.mark.parametrize("content_type", [None, "software", "hardware"])
+def test_minimal_metadata_empty_description_and_no_icon_pass_upload(server, tmp_path, content_type):
+    _, client, store = server
+    manifest, files, _ = upload()
+    manifest["project"] = {"title": "Minimal project"}
+    if content_type is not None:
+        manifest["project"]["content_type"] = content_type
+    for view in manifest["device"]["presentations"]:
+        path = view["display"]["path"]
+        display = json.loads(files[path])
+        icon = str(PurePosixPath(path).parent / display["icon"])
+        files.pop(icon)
+        display["icon"] = ""
+        display["description"]["text"] = ""
+        display["description"]["glyphs"] = []
+        files[path] = encoded(display)
+        view["display"] = ref(path, files[path])
+        view["assets"] = [a for a in view["assets"] if a["path"] != icon]
+    files["manifest.json"] = encoded(manifest)
+    package = tmp_path / "minimal.zip"; package.write_bytes(archive(files))
+    validated = validate_release(package)
+    result = upload_archive(client, package, sha256=validated.archive_sha256)
+    assert result["status"] == "draft" and result["app_number"] is None
+    published = store.publish(result["public_id"])
+    root = json.loads(store.manifest(published["app_number"])[0])
+    assert len(root["device"]["presentations"]) == 2
+    for view in root["device"]["presentations"]:
+        assert len(view["assets"]) == 1
+        display = json.loads(store.blob(view["display"]["sha256"]).read_bytes())
+        assert display["description"]["text"] == display["icon"] == ""
+
+
+def test_project_upload_does_not_require_account_lookup_or_cloud_app_id(server, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from mosaico_cli.platform_upload import project_upload
+    _, client, _ = server
+    manifest, files, _ = upload()
+    manifest["project"]["category_id"] = 123
+    files["manifest.json"] = encoded(manifest)
+    raw = archive(files)
+    package = tmp_path / "release.zip"; package.write_bytes(raw)
+    monkeypatch.setenv("MAKER_SPARK_TOKEN", "fixture-token")
+    args = SimpleNamespace(create=True, update=None, yes=True, json=True,
+                           package=str(package), server=client.server, ca_file=None)
+    result = project_upload(args, None)
+    assert result["status"] == "draft" and result["app_number"] is None
+    assert result["version"] == "1.0.0" and result["archive_sha256"] == hashlib.sha256(raw).hexdigest()
+    args.create, args.update = False, result["public_id"]
+    assert project_upload(args, None)["public_id"] == result["public_id"]
+
+
+@pytest.mark.parametrize("category_id", [None, True, False, 0, -1, 1.5, "123", [], {}])
+def test_release_and_author_schemas_reject_invalid_category_ids(category_id):
+    from jsonschema import Draft202012Validator
+    manifest, files, _ = upload()
+    manifest["project"]["category_id"] = category_id
+    files["manifest.json"] = encoded(manifest)
+    with pytest.raises(ContentError):
+        validate_release(archive(files))
+    schema = json.loads((ROOT / "mosaico-tools/mosaico-ideas.schema.json").read_text())
+    # Author and ZIP metadata use the same category ID contract.
+    project_schema = schema["properties"]["project"]
+    assert list(Draft202012Validator(project_schema).iter_errors(manifest["project"]))
+
+
+@pytest.mark.parametrize("content_type", [None, "hardware"])
+@pytest.mark.parametrize("update", [None, "existing-draft"])
+def test_upload_without_category_stops_before_credentials_or_network(tmp_path, monkeypatch, content_type, update):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from mosaico_cli.errors import SelectionError
+    from mosaico_cli.platform_upload import project_upload
+    manifest, files, _ = upload()
+    manifest["project"] = {"title": "Uncategorized"}
+    if content_type is not None:
+        manifest["project"]["content_type"] = content_type
+    files["manifest.json"] = encoded(manifest)
+    package = tmp_path / "release.zip"
+    package.write_bytes(archive(files))
+    credential = Mock()
+    client = Mock()
+    monkeypatch.setattr("mosaico_cli.platform_upload.credential", credential)
+    monkeypatch.setattr("mosaico_cli.platform_upload.ReleaseClient", client)
+    args = SimpleNamespace(create=update is None, update=update, yes=True, json=True,
+                           package=str(package), server="https://example.test", ca_file=None)
+    with pytest.raises(SelectionError, match="project.category_id") as raised:
+        project_upload(args, None)
+    assert "group=" + (content_type or "software") in str(raised.value)
+    credential.assert_not_called()
+    client.assert_not_called()

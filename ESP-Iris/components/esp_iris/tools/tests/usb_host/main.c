@@ -1,4 +1,5 @@
 #include "sdk.h"
+#include <stdlib.h>
 #include USB_SOURCE
 
 static void monitor_open(void)
@@ -299,10 +300,31 @@ static void test_install_events(iris_runtime_t *control, iris_runtime_t *data,
     io_calls = 0;
 }
 
+static void shutdown_during_queue(void)
+{
+    io_hook = NULL;
+    shutdown_handler();
+    /* Resume a write that entered before shutdown. It must not invoke a new
+     * flush after shutdown reset the controller and gated its clock. */
+}
+
 int main(void)
 {
     iris_runtime_t control = {0}, data = {.data_link = true};
     iris_transport_state_t c = {0}, d = {0};
+    if (getenv("IRIS_USB_SHUTDOWN_RACE")) {
+        assert(usb_start(&control, &c) == ESP_OK);
+        assert(usb_start(&data, &d) == ESP_OK);
+        bus_event(TINYUSB_EVENT_ATTACHED);
+        dtr(0, true);
+        assert(usb_poll(&control, &c) == IRIS_LINK_EVENT_CONNECTED);
+        const unsigned before = flush_calls;
+        io_hook = shutdown_during_queue;
+        uint8_t byte = 0;
+        assert(usb_write(&control, &c, &byte, 1) == -ENOTCONN);
+        assert(flush_calls == before); /* Do not flush after queueing crossed shutdown. */
+        return 0;
+    }
     fail_install = true;
     assert(usb_start(&control, &c) == ESP_FAIL);
     assert(!registrations && !shutdown_handler && !c.driver_started);

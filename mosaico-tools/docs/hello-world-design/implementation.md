@@ -1,80 +1,80 @@
-# Hello World 实现与验证（2026-09-19 历史记录）
+# Hello World implementation and validation (historical record, 2026-09-19)
 
-本页保留迁移前的版本和验证记录；当前模板见 [Hello World](../../templates/hello_world/README.md)。
-当前产品固定 ESP-GSP 1.5.1，以下 1.2.0 数据只描述当时验证环境。
+This page preserves pre-migration versions and validation evidence; see [Hello World](../../templates/hello_world/README.md) for the current template.
+The current product pins ESP-GSP 1.5.1; the 1.2.0 results below describe only the environment validated at that time.
 
-已按确认的概念图将唯一的 Hello World 应用统一到
-`projects/hello_world`（旧工作区路径）。旧 LVGL Hello World
-由 GSP 实现替换，独立 `projects/gsp_hello` 目录已移除。
+Following the approved concept, the single Hello World application was consolidated in
+`projects/hello_world` (former workspace path). The old LVGL Hello World
+was replaced by GSP and the separate `projects/gsp_hello` directory removed.
 
-## 原生渲染
+## Native rendering
 
-以下为 ESP-GSP 1.2.0 模拟器实际运行共享 C 后端得到的 480×480 RGB565 截图，
-不是概念图或网页重绘。使用原生文字、容器、按钮和文本绑定；字体为随工程附带并保留
-许可证的 DejaVu Sans regular/bold。
+These are actual 480×480 RGB565 screenshots from the ESP-GSP 1.2.0 simulator running the shared C backend,
+not concepts or browser redraws. They use native text, containers, buttons and text bindings, with bundled
+DejaVu Sans regular/bold fonts and retained licenses.
 
-![初始界面](hello-world-native-00.png)
+![Initial screen](hello-world-native-00.png)
 
-![点击一次](hello-world-native-01.png)
+![After one tap](hello-world-native-01.png)
 
-点击 Say hello 的文字或箭头均增加计数，长按只计一次，点击按钮外不改变计数。
-第 100 次点击显示「100 · Hello, Maker!」与橙黑彩纸动画，约 3 秒后回到 00；
-庆祝期间忽略额外点击，重新启动重置。底部说明文字已移除。
-按钮圆角统一为 8 px，与 GSP 1.2.0 固定的按压高亮圆角一致，避免高亮溢出。计数仅用于展示触摸交互，不代表系统负载。
+Tapping either Say hello text or its arrow increments the counter. A hold counts once; tapping outside the button does nothing.
+The 100th tap displays "100 · Hello, Maker!" with orange/black confetti, returning to 00 after about 3 seconds.
+Additional taps during celebration are ignored; restarting resets the counter. Bottom explanatory text was removed.
+Button corners use 8 px radii, matching GSP 1.2.0's fixed pressed-highlight radius to prevent overflow. The counter demonstrates touch interaction, not system load.
 
-![第 100 次点击的彩蛋](hello-world-native-100.png)
+![100th-tap Easter egg](hello-world-native-100.png)
 
-## 工程迁移
+## Project migration
 
-- 保留独立 `ui_apps` 资源分区、Recovery 固定分区前缀和 ESP-Iris 屏幕镜像。
-- 更新默认模拟器入口、项目生成描述、测试固件引用、文档和 CI；删除重复的固件 CI 任务。
-- 项目生成器复制 22 个源文件与资源，包含 PC 后端、场景和字体，并重定位 GSP 编译器与
-  资源打包器路径。验证了嵌套目录下的新建工程。
-- 固定 ESP-GSP 1.2.0；应用维持 ESP-IDF >=6.2 的约束。
+- Retained the separate `ui_apps` resource partition, fixed Recovery partition prefix and ESP-Iris screen mirroring.
+- Updated the default simulator entry, project-generation descriptor, test-firmware references, documentation and CI; removed duplicate firmware CI jobs.
+- The project generator copies 22 source/resource files, including the PC backend, scenes and fonts, and relocates the GSP compiler and
+  resource-packer paths. Creation in nested directories was validated.
+- Pinned ESP-GSP 1.2.0; the application retained ESP-IDF >=6.2.
 
-## 验证结果
+## Validation results
 
-- 原生 C 后端交互测试通过：101 次问候，覆盖文字点击、箭头点击、按钮外点击、长按、
-  按钮按压边角、百次彩蛋、彩纸帧变化、庆祝期间忽略点击、自动归零和正常关闭。
-  该工作区交互测试脚本现已移除；本条保留当时的验证结果。
-- 相关回归测试：33 passed、29 subtests passed；最终模板文档调整后再次运行生成器测试，7 passed。
-- Hello World 固件构建通过，零警告：ESP32-S31。
-- 由模板生成的嵌套 `init_smoke` 工程完整构建通过，零警告。
-- 使用本机 ESP-IDF `v6.2-dev-2221-g7b9cc1ac79f-dirty`、Python 3.12.3；保留环境原有修改。
+- Native C backend interaction test passed: 101 greetings covering text/arrow taps, outside taps, holds,
+  button-corner presses, the 100-tap Easter egg, changing confetti frames, ignored celebration taps, automatic reset and clean shutdown.
+  That workspace interaction script has since been removed; this entry preserves the historical result.
+- Related regressions: 33 passed, 29 subtests passed. Generator tests rerun after final template documentation changes: 7 passed.
+- Hello World firmware built for ESP32-S31 with zero warnings.
+- The template-generated nested `init_smoke` project built completely with zero warnings.
+- Used local ESP-IDF `v6.2-dev-2221-g7b9cc1ac79f-dirty` and Python 3.12.3, preserving existing environment changes.
 
-设备烧录已完成，见下方设备验证记录。触摸手感仍由用户在实体屏幕上体验。
-从旧 LVGL 固件迁移时应执行 `python mosaico.py iris system-update --project projects/hello_world`，
-同时安装应用、分区表与 `ui_apps`；不能仅使用 app-update 更新这次 UI 资源。
+Device flashing was completed; see the device validation below. Physical-screen touch feel remains for the user to assess.
+Migration from the old LVGL firmware should use `python mosaico.py iris system-update --project projects/hello_world`
+to install application, partition table and `ui_apps` together; app-update alone cannot update these UI resources.
 
-## 本地完整证据
+## Complete local evidence
 
-- Hello World 构建原始日志：`projects/hello_world/.codex-runs/idf-low-noise-build/20260919-215143-build-1157578/raw.log`（迁移前本机路径）
-- 生成工程构建原始日志：`tests/firmware/build-hello-world-template/init_smoke/.codex-runs/idf-low-noise-build/20260919-211943-build-1126853/raw.log`（迁移前本机路径）
-- 原生交互结果：`.agents/validation/hello-world-migration/build-refinement/celebration/result.json`（迁移前本机路径）
-- 原生后端日志：`.agents/validation/hello-world-migration/build-refinement/celebration/backend.log`（迁移前本机路径）
+- Raw Hello World build log: `projects/hello_world/.codex-runs/idf-low-noise-build/20260919-215143-build-1157578/raw.log` (pre-migration local path)
+- Raw generated-project build log: `tests/firmware/build-hello-world-template/init_smoke/.codex-runs/idf-low-noise-build/20260919-211943-build-1126853/raw.log` (pre-migration local path)
+- Native interaction result: `.agents/validation/hello-world-migration/build-refinement/celebration/result.json` (pre-migration local path)
+- Native backend log: `.agents/validation/hello-world-migration/build-refinement/celebration/backend.log` (pre-migration local path)
 
-这些构建与运行证据保留在本地忽略目录；本页 PNG 是可随源码保留的渲染证据。
+Build/runtime evidence remains in local ignored directories; this page's PNGs are rendering evidence retained with source.
 
-## 设备验证（2026-09-19）
+## Device validation (2026-09-19)
 
-已通过 `mosaico.py iris system-update` 安装到 USB `1-1` 上的设备：
+Installed through `mosaico.py iris system-update` onto the device at USB `1-1`:
 
 - MAC：`30:ed:a0:f4:51:8e`。
 - Device ID：`4553502d49524953010030eda0f4518e`。
-- 更新操作：`daa45966-91bc-42f6-bea0-f338b1e1ad31`，状态 succeeded、validated、healthy。
-- 同一设备 normal→Recovery→normal 的 Boot ID：
+- Update operation: `daa45966-91bc-42f6-bea0-f338b1e1ad31`, status succeeded, validated, healthy.
+- Boot IDs on the same device across normal→Recovery→normal:
   `1948257783875663994` → `1653815596140587364` → `6627965944312267903`。
-- 固件 ELF SHA-256：`a9d28868f9a50464902a44d5cbdfb0cad9533bc8604391f0d6242058872e0ceb`，与设备一致。
-- UI 资源 SHA-256：`a4ab24e0a8409015c1a3b170d380d14ed85bb02ad45cd831dd8dab78200f8313`。
-- 首次设备截图暴露出模拟器与设备对子容器裁剪行为的差异。装饰圆改为根级图形，
-  并将标题橙色方块绘制在其上方，消除遮挡；修正后重新通过 101 次原生交互测试及设备 System Update。
-- 本轮细化已重新烧录：首页与原生模拟器逐像素一致；百次彩蛋、动画和计时恢复已通过
-  原生共享 C 后端测试。实体屏幕的百次触摸体验仍由用户验证。
-- CLI 与工作台使用的 Gateway API 返回相同 Device ID、Boot ID 和更新操作记录。
-- 另一台 USB 设备未被认领或更新。产品命令已自动保留操作前可用的历史 core dump。
+- Firmware ELF SHA-256: `a9d28868f9a50464902a44d5cbdfb0cad9533bc8604391f0d6242058872e0ceb`, matching the device.
+- UI resources SHA-256: `a4ab24e0a8409015c1a3b170d380d14ed85bb02ad45cd831dd8dab78200f8313`.
+- The first device screenshot exposed different child-container clipping between simulator and device. Decorative circles were moved to the root level,
+  with the heading's orange square drawn above them to remove occlusion. The fix passed the 101-interaction native test and device System Update again.
+- This refinement was reflashed: home matches the native simulator pixel for pixel; the 100-tap Easter egg, animation and timed reset passed
+  shared native C backend tests. Physical-screen 100-tap behavior remains for user validation.
+- Gateway API results used by CLI and Workbench returned the same Device ID, Boot ID and update record.
+- The other USB device was neither claimed nor updated. Product commands automatically preserved available historical core dumps before the operation.
 
-![最终设备截图](hello-world-device.png)
+![Final device screenshot](hello-world-device.png)
 
-设备验证结构化结果：`.agents/validation/hello-world-migration/build-refinement/summary.json`（迁移前本机路径） ·
-完整更新操作：`.agents/validation/hello-world-migration/build-refinement/system-update-operation.json`（迁移前本机路径） ·
-设备原始日志：`.agents/validation/hello-world-migration/build-refinement/device-logs.txt`（迁移前本机路径）
+Structured device results: `.agents/validation/hello-world-migration/build-refinement/summary.json` (pre-migration local path) ·
+Complete update operation: `.agents/validation/hello-world-migration/build-refinement/system-update-operation.json` (pre-migration local path) ·
+Raw device logs: `.agents/validation/hello-world-migration/build-refinement/device-logs.txt` (pre-migration local path)

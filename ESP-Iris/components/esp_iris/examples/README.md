@@ -1,7 +1,7 @@
 # ESP-Iris examples
 
 These projects are packaged with the ESP-Iris component and can be built
-without a product BSP or GSP. Each example declares `lisir233/esp_iris` as a
+without a product BSP or GSP. Each example declares `espressif/esp_iris` as a
 managed dependency and uses `override_path` to select the containing component
 during source development.
 
@@ -64,6 +64,6 @@ also contain credentials and must not be committed or published.
 ## Related documentation
 
 - [Component quick start](../README.md#quick-start)
-- [Chinese quick start](../README_zh.md#快速开始)
+- [Additional quick start](../README_zh.md#quick-start)
 - [Developer Gateway and Workbench](../tools/README.md)
 - [Wire protocol](../protocol/spec.md)

@@ -36,6 +36,9 @@ if(CONFIG_ESP_IRIS_ENABLE)
         "src/esp_iris_system_update.c"
         "src/esp_iris_transport.c"
     )
+    if(IDF_TARGET STREQUAL "esp32s31")
+        list(APPEND ESP_IRIS_SRCS "src/esp_iris_restart_s31.c")
+    endif()
     if(CONFIG_ESP_IRIS_TRANSPORT_USB)
         list(APPEND ESP_IRIS_SRCS "src/esp_iris_transport_usb.c")
     endif()
@@ -95,6 +98,11 @@ idf_component_register(
 if(CONFIG_ESP_IRIS_USB_EARLY_LOGS)
     target_link_libraries(${COMPONENT_LIB} INTERFACE
         "-Wl,--wrap=app_main" "-u __wrap_app_main")
+endif()
+
+if(CONFIG_ESP_IRIS_ENABLE AND IDF_TARGET STREQUAL "esp32s31")
+    include("${CMAKE_CURRENT_LIST_DIR}/cmake/s31_restart.cmake")
+    cmake_language(DEFER DIRECTORY "${CMAKE_SOURCE_DIR}" CALL esp_iris_s31_restart_tail)
 endif()
 
 if(CONFIG_ESP_IRIS_USB_FIFO_PSRAM)
