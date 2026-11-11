@@ -31,13 +31,13 @@ def read_source(path, limit=ARCHIVE_BYTES):
 
 def generated_resources(config, locale, root):
     require(set(config) <= {"mode", "name", "description", "font", "icon"}
-            and {"name", "description", "font"} <= set(config),
+            and {"name", "font"} <= set(config),
             "Generated display requires explicit text/font; do not mix input modes")
     from shared.ideas import generate_resources
     icon = source_path(root, config["icon"]) if config.get("icon") else None
     if icon: image_check(read_source(icon, 10*1024*1024), config["icon"])
     try:
-        return generate_resources(name=config["name"], description=config["description"],
+        return generate_resources(name=config["name"], description=config.get("description", ""),
                                   locale=locale, font=source_path(root, config["font"]), icon=icon)
     except ImportError as error:
         from .errors import SelectionError

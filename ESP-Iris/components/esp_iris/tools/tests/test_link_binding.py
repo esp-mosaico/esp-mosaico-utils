@@ -71,10 +71,17 @@ def test_hub_refuses_false_control_data_association(mismatch):
             await session._handle_hello(hello(role=role, boot=boot))
             hub._endpoint_states[session.link.endpoint] = {"attempt": 1}
         await hub._on_ready(data)
-        with pytest.raises(ProtocolError, match="binding"):
+        if mismatch == "boot":
             await hub._on_ready(control)
-        assert hub._devices[data.info.device_id] is data
-        assert hub._links[data.info.device_id] == {"data": data}
+            assert data._closed
+            assert hub._devices[control.info.device_id] is control
+            assert hub._links[control.info.device_id] == {"control": control}
+            assert control.data_session is None
+        else:
+            with pytest.raises(ProtocolError, match="binding"):
+                await hub._on_ready(control)
+            assert hub._devices[data.info.device_id] is data
+            assert hub._links[data.info.device_id] == {"data": data}
     asyncio.run(scenario())
 
 

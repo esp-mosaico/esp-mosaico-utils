@@ -117,7 +117,7 @@ def _recover_interrupted(store: GatewayStore) -> None:
     ).fetchall()
     for row in rows:
         uncertain = str(row["action"]).startswith(
-            ("rpc.", "device.restart", "firmware.ota", "firmware.system_update", "host.recovery")
+            ("rpc.", "device.restart", "firmware.ota", "firmware.system_update", "host.recovery", "host.flash")
         )
         store.update_operation(
             row["operation_id"],
@@ -614,9 +614,28 @@ async def _ctl(args: argparse.Namespace) -> int:
                         base + f"/v2/operations/{args.operation_id}", ssl=ssl_value
                     ) as response:
                         _output(await _response_json(response), args.json)
-            elif command == "host-operation":
+            elif command in {"host-operation", "flash", "app-flash"}:
                 from .host_worker import publish_request
-                spec = json.loads(pathlib.Path(args.request_file).read_text(encoding="utf-8"))
+                if command == "host-operation":
+                    spec = json.loads(pathlib.Path(args.request_file).read_text(encoding="utf-8"))
+                else:
+                    from .client import prepare_native_flash
+                    build_dir = pathlib.Path(args.build_dir).expanduser().resolve()
+                    description_path = build_dir / "project_description.json"
+                    description = (json.loads(description_path.read_text(encoding="utf-8"))
+                                   if not args.project and description_path.is_file() else {})
+                    project = pathlib.Path(args.project or description.get("project_path") or os.getcwd()).resolve()
+                    idf_root = args.idf_path or os.environ.get("IDF_PATH") or description.get("idf_path")
+                    if not idf_root:
+                        raise ValueError("Set IDF_PATH or pass --idf-path")
+                    idf_path = pathlib.Path(idf_root).resolve()
+                    extra = args.idf_args[1:] if args.idf_args[:1] == ["--"] else args.idf_args
+                    native = {"argv": [args.idf_python, str(idf_path / "tools/idf.py"),
+                                       "-C", str(project), "-B", str(build_dir), *extra, command],
+                              "cwd": str(project), "env": {**os.environ, "IDF_PATH": str(idf_path), "ESPPORT": "{port}"}}
+                    spec = prepare_native_flash(build_dir, native, target=command,
+                                                endpoint=args.endpoint, device_id=args.device,
+                                                baudrate=args.baudrate, reconnect_timeout=args.reconnect_timeout)
                 request_id = publish_request(spec)
                 url = base + "/v2/host-operations"
                 try:
@@ -1114,6 +1133,18 @@ def build_parser() -> argparse.ArgumentParser:
     operation_watch.add_argument("--interval", type=float, default=0.5)
     host_operation = commands.add_parser("host-operation")
     host_operation.add_argument("request_file")
+    for name in ("flash", "app-flash"):
+        flash = commands.add_parser(name, help="Run native IDF flashing through the local Gateway")
+        flash.add_argument("--build-dir", required=True)
+        flash.add_argument("--project", help="IDF project directory; no existing build required")
+        flash.add_argument("idf_args", nargs=argparse.REMAINDER, help="IDF arguments after --")
+        flash.add_argument("--idf-path", help="Defaults to the build's ESP-IDF checkout")
+        flash.add_argument("--idf-python", default=sys.executable, help="Python from the prepared IDF environment")
+        selection = flash.add_mutually_exclusive_group(required=True)
+        selection.add_argument("--endpoint", help="Explicit UART / USB Serial/JTAG port, including an unresponsive board")
+        selection.add_argument("--device", help="Connected Iris Device ID")
+        flash.add_argument("--baudrate", type=int, help="Console rate after flash; defaults to 115200")
+        flash.add_argument("--reconnect-timeout", type=float, default=10)
 
     screenshot = commands.add_parser("screenshot")
     screenshot.add_argument("device")

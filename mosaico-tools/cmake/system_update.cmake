@@ -4,29 +4,6 @@
 # Recovery bootloader is intentionally not part of normal application updates.
 # It is installed and repaired only by `mosaico.py recover`.
 
-# The product's test partition is excluded from IDF's normal application
-# selection. Its matching bootloader is built by esp_mosaico_app_recovery.
-# Verify both labels and subtypes before enabling native flash/app-flash.
-idf_build_get_property(mosaico_native_python PYTHON)
-execute_process(COMMAND "${mosaico_native_python}"
-    "${CMAKE_CURRENT_LIST_DIR}/../tools/validate_native_layout.py"
-    "${PROJECT_SOURCE_DIR}/partitions.csv"
-    RESULT_VARIABLE mosaico_native_layout_result
-    ERROR_VARIABLE mosaico_native_layout_error)
-if(NOT mosaico_native_layout_result EQUAL 0)
-    message(FATAL_ERROR "${mosaico_native_layout_error}")
-endif()
-partition_table_get_partition_info(mosaico_native_application
-    "--partition-type app --partition-subtype ota_0" "name")
-partition_table_get_partition_info(mosaico_native_recovery
-    "--partition-type app --partition-subtype test" "name")
-partition_table_get_partition_info(mosaico_native_factory
-    "--partition-type app --partition-subtype factory" "offset")
-if(NOT mosaico_native_application STREQUAL "main_app" OR
-   NOT mosaico_native_recovery STREQUAL "vibe_mode" OR mosaico_native_factory)
-    message(FATAL_ERROR "Native Mosaico flashing requires the 0.2 test/main_app layout")
-endif()
-
 set(system_update_preparer
     "${CMAKE_CURRENT_LIST_DIR}/../tools/prepare_system_update.py")
 set(system_update_partition_csv "${PROJECT_SOURCE_DIR}/partitions.csv")

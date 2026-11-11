@@ -25,7 +25,7 @@ static iris_usb_download_sequence_t s_download_sequence;
 static void usb_download_restart(void *arg)
 {
     (void)arg;
-    if (atomic_load(&s_download_requested)) esp_restart();
+    if (atomic_load(&s_download_requested)) (void)esp_iris_restart_now();
 }
 
 static void usb_download_cancel(void)
@@ -460,6 +460,7 @@ static int usb_write(iris_runtime_t *runtime, iris_transport_state_t *state,
     if (!usb_io_snapshot(runtime, state, &generation)) return -ENOTCONN;
     const unsigned itf = interface_for(runtime);
     const size_t queued = tinyusb_cdcacm_write_queue(itf, buffer, length);
+    if (!usb_io_snapshot(runtime, state, &after) || after != generation) return -ENOTCONN;
     if (queued > 0) (void)tinyusb_cdcacm_write_flush(itf, 0);
     if (!usb_io_snapshot(runtime, state, &after) || after != generation) return -ENOTCONN;
     return (int)queued;

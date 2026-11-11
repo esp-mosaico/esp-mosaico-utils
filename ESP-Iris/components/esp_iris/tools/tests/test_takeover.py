@@ -30,7 +30,8 @@ async def gateways(tmp_path):
         return link
 
     try:
-        with patch.object(TcpLink, "open", side_effect=open_link):
+        with patch.object(TcpLink, "open", side_effect=open_link), \
+                patch("iris_gateway.device_selection.discover_iris_usb_devices", return_value=[]):
             for name in ("owner", "receiver", "contender"):
                 reg = registry(tmp_path / "registry", name)
                 store = GatewayStore(tmp_path / name)
@@ -302,4 +303,184 @@ def test_reconcile_takeover_requires_dead_participants_and_restores_ownership(tm
             await hub.close()
             reg.close(clean=True)
             store.close()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("selector", [{"device_id": D}, {"endpoint": E},
+                                       {"endpoint": "tcp:other-interface:19772"},
+                                       {"device_id": D, "endpoint": "tcp:other-interface:19772"}])
+def test_acquire_automatically_hands_off_idle_owner_without_grace_delay(tmp_path, selector):
+    async def scenario():
+        async with gateways(tmp_path) as (projects, clients, opened):
+            owner, receiver, _ = projects
+            assert owner.clients.snapshot(owner.keepalive_reasons())["idle_remaining_seconds"] > 0
+            response = await clients[1].post("/v2/project/acquire", json=selector)
+            result = await response.json()
+            assert response.status == 200, result
+            assert result["device"]["device_id"] == D
+            assert result["device"]["endpoint"] == selector.get("endpoint", E)
+            assert receiver.registry.claim("device:" + D)["owner"] == "receiver"
+            assert opened[0].closed and not owner.closing
+            assert not owner.hub.list_devices()
+            # An immediate switch back works while both Gateway processes live.
+            response = await clients[0].post("/v2/project/acquire", json={"endpoint": E})
+            assert response.status == 200, await response.text()
+            assert owner.registry.claim("device:" + D)["owner"] == "owner"
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("blocker", ["client", "operation", "worker", "job", "mirror", "request", "stream"])
+def test_automatic_handoff_retains_active_owner(tmp_path, blocker):
+    async def scenario():
+        async with gateways(tmp_path) as (projects, clients, opened):
+            owner, receiver, _ = projects
+            gate = asyncio.Event()
+            if blocker == "client":
+                owner.clients.register({"kind": "workbench"}, connected=True)
+            elif blocker == "operation":
+                await owner.service.operations.submit(D, Actor("local", "test"), "firmware.ota", {}, gate.wait)
+                await until(lambda: bool(owner.service.operations.queue_state(D)["running"]))
+            elif blocker == "job":
+                owner.observe({"kind": "job", "device_id": D, "job_id": 7, "job_state": "running"})
+            elif blocker == "mirror":
+                owner.hub._mirror_states[D, 3] = {}
+            elif blocker == "request":
+                owner.active[D] += 1
+            elif blocker == "stream":
+                owner.streams += 1
+            workers = [{"resources": [D], "operation_id": "external"}] if blocker == "worker" else []
+            try:
+                with patch("iris_gateway.project_gateway.active_workers", return_value=workers):
+                    response = await clients[1].post("/v2/project/acquire", json={"endpoint": E})
+                result = await response.json()
+                assert response.status == 409, result
+                cause = result["error"]["details"]["cause"]
+                assert cause["code"] == "owner_active"
+                assert cause["details"]["owner"]["session_id"] == "owner"
+                assert owner.registry.claim("device:" + D)["owner"] == "owner"
+                assert not opened[0].closed and not owner.blocked
+                assert not receiver.hub.list_devices()
+            finally:
+                gate.set()
+                owner.active.clear()
+                owner.streams = 0
+                await until(lambda: not owner.service.operations._pending)
+    asyncio.run(scenario())
+
+
+def test_automatic_handoff_rechecks_client_registered_after_peer_status(tmp_path):
+    async def scenario():
+        from iris_gateway.takeover import peer_state
+        async with gateways(tmp_path) as (projects, clients, opened):
+            owner = projects[0]
+            async def register_after_status(client, session):
+                state = await peer_state(client, session)
+                if session["session_id"] == "owner":
+                    owner.clients.register({"kind": "cli"}, connected=True)
+                return state
+            with patch("iris_gateway.takeover.peer_state", side_effect=register_after_status):
+                response = await clients[1].post("/v2/project/acquire", json={"endpoint": E})
+            assert response.status == 409, await response.text()
+            assert owner.registry.claim("device:" + D)["state"] == "owned"
+            assert not opened[0].closed
+    asyncio.run(scenario())
+
+
+def test_failed_handoff_identity_keeps_all_endpoints_reserved(tmp_path):
+    async def scenario():
+        async with gateways(tmp_path) as (projects, clients, _):
+            _, receiver, _ = projects
+            endpoint = "tcp:new-interface:19772"
+            with patch.object(receiver.hub, "connect_owned", side_effect=ConnectionError("device rebooting")):
+                response = await clients[1].post("/v2/project/acquire", json={"device_id": D, "endpoint": endpoint})
+            assert response.status != 200
+            claim = receiver.registry.claim(endpoint)
+            assert claim["state"] == "accepting" and claim["owner"] == "receiver"
+            transfer = receiver.registry.transfer(claim["transfer_id"])
+            assert endpoint in {item["resource"] for item in transfer["metadata"]["endpoints"]}
+            assert transfer["metadata"]["preferred_endpoint"]["resource"] == endpoint
+            response = await clients[2].post("/v2/project/acquire", json={"endpoint": endpoint})
+            assert response.status == 409
+            response = await clients[1].post("/v2/project/takeovers/" + claim["transfer_id"] + "/resume", json={})
+            assert response.status == 200, await response.text()
+            assert receiver.hub.list_devices()[0]["endpoint"] == endpoint
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("busy", [False, True])
+def test_explicit_owned_endpoint_switch_stops_old_supervisor_and_protects_work(tmp_path, busy):
+    async def scenario():
+        async with gateways(tmp_path) as (projects, clients, opened):
+            owner = projects[0]
+            endpoint = "tcp:alternate-control:19772"
+            owner.registry.acquire(endpoint, {"endpoint": endpoint})
+            owner.registry.bind(endpoint, D)
+            if busy:
+                owner.active[D] += 1
+            try:
+                response = await clients[0].post("/v2/project/acquire", json={"device_id": D, "endpoint": endpoint})
+                assert response.status == (409 if busy else 200), await response.text()
+                if busy:
+                    assert not opened[0].closed
+                    assert owner.hub.list_devices()[0]["endpoint"] == E
+                else:
+                    assert opened[0].closed
+                    assert owner.hub.list_devices()[0]["endpoint"] == endpoint
+                    assert E not in owner.hub._endpoint_tasks
+                    response = await clients[0].post("/v2/project/acquire", json={"endpoint": E})
+                    assert response.status == 200, await response.text()
+                    assert owner.hub.list_devices()[0]["endpoint"] == E
+                    assert opened[1].closed
+            finally:
+                owner.active.clear()
+    asyncio.run(scenario())
+
+
+def test_known_interface_handoff_releases_old_control_before_opening_new_port(tmp_path):
+    async def scenario():
+        async with gateways(tmp_path) as (projects, clients, opened):
+            owner, receiver, _ = projects
+            endpoint = "tcp:known-interface:19772"
+            claim = owner.registry.acquire(endpoint, {"endpoint": endpoint})
+            owner.registry.bind(endpoint, D)
+            owner.registry.release_attempt(endpoint, claim["generation"], remove_device=False)
+            assert owner.registry.claim(endpoint) is None
+            original_connect = receiver.hub.connect_owned
+            async def connect_after_release(*args, **kwargs):
+                assert opened[0].closed, "firmware cannot answer a second control interface yet"
+                await original_connect(*args, **kwargs)
+            with patch.object(receiver.hub, "connect_owned", side_effect=connect_after_release):
+                response = await clients[1].post("/v2/project/acquire", json={"endpoint": endpoint})
+            assert response.status == 200, await response.text()
+            assert receiver.hub.list_devices()[0]["endpoint"] == endpoint
+    asyncio.run(scenario())
+
+
+def test_device_id_handoff_keeps_current_interface_instead_of_first_historical_claim(tmp_path):
+    async def scenario():
+        async with gateways(tmp_path) as (projects, clients, opened):
+            endpoint = "tcp:currently-selected:19772"
+            response = await clients[0].post("/v2/project/acquire", json={"device_id": D, "endpoint": endpoint})
+            assert response.status == 200, await response.text()
+            response = await clients[1].post("/v2/project/acquire", json={"device_id": D})
+            assert response.status == 200, await response.text()
+            assert projects[1].hub.list_devices()[0]["endpoint"] == endpoint
+            assert opened[0].closed and opened[1].closed
+    asyncio.run(scenario())
+
+
+def test_automatic_handoff_requires_owner_idle_capability(tmp_path):
+    async def scenario():
+        async with gateways(tmp_path) as (projects, clients, opened):
+            owner = projects[0]
+            snapshot = owner.snapshot
+            def old_snapshot(**kwargs):
+                result = snapshot(**kwargs)
+                result["capabilities"] = ["device-takeover/v1"]
+                return result
+            with patch.object(owner, "snapshot", side_effect=old_snapshot):
+                response = await clients[1].post("/v2/project/acquire", json={"endpoint": E})
+            assert response.status == 409
+            assert owner.registry.claim("device:" + D)["owner"] == "owner"
+            assert not opened[0].closed
     asyncio.run(scenario())

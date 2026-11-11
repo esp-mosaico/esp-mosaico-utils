@@ -20,16 +20,22 @@ from .host import state_root
 DEFAULT_SERVER = "https://mosaico.ai"
 
 
+def contains_token(value: Any, token: Any) -> bool:
+    """Recognize the active bearer secret in plain or URL-encoded response text."""
+    return (isinstance(value, str) and isinstance(token, str) and bool(token)
+            and (token in value or token in urllib.parse.unquote(value)))
+
+
 class PlatformError(OperationError):
     category = "platform_error"
 
-    def __init__(self, code: str, status: int = 0, request_id: str = "") -> None:
+    def __init__(self, code: str, status: int = 0, request_id: str = "", *, details: Any = None) -> None:
         # Server messages and transport exceptions may contain credentials/URLs.
         super().__init__(
             "Mosaico Ideas request failed: "
             + code
             + (" (request_id: " + request_id + ")" if request_id else ""),
-            details={"code": code, "http_status": status, "request_id": request_id},
+            details={**(details or {}), "code": code, "http_status": status, "request_id": request_id},
         )
         self.code = code
         self.status = status

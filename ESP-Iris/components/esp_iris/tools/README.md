@@ -21,6 +21,10 @@ and perform reserved, idempotent device transfers. Shared project Gateways use i
 CLI clients renew while their command runs, each foreground client retains its own
 client, and each Web workbench event connection retains a client. With no
 clients and no active work, the service shuts down after 10 idle seconds.
+An explicit acquisition by another project can hand off an idle owner's device
+during that grace period, without waiting for process shutdown. The owner checks
+its client leases and work again before reserving the transfer; active clients,
+writes, RPCs, jobs and streams prevent automatic handoff.
 HTTP status queries do not retain clients; there is no stop endpoint. The
 owner-pipe lifecycle is available for a directly supervised process. Each project
 keeps separate records; API/capability compatibility governs reuse. Exact source matching is optional.
@@ -37,11 +41,11 @@ connection behavior and do not participate in project ownership coordination.
 Set one path for the rest of this guide:
 
 ```bash
-# Source checkout
-ESP_IRIS_COMPONENT_DIR=components/esp_iris
+# From the esp-mosaico-utils repository root
+ESP_IRIS_COMPONENT_DIR=ESP-Iris/components/esp_iris
 
 # Component Manager installation
-# ESP_IRIS_COMPONENT_DIR=managed_components/lisir233__esp_iris
+# ESP_IRIS_COMPONENT_DIR=managed_components/espressif__esp_iris
 ```
 
 PowerShell users can set the equivalent `$env:ESP_IRIS_COMPONENT_DIR` value and
@@ -62,7 +66,7 @@ markers make pip select the validated packages for the active interpreter
 (including the Python 3.8-compatible aiohttp and zeroconf versions). This
 Gateway interpreter is independent of the interpreter required by ESP-IDF.
 
-This checkout includes a prebuilt Workbench in `tools/frontend/dist`, which
+The component includes a prebuilt Workbench in `tools/frontend/dist`, which
 the Gateway serves directly. Node.js and npm are not required to open it.
 The component file rules retain this distribution and exclude `node_modules`.
 To rebuild after changing frontend source or its dependency lock:
@@ -642,11 +646,29 @@ See the [component README](../README.md), [Chinese README](../README_zh.md), and
 Use `iris_gateway.client` (API major 1) for local project coordination, passive
 registry snapshots and terminal operation evidence. Its standard-library-only
 API owns state layout and schema checks. Consumer products must not import
-`link`, `ownership` or `store` internals. See
-[component boundaries](../../../../docs/component-boundaries.md) for compatibility,
-source fingerprints, shared lifecycle and product Recovery preconditions.
+`link`, `ownership` or `store` internals.
 
 ### Receiver-initiated device handoff
+
+`/v2/project/acquire` automatically requests an idle handoff from a live local
+owner supporting `idle-device-handoff/v1`. It preserves the selected endpoint
+in the durable reservation and validates Device ID there before completing.
+Previously verified endpoint identities are selection hints; they never replace
+the receiving HELLO. Failed validation retains the reservation and takeover ID
+for inspection or resume. Active owners and orphaned claims are not stolen.
+
+Explicitly selecting another known endpoint of an owned device first checks
+for active work and stops the previous supervisors. On firmware advertising
+`SESSION_REOPEN`, an authenticated `NEW_SESSION` returns the old console to
+negotiation; leaving its new HELLO unanswered lets the firmware's bounded claim
+expire even when UART or Serial/JTAG does not detect host port closure. No reset
+or wire change is required. Firmware without that capability still needs its
+transport to report disconnect before a different control interface can bind.
+
+Raw console capture can outlive an Iris session. Two unanswered clock probes
+without other protocol traffic invalidate an idle console binding while keeping
+its reader open. A verified new Boot ID retires the previous boot's bindings and
+fails outstanding requests; queued mutations never carry into a new binding.
 
 `POST /v2/project/takeovers` runs on the receiving project Gateway. Select exactly
 one `device_id` or `endpoint`; optionally pass a UUID `takeover_id`, `force` and

@@ -288,6 +288,7 @@ esp_err_t iris_queue_error(iris_runtime_t *runtime, uint32_t request_id,
                            esp_err_t code, uint8_t channel, uint8_t type);
 
 esp_err_t iris_services_init(iris_runtime_t *runtime);
+bool iris_services_restart_claimed(void);
 void iris_services_deinit(iris_runtime_t *runtime);
 void iris_services_session_begin(iris_runtime_t *runtime);
 void iris_services_session_end(iris_runtime_t *runtime);

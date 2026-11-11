@@ -41,7 +41,7 @@ class HostOperations:
             return existing
         spec = consume_request(request_id)
         action = spec.get("action")
-        if action not in {"host.recovery", "host.probe"}:
+        if action not in {"host.recovery", "host.probe", "host.flash"}:
             raise ValueError("unsupported host operation")
         commands = spec.get("commands")
         if not isinstance(commands, list) or not commands:
@@ -56,7 +56,9 @@ class HostOperations:
             raise ValueError("timeout must be between zero and 3600 seconds")
         hub = service.device_hub
         device_id = spec.get("device_id")
-        if device_id:
+        if action == "host.flash" and spec.get("endpoint"):
+            identifier = str(spec["endpoint"])
+        elif device_id:
             device_id = service.resolve_device(device_id)
             target = hub.get(device_id)
             identifier = target.link.endpoint
@@ -65,6 +67,16 @@ class HostOperations:
             if not identifier:
                 raise ValueError("device_id or endpoint is required")
         primary = hub.host_endpoint(identifier)
+        if action == "host.flash":
+            if device_id and primary.get("device_id") not in (None, device_id):
+                raise ValueError("flash endpoint belongs to a different device")
+            if spec.get("write_endpoint"):
+                raise ValueError("native flash uses one UART or USB Serial/JTAG endpoint")
+            hub.configure_host_console(primary["endpoint"], baudrate=spec.get("baudrate", 115200), validate_only=True)
+            if spec.get("flash_target") not in {"flash", "app-flash"}:
+                raise ValueError("invalid native flash target")
+            if not 0 <= float(spec.get("reconnect_timeout", 10)) <= 60:
+                raise ValueError("invalid reconnect timeout")
         endpoints = [primary]
         if spec.get("write_endpoint"):
             writer = hub.host_endpoint(spec["write_endpoint"])
@@ -77,6 +89,8 @@ class HostOperations:
         else:
             writer = primary
         device_id = device_id or primary.get("device_id")
+        if action == "host.flash":
+            spec["expected_device_id"] = device_id
         if action == "host.recovery":
             mac = spec.get("expected_hardware_mac")
             if not mac and not device_id:
@@ -115,6 +129,7 @@ class HostOperations:
                   "expected_hardware_mac": spec.get("expected_hardware_mac"),
                   "expected_device_id": spec.get("expected_device_id"),
                   "expected_image": spec.get("expected_image"),
+                  "flash_target": spec.get("flash_target"), "images": spec.get("images"),
                   "request_sha256": hashlib.sha256(json.dumps(spec, sort_keys=True).encode()).hexdigest()}
         operation, _ = await service.operations.submit(
             key, actor, action, params,
@@ -130,7 +145,14 @@ class HostOperations:
         directory.mkdir(parents=True, exist_ok=True)
         evidence = {}
         await service.operations.progress(operation_id, stage="preserving_evidence", progress_permille=0)
-        if device_id:
+        if device_id and spec["action"] == "host.flash":
+            # A crashed/unresponsive application must not prevent hardware ROM
+            # entry. Snapshot cached identity only; the native tool owns reset.
+            before = hub.device_snapshot(device_id)
+            if before:
+                evidence["device_before"] = before
+                service.store.remember_device(before)
+        elif device_id:
             await stop_session_work(service, device_id, timeout)
             before = await hub.status(device_id)
             if before.get("device_id") != device_id or not before.get("boot_id"):
@@ -151,6 +173,10 @@ class HostOperations:
                 detached.append(await hub.detach_for_host(endpoint["endpoint"]))
                 if service.project is not None and spec.get("expected_device_id"):
                     service.project.registry.bind(endpoint["endpoint"], spec["expected_device_id"], verified=False)
+            if spec["action"] == "host.flash":
+                # Change console configuration only after admission and detach,
+                # never while another operation still owns this live endpoint.
+                hub.configure_host_console(endpoints[0]["endpoint"], baudrate=spec.get("baudrate", 115200))
             for endpoint in detached:
                 hub.yield_host_lock(endpoint["endpoint"])
             await service.operations.progress(operation_id, stage="transferring", progress_permille=100)
@@ -174,13 +200,20 @@ class HostOperations:
             process.stdin.close()
             # Cancellation of this coroutine never signals the independent
             # worker. Its physical locks protect any still-running writer.
-            await process.wait()
+            if spec["action"] == "host.flash":
+                await self.wait_writer(process, operation_id, directory / "output.log")
+            else:
+                await process.wait()
             writer_finished = True
             result_path = directory / "result.json"
             if not result_path.is_file():
                 raise OperationOutcomeUnknown("host worker exited without a result; inspect its raw log")
             result = json.loads(result_path.read_text(encoding="utf-8"))
             if result.get("returncode"):
+                if spec["action"] == "host.flash":
+                    await service.operations.progress(operation_id, stage="transferring", progress_permille=900,
+                                                      native_returncode=result["returncode"],
+                                                      log_path=str(directory / "output.log"))
                 raise RuntimeError(result.get("error", "host operation failed"))
             if result.get("returncode") != 0:
                 raise OperationOutcomeUnknown("host worker did not record a completed write")
@@ -192,7 +225,18 @@ class HostOperations:
                 verification = await self.verify(spec["expected_device_id"],
                                                  evidence.get("device_before", {}), spec, timeout)
                 evidence["verification"] = verification
-            return {"evidence": evidence, "log_path": str(directory / "output.log"),
+            elif spec["action"] == "host.flash":
+                evidence["write_completed"] = True
+                await service.operations.progress(operation_id, stage="reconnecting", progress_permille=950,
+                                                  write_completed=True, log_path=str(directory / "output.log"))
+                # IDF owns reset policy, including --after no_reset.
+                try:
+                    await hub.resume_after_host(endpoints[0]["endpoint"], connect=True)
+                    evidence["connection"] = await self.observe_flash_connection(
+                        endpoints[0]["endpoint"], spec, evidence.get("device_before", {}))
+                except (OSError, LookupError, RuntimeError, ValueError, asyncio.TimeoutError) as error:
+                    evidence["connection"] = {"state": "unavailable", "error": str(error)}
+            return {"evidence": evidence, "endpoint": endpoints[0]["endpoint"], "log_path": str(directory / "output.log"),
                     "returncode": 0, "stdout": result.get("stdout", "")[-65536:]}
         except Exception as error:  # Delivery can fail after the process has started.
             delivery_uncertain = process is not None and not writer_finished
@@ -208,13 +252,63 @@ class HostOperations:
             raise
         finally:
             try:
-                (directory / "evidence.json").write_text(json.dumps(evidence), encoding="utf-8")
-            finally:
                 # Spawn failure is safe to unwind; a disconnected Gateway must not
                 # reconnect while its independent worker is still writing.
                 if process is None or writer_finished:
                     for endpoint in reversed(detached):
-                        await hub.resume_after_host(endpoint["endpoint"])
+                        try:
+                            await hub.resume_after_host(endpoint["endpoint"])
+                        except (OSError, LookupError, RuntimeError, ValueError) as error:
+                            if spec["action"] != "host.flash":
+                                raise
+                            evidence.setdefault("resume_errors", []).append(str(error))
+            finally:
+                (directory / "evidence.json").write_text(json.dumps(evidence), encoding="utf-8")
+
+    async def wait_writer(self, process: Any, operation_id: str, log_path: pathlib.Path) -> None:
+        """Expose bounded native output while leaving writer lifetime independent."""
+        pending = asyncio.ensure_future(process.wait())
+        offset = 0
+        try:
+            while True:
+                done, _ = await asyncio.wait({pending}, timeout=0.2)
+                if log_path.exists():
+                    with log_path.open("rb") as stream:
+                        stream.seek(offset)
+                        data = stream.read(16384)
+                        offset = stream.tell()
+                    if data:
+                        await self.service.operations.progress(
+                            operation_id, stage="transferring", progress_permille=100, log_path=str(log_path),
+                            output=data.decode("utf-8", errors="replace"), output_offset=offset)
+                if done:
+                    await pending
+                    return
+        finally:
+            # Cancelling the wait task does not signal the independent process.
+            if not pending.done():
+                pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+
+    async def observe_flash_connection(self, endpoint: str, spec: dict, before: dict) -> dict:
+        hub = self.service.device_hub
+        deadline = asyncio.get_running_loop().time() + float(spec.get("reconnect_timeout", 10))
+        last = {"state": "waiting", "endpoint": endpoint}
+        while True:
+            peers = {item.get("device_id") for item in hub.list_endpoints()
+                     if item["endpoint"] == endpoint and item.get("device_id")}
+            for status in hub.list_devices():
+                if status["device_id"] not in peers:
+                    continue
+                expected = spec.get("expected_device_id")
+                if expected and status["device_id"] != expected:
+                    return {"state": "identity_mismatch", "status": status}
+                if not status.get("boot_id") or str(status["boot_id"]) == str(before.get("boot_id")):
+                    continue
+                return {"state": "connected", "status": status}
+            if asyncio.get_running_loop().time() >= deadline:
+                return last
+            await asyncio.sleep(0.05)
 
     async def _connect(self, device_id: str, timeout: float) -> None:
         project = self.service.project
@@ -265,10 +359,10 @@ class HostOperations:
         operation = service.store.operation(operation_id)
         if operation is None:
             raise KeyError(operation_id)
-        if operation["action"] != "host.recovery" or operation["status"] not in {
-            "outcome_unknown", "interrupted", "failed"
-        }:
-            raise ValueError("only an unfinished recovery acceptance can be verified again")
+        flash = operation["action"] == "host.flash"
+        statuses = {"outcome_unknown", "interrupted", "failed"} | ({"succeeded"} if flash else set())
+        if operation["action"] not in {"host.recovery", "host.flash"} or operation["status"] not in statuses:
+            raise ValueError("only completed native flash or unfinished recovery acceptance can be verified again")
         params = operation["params"]
         target = params.get("expected_device_id")
         resources = {operation["device_id"], target} | {
@@ -283,7 +377,18 @@ class HostOperations:
         try:
             result = json.loads((directory / "result.json").read_text(encoding="utf-8"))
             before = json.loads((directory / "before.json").read_text(encoding="utf-8")).get("device_before", {})
-            if target and result.get("returncode") == 0:
+            if flash and result.get("returncode") == 0:
+                async def inspect_flash() -> dict:
+                    connection = await self.observe_flash_connection(
+                        params["endpoints"][0]["endpoint"], {**params, "reconnect_timeout": 0}, before)
+                    return {"write_completed": True, "connection": connection}
+
+                _, evidence, _ = await service.operations.execute(
+                    operation["device_id"], actor, "host.flash.verify", {"source_operation_id": operation_id},
+                    inspect_flash, exclusive_resources=tuple(sorted(item for item in resources if item)))
+                record.update(outcome="observed_success", reason="completed native write; Iris connection observed separately",
+                              evidence=evidence)
+            elif target and result.get("returncode") == 0:
                 # Share the operation resource exclusion with writes. This is a
                 # read-only acceptance attempt, never a replay of the request.
                 _, status, _ = await service.operations.execute(

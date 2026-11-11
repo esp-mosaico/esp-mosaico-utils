@@ -1,0 +1,11 @@
+cmake_minimum_required(VERSION 3.16)
+get_filename_component(MOSAICO_UTILS_ROOT "${CMAKE_CURRENT_LIST_DIR}/../../../.." ABSOLUTE)
+if(NOT SDKCONFIG)
+    set(SDKCONFIG "${CMAKE_BINARY_DIR}/sdkconfig")
+endif()
+set(SDKCONFIG_DEFAULTS "${CMAKE_CURRENT_LIST_DIR}/sdkconfig.defaults")
+list(APPEND EXTRA_COMPONENT_DIRS
+    "${MOSAICO_UTILS_ROOT}/mosaico-tools/components/esp_mosaico_app_recovery")
+include("${MOSAICO_UTILS_ROOT}/mosaico-tools/cmake/mosaico_idf_project.cmake")
+project(recovery_app VERSION 1.0.0)
+include("${MOSAICO_UTILS_ROOT}/mosaico-tools/cmake/system_update.cmake")

@@ -192,12 +192,15 @@ class EventWriter:
         batch: list[Any] = []
         try:
             store = GatewayStore(self.root)
-            store.db.execute("PRAGMA busy_timeout=100")
             interrupted = store.get_setting("events.writer_active", False)
+            # Startup writes durable state. Keep the store's normal lock wait
+            # until this marker commits; the short history budget would turn
+            # an ordinary concurrent transaction into a permanent worker exit.
             store.set_setting("events.writer_active", True)
             if interrupted:
                 self._deliver(store.record_batch([("system", {"kind": "history_gap",
                     "reason": "previous writer exited before flushing; buffered events may be missing"}, None)], []))
+            store.db.execute("PRAGMA busy_timeout=100")
             while True:
                 batch = self._take(store)
                 if not batch:

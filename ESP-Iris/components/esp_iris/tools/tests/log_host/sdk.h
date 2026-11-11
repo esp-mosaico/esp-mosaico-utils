@@ -7,6 +7,7 @@
 #include <string.h>
 #include <sys/types.h>
 
+#define CONFIG_ESP_IRIS_USB_EARLY_LOGS 1
 #define CONFIG_ESP_IRIS_LOG_RING_BYTES 2048
 #define IRIS_LOG_RECORD_HEADER_SIZE 12
 #define IRIS_LOG_RECORD_DATA_MAX 240

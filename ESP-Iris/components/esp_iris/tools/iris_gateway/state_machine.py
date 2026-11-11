@@ -90,6 +90,7 @@ class SessionState(StrEnum):
 
 class SessionEvent(StrEnum):
     AUTHENTICATED = "authenticated"
+    INVALIDATED = "invalidated"
     CLOSE = "close"
 
 
@@ -97,6 +98,7 @@ _SESSION_TRANSITIONS = {
     (SessionState.NEGOTIATING, SessionEvent.AUTHENTICATED): SessionState.READY,
     (SessionState.NEGOTIATING, SessionEvent.CLOSE): SessionState.CLOSED,
     (SessionState.READY, SessionEvent.CLOSE): SessionState.CLOSED,
+    (SessionState.READY, SessionEvent.INVALIDATED): SessionState.NEGOTIATING,
 }
 
 

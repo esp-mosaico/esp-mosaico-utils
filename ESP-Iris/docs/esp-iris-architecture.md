@@ -1,135 +1,121 @@
-# ESP-Iris architecture and engineering contract
+# ESP-Iris architecture
 
-ESP-Iris keeps device work bounded and moves durable control, observation and
-presentation to the PC. Dependencies flow downward only:
+ESP-Iris combines an ESP-IDF device component with a Python Gateway and Web
+Workbench. The device exposes bounded services; the host owns connection
+management, operation history, artifacts and presentation. Host tools require
+Python 3.10 or newer. The current wire and HTTP API major version is 2.
 
-```text
-React Workbench / source CLI
-          -> HTTP + WebSocket adapter
-          -> Gateway application service
-          -> GatewayHub protocol
-          -> IrisHub -> DeviceSession -> Link (USB/TCP)
-          == frozen ESP-Iris v1 wire contract ==
-          -> device transport -> runtime/session coordinator
-          -> RPC/jobs, media, OTA/auth services
-          -> product callbacks and recovery adapter
+## Runtime structure
+
+```mermaid
+flowchart TD
+    Clients[Workbench / CLI / Agent] --> Gateway[GatewayService: HTTP / WebSocket]
+    Gateway --> Hub[IrisHub]
+    Hub --> Session[DeviceSession / Link]
+    Session --> Device[Iris control and data services]
+    Device --> Product[Product backends]
+    Gateway --> Host[HostOperations]
+    Host --> Worker[Local host worker]
+    Worker --> Native[Native IDF / esptool commands]
+    Native --> ROM[ROM download interface]
+    Gateway --> Store[GatewayStore / EventWriter]
 ```
 
-## Ownership and dependency rules
+| Boundary | Responsibility |
+| --- | --- |
+| [GatewayService](../tools/iris_gateway/gateway.py) | HTTP authentication, request validation, operations and evidence; device services are accessed through `GatewayHub`. |
+| [IrisHub](../tools/iris_gateway/hub.py) | Discovery, reconnect, per-device link association and endpoint ownership. Project sessions add cross-process claims and handoff through `ProjectGateway` and `OwnershipRegistry`. |
+| [DeviceSession](../tools/iris_gateway/session.py) / [Link](../tools/iris_gateway/link.py) | Session handshake, request correlation, credits and clock synchronization above serial/TCP byte transport. |
+| [Device runtime](../src/esp_iris.c) | Transport and service lifecycle, bounded scheduling and dispatch to registered RPC, media, file and update backends. |
+| Product application | Network setup, service registration, partition layout, write authorization, boot policy and hardware-specific integration. |
 
-| Layer | Owns | Must not own |
-|---|---|---|
-| Frontend/CLI | Presentation and `/v1` clients | USB, protocol frames, SQLite |
-| HTTP adapter | Authentication middleware, validation, response mapping | Link/session state |
-| Gateway application | Operation workflows, mode and evidence policy | Serial/TCP implementation |
-| Hub | Discovery, reconnect and multi-device fan-out | HTTP or database schema |
-| Session | Wire handshake, request correlation, credit and time sync | Device discovery or UI policy |
-| Link | Bounded bytes over USB/TCP | Protocol semantics |
-| Device runtime | Lifecycle/session scheduling and prioritization | Product acceptance policy |
-| Device services | RPC/jobs, media, authentication and OTA mechanics | Product partition policy |
-| Product adapter | Acceptance, recovery metadata and product RPCs | Gateway/HTTP behavior |
+Gateway also supports `DemoHub` for hardware-free UI and API exercises. Demo
+behavior is not evidence of device or transport qualification.
 
-## System image mutation boundary
+## Console, data and identity
 
-System Inventory and System Update are deliberately separate registrations.
-Normal firmware may register only the read-only inventory provider, which
-reports hashes calculated from current protected Flash ranges and the last
-fixed-address sysmeta result. Recovery firmware registers the same provider
-plus the write backend. ESP-Iris advertises capabilities from those runtime
-registrations rather than merely from Kconfig.
+The standard ESP-IDF console remains available without Gateway. Monitor and
+Gateway must take turns owning a serial control endpoint. Ordinary reconnects
+attach without requesting a hardware reset; explicit reset and flash workflows
+have their own reset steps.
 
-The generic device service owns bounded framing, sequential offsets, streaming
-SHA-256, cancellation, status publication and retained-job integration. It
-does not parse a target offset as write authority and contains no raw-Flash
-endpoint. The product backend is the Flash-policy boundary: it validates image
-formats, protected ranges and descriptors, and defines staging and commit
-policy. Signature verification and pinned release keys are product capabilities,
-not guarantees of the generic interface. The current ESP-Mosaico backend accepts
-unsigned plans and stages protected images in PSRAM. Authenticated manifests,
-key provisioning and hardened network deployment remain planned security work;
-the current implementation must not be described as providing those guarantees.
+Control carries printable Iris records alongside console text. UART and USB
+Serial/JTAG support control and bounded snapshots. Application USB can provide
+separate console/data CDC interfaces; TCP uses separate control/data ports.
+Continuous media, file contents and Iris protocol firmware transfers use data.
+This restriction does not apply to native ROM flashing.
 
-The PC-side release builder creates an `.irisfw` with a canonical manifest and
-fixed-range `0xff` padding; authentication depends on the selected product policy.
-The Gateway checks the source layout, enters retained
-recovery, streams the plan, and accepts success only after a new healthy
-normal boot reports matching actual inventory, operation ID and application
-identity. Workbench and CLI are clients of that same `/v1` operation; neither
-has a device-protocol or Flash bypass.
+Control and data sessions handshake independently; data may connect first.
+Hub associates them only when Device ID, Boot ID and owner binding agree.
+Losing one link does not inherently close the other. Each link has its own
+Session ID. TCP pairing authenticates the sessions when enabled; USB discovery
+metadata alone is not proof of a device's protocol identity.
 
-The Gateway application depends on `GatewayHub`, not concrete `IrisHub` or
-`DemoHub` internals. Device lifecycle/session transitions and Gateway
-operation/session transitions are explicit state machines. Terminal operation
-states are immutable; a caller must use the original operation ID to observe a
-write whose outcome is not yet established.
+Current firmware derives Device ID from the factory eFuse Base MAC. Boot ID
+changes on reboot. Optional identity and firmware metadata must be checked
+before using it as update-acceptance evidence. Encoding and capability details
+belong to the [wire contract](../protocol/spec.md).
 
-## Contracts
+## Firmware write paths
 
-- `protocol/spec.md` and `protocol/golden_vectors.json` are the device/PC wire
-  contract. Existing v1 vectors are immutable.
-- `openapi_contract.py` is the executable HTTP contract.
-- `rpc_catalog.json` is the named product RPC contract.
-- Events use `esp-iris-event/v1`; metrics use `esp-iris-metrics/v1`.
-- SQLite uses ordered migrations and rejects a database newer than the running
-  Gateway.
+- **Iris OTA and System Update** use device services over the data link.
+  Read-only System Inventory and the System Update write backend are registered
+  separately. Generic code handles framing, bounds, hashes and transfer state;
+  the product backend authorizes ranges and implements staging and commit.
+- **Native flash and recovery** use [HostOperations](../tools/iris_gateway/host_operations.py)
+  and a separate [host worker](../tools/iris_gateway/host_worker.py). A local
+  caller prepares commands and build inputs, then submits a private request ID.
+  Gateway coordinates device/endpoint exclusion, releases the connection for
+  the worker and reacquires it afterwards. Native tools own Flash arguments and
+  writing; this path can operate without Iris firmware running on the device.
+  `host.flash` supports UART and USB Serial/JTAG and records write completion
+  separately from reconnect and startup-capture observations.
+- The [IDF extension](../idf_ext.py) provides application-USB handoff to ROM for
+  native `idf.py` flash/monitor workflows. It manages interface reservation and
+  re-enumeration while retaining IDF's flash targets; it is separate from Iris OTA.
 
-Any contract change requires a compatibility test. Additive fields must remain
-skippable. Reinterpreting an existing field requires a new negotiated version.
-The hardware-derived Device ID rollout and legacy-host behavior are documented
-in [device-identity-migration.md](device-identity-migration.md).
+The Gateway's [System Update bundle loader](../tools/iris_gateway/system_update.py)
+uses the following trust policy:
 
-## Test boundaries
+| Configured trust key | Accepted bundle |
+| --- | --- |
+| Public key supplied | Signed bundle whose signature verifies with that key; unsigned bundles are rejected. |
+| No public key | Unsigned bundle; signed bundles are rejected because no verification key is available. |
 
-Each module has isolated tests for its state and error behavior. The complete
-test pyramid is:
+Signed and unsigned bundles both undergo manifest and component-hash validation.
+Host acceptance of a bundle does not grant device write permission.
+Device-side signature enforcement, keys and unsigned-update policy belong to
+its registered backend.
 
-1. Host unit tests for C state/codec and Python/TypeScript modules.
-2. Cross-language golden-vector and HTTP/RPC contract tests.
-3. Fake-link/Gateway/SQLite/Workbench integration tests.
-4. ESP32-S31 build tests and Gateway-only HIL validation.
+## Operations and storage
 
-Fault tests cover malformed/fragmented frames, invalid state transitions,
-disconnects, interrupted operations and legacy/future database schemas. HIL
-must use `esp_iris.py ctl --json`; it must not open the device USB session
-directly.
+Gateway records operation identity and serializes conflicting device work.
+Retries with the same identity reuse the recorded operation; a different request
+using that identity conflicts. Disconnect or missing acceptance evidence can
+leave a write `outcome_unknown`; Gateway does not automatically replay it.
+Reconciliation appends observations without rewriting the original terminal
+record. Acceptance checks depend on the operation and its requested policy;
+a successful native writer exit alone does not establish a healthy Iris boot.
 
-## Observability
+[GatewayStore](../tools/iris_gateway/store.py) separates durable state and saved
+artifacts from bounded diagnostic history. `EventWriter` persists events on a
+dedicated thread and reports history gaps on loss. Project launches normally
+keep diagnostics in `.gateway/` and credentials/ownership in host-local storage;
+standalone launches use their configured state directory. Relocation is an
+offline operation, separate from supported in-place schema upgrades.
 
-Events correlate, when applicable, by `device_id`, `boot_id`, `session_id`,
-`operation_id`, `request_id`, `job_id`, `event_id` and firmware SHA. The
-Gateway `/v1/metrics` endpoint exports counters, gauges and duration
-distributions; `/v1/health` reports readiness and database schema version.
+## Contracts and verification
 
-Device STATUS remains the authority for bounded-device resource signals:
-invalid frames, dropped logs, link count, minimum stack headroom, maximum
-worker active time and internal heap use. Operation progress is the authority
-for OTA/recovery stage and duration. Crash evidence is independent from an OTA
-record unless direct evidence connects them.
+Use the [component guide](../README.md) and [host guide](../tools/README.md) for
+configuration and commands, the [OpenAPI definition](../tools/iris_gateway/openapi_contract.py)
+for HTTP behavior, and [golden vectors](../protocol/golden_vectors.json) for
+wire agreement. Event and metrics schema versions are independent of API major
+2. The [0.1 migration guide](../protocol/migration-0.2.md) describes the breaking
+transition; there is no 0.1 runtime adapter.
 
-## Resource budgets
-
-`components/esp_iris/resource_budgets.json` contains reviewable source,
-firmware and frontend limits. `tools/check_esp_iris_budgets.py` is run locally
-and in CI. Raising a limit requires an explanation in the change; generated
-build artifacts are required in the firmware CI job.
-
-## Change protocol
-
-1. Update the relevant contract or architecture decision first.
-2. Add or change module tests and fault cases.
-3. Run the commands in `.gitlab-ci.yml` and the host matrix in
-   `.github/workflows/host.yml`; neither a declared CI job nor an older HIL report
-   proves that the current revision passed. Run budget groups separately after
-   their artifacts exist; missing requested artifacts fail the check.
-4. Preserve BIN, ELF, map, sdkconfig and firmware hashes for HIL.
-5. For device validation, expose the Gateway Web workbench to the developer and
-   retain the same operation/event evidence used by the Agent.
-
-`tools/release_evidence.py --build <directory> --idf-path <idf> --output <json>`
-requires BIN, ELF, map and sdkconfig for each selected profile, records SHA-256
-and the Iris/IDF revisions, and reports a dirty checkout explicitly. It does not
-claim hardware validation. For ESP-Mosaico, run device validation through the
-product `mosaico.py` commands. Do not use the raw-flash fixture runner on a product
-device; controlled power-loss tests need a dedicated fixture and retained
-identity/partition policy. Additional SoC profiles are planned (IRIS-A01), not
-implicitly supported by the ESP32-S31 build matrix.
+Host tests, frontend tests, firmware builds and physical-device tests verify
+different boundaries. Build matrices live in [build_firmware.py](../tools/ci/build_firmware.py),
+size limits in [resource_budgets.json](../resource_budgets.json), and hardware
+fixture entry points in the [E2E guide](../tools/tests/e2e/README.md). Record
+source/SDK revisions with each result; test definitions and historical results
+do not establish qualification of the current revision.

@@ -1,0 +1,7 @@
+// SPDX-License-Identifier: Apache-2.0
+#include "mosaico_app_identity.h"
+
+const mosaico_app_identity_t mosaico_app_identity
+    __attribute__((used, section(".rodata_custom_desc"))) = {
+        MOSAICO_APP_ID_MAGIC, "@mosaico_project_id@", MOSAICO_APP_ID_END
+    };

@@ -1,0 +1,517 @@
+{
+  "schema": "esp-iris-native-flash-validation/v1",
+  "date": "2026-10-30",
+  "host_base_commit": "0e2c3102ba59d2ef3ed55b82fd772e936ef2a985",
+  "host_worktree_modified": true,
+  "device_operations_entrypoint": "consuming workspace mosaico.py",
+  "consuming_workspace": "test/iris-native-flash-20261030 (sibling of esp-mosaico-utils)",
+  "scope": "Public Iris prepare_native_flash API and Gateway host.flash, submitted by a consuming mosaico.py test adapter. Product-specific Mosaico Recovery/partition acceptance is not exercised on H2.",
+  "environment": {
+    "host": "Linux",
+    "idf": "v6.2-dev-2221-g7b9cc1ac79f-dirty",
+    "idf_python": "3.12",
+    "esptool": "5.3.1"
+  },
+  "device": {
+    "chip_target": "esp32h2",
+    "chip_revision": "v0.1",
+    "hardware_mac": "60:55:f9:f7:2e:60",
+    "device_id": "4553502d4952495301006055f9f72e60",
+    "physical_flash_bytes": 4194304
+  },
+  "host_source_sha256": {
+    "iris_gateway/native_flash.py": "ca2a3f3750348d08994e8edbfc2ab13c5750340bfedf0f43dcf5f523886801c9",
+    "iris_gateway/host_operations.py": "2b1d396bc0680c4a6dc586103f440e011a686978e6fad672ed7b3422fdbdb59d",
+    "iris_gateway/host_worker.py": "d0fb6f02299837ec02e8f699f1bc90e7e5d993bd6fdd71daa1d0e41c86269c6b",
+    "iris_gateway/hub.py": "41a7b6b6e72842f2d7c177521d7e1aafc7edfe38a27dc10e2e4348bd9dab48f7",
+    "iris_gateway/link.py": "f83af7425809fc6dc7fe64271591eb32eda5f7c6e8f30d97ebbb3b2e29c12ea1",
+    "iris_gateway/cli.py": "21617d698503ae37365b8a187be34ef0ca244659bb0bc781fcfcd29307184d16",
+    "iris_gateway/client.py": "99a6369b900e53eea3a7ee77269fcca4f4cd1c07a5b89f411541220620b1ea1f",
+    "iris_gateway/gateway.py": "771af94967dd36b9e8bcb92c81dd78e397d215481180021af59bcb7ccf618550",
+    "iris_gateway/operations.py": "4c9435adcd99b03a8dd7affc9c1b0bd386b57e7214db24945e5da25cab1bea94"
+  },
+  "transports": [
+    {
+      "transport": "UART",
+      "endpoint": "usb:location=1-7",
+      "console_baudrate": 115200,
+      "adapter": {
+        "vid": 4292,
+        "pid": 60000,
+        "name": "CP2102N"
+      },
+      "project_name": "iris_native_flash_h2",
+      "elf_sha256": "a75376f12e4e810d8c322fdba3001dc1b951da38b50fdc85e6cfb039c61e0c8a",
+      "operations": [
+        {
+          "scenario": "e2e-flash",
+          "operation_id": "7c0c75e6-193d-48a7-88ea-09ff79ef3b81",
+          "target": "flash",
+          "duration_seconds": 43.607,
+          "connection": "connected",
+          "boot_id": "9149980036294045782",
+          "rpc_echo_payload_bytes": [
+            0,
+            1,
+            32,
+            128,
+            512
+          ],
+          "logs_resumed": true,
+          "invalid_frames": 0,
+          "log_dropped_bytes": 0,
+          "native_no_changed_sectors": false
+        },
+        {
+          "scenario": "e2e-repeat",
+          "operation_id": "a83c3b67-e250-410a-a579-c7b30f72f059",
+          "target": "app-flash",
+          "duration_seconds": 21.572,
+          "connection": "connected",
+          "boot_id": "8848017080919311366",
+          "rpc_echo_payload_bytes": [
+            0,
+            1,
+            32,
+            128,
+            512
+          ],
+          "logs_resumed": true,
+          "invalid_frames": 0,
+          "log_dropped_bytes": 0,
+          "native_no_changed_sectors": true
+        },
+        {
+          "scenario": "e2e-repeat",
+          "operation_id": "42d5dc01-9f22-436c-9b8f-f82385cd85c6",
+          "target": "app-flash",
+          "duration_seconds": 16.219,
+          "connection": "connected",
+          "boot_id": "16076575470781683955",
+          "rpc_echo_payload_bytes": [
+            0,
+            1,
+            32,
+            128,
+            512
+          ],
+          "logs_resumed": true,
+          "invalid_frames": 0,
+          "log_dropped_bytes": 0,
+          "native_no_changed_sectors": true
+        },
+        {
+          "scenario": "e2e-repeat",
+          "operation_id": "f95b7faf-e7c0-4a5d-8995-8b6e969d8762",
+          "target": "app-flash",
+          "duration_seconds": 6.474,
+          "connection": "connected",
+          "boot_id": "6417980140754852031",
+          "rpc_echo_payload_bytes": [
+            0,
+            1,
+            32,
+            128,
+            512
+          ],
+          "logs_resumed": true,
+          "invalid_frames": 0,
+          "log_dropped_bytes": 0,
+          "native_no_changed_sectors": true
+        },
+        {
+          "scenario": "e2e-plain-flash",
+          "operation_id": "aa7fc11e-63bd-4f84-a54f-a6cdff2cf83a",
+          "target": "app-flash",
+          "write_completed": true,
+          "connection": "waiting",
+          "raw_logs_without_iris": true
+        }
+      ]
+    },
+    {
+      "transport": "USB Serial/JTAG",
+      "endpoint": "usb:location=1-8:1.0",
+      "console_baudrate": null,
+      "adapter": {
+        "vid": 12346,
+        "pid": 4097,
+        "name": "USB JTAG/serial debug unit"
+      },
+      "project_name": "iris_native_flash_h2_usj",
+      "elf_sha256": "48f791600c6ed665c730134c9f87e1ab87ba32305235a106d8a00f69c7989860",
+      "operations": [
+        {
+          "scenario": "e2e-usj-flash",
+          "operation_id": "65f1edce-335c-4a9f-afa5-386fa8db230d",
+          "target": "flash",
+          "duration_seconds": 31.307,
+          "connection": "connected",
+          "boot_id": "2211081070942253687",
+          "rpc_echo_payload_bytes": [
+            0,
+            1,
+            32,
+            128,
+            512
+          ],
+          "logs_resumed": true,
+          "invalid_frames": 0,
+          "log_dropped_bytes": 0,
+          "native_no_changed_sectors": false
+        },
+        {
+          "scenario": "e2e-usj-repeat",
+          "operation_id": "2f7fe0c6-7c4f-4ed8-b118-7472e2033953",
+          "target": "app-flash",
+          "duration_seconds": 13.086,
+          "connection": "connected",
+          "boot_id": "3877998974468820267",
+          "rpc_echo_payload_bytes": [
+            0,
+            1,
+            32,
+            128,
+            512
+          ],
+          "logs_resumed": true,
+          "invalid_frames": 0,
+          "log_dropped_bytes": 0,
+          "native_no_changed_sectors": true
+        },
+        {
+          "scenario": "e2e-usj-repeat",
+          "operation_id": "05bc9638-6bb6-44d2-8769-7925b7df064c",
+          "target": "app-flash",
+          "duration_seconds": 3.359,
+          "connection": "connected",
+          "boot_id": "1862178521803073838",
+          "rpc_echo_payload_bytes": [
+            0,
+            1,
+            32,
+            128,
+            512
+          ],
+          "logs_resumed": true,
+          "invalid_frames": 0,
+          "log_dropped_bytes": 0,
+          "native_no_changed_sectors": true
+        },
+        {
+          "scenario": "e2e-usj-repeat",
+          "operation_id": "90e9b27d-ef75-4a4a-8d21-49d07aff280a",
+          "target": "app-flash",
+          "duration_seconds": 3.287,
+          "connection": "connected",
+          "boot_id": "13550153342333482749",
+          "rpc_echo_payload_bytes": [
+            0,
+            1,
+            32,
+            128,
+            512
+          ],
+          "logs_resumed": true,
+          "invalid_frames": 0,
+          "log_dropped_bytes": 0,
+          "native_no_changed_sectors": true
+        },
+        {
+          "scenario": "e2e-usj-app-flash",
+          "operation_id": "be962123-ebe0-48ae-9387-b043173e0293",
+          "target": "app-flash",
+          "duration_seconds": 27.399,
+          "connection": "connected",
+          "boot_id": "2029581940003168430",
+          "rpc_echo_payload_bytes": [
+            0,
+            1,
+            32,
+            128,
+            512
+          ],
+          "logs_resumed": true,
+          "invalid_frames": 0,
+          "log_dropped_bytes": 0,
+          "native_no_changed_sectors": true
+        },
+        {
+          "scenario": "e2e-usj-plain-flash",
+          "operation_id": "dae97865-1124-410a-a67c-c87a7ce15716",
+          "target": "app-flash",
+          "write_completed": true,
+          "connection": "waiting",
+          "raw_logs_without_iris": true
+        }
+      ]
+    }
+  ],
+  "flash_operations_passed": 11,
+  "usb_serial_jtag_soak": {
+    "rpc_count": 100,
+    "rpc_payload_bytes": 128,
+    "stable_boot_id": "13550153342333482749",
+    "stable_session_id": 1967533860,
+    "invalid_frames": 0,
+    "log_dropped_bytes": 0
+  },
+  "reconciliation": {
+    "operation_id": "90e9b27d-ef75-4a4a-8d21-49d07aff280a",
+    "reconciliation_id": "bd3c9f1a-e533-44c3-9593-56313b88bc46",
+    "outcome": "observed_success",
+    "replayed": false,
+    "boot_id_unchanged": true
+  },
+  "preservation": {
+    "nvs_raw_identical": false,
+    "nvs_changed_keys": [
+      [
+        1,
+        "crash_loop",
+        "blob_data",
+        0
+      ],
+      [
+        1,
+        "crash_loop",
+        "blob_data",
+        128
+      ],
+      [
+        1,
+        "crash_loop",
+        "blob_index",
+        255
+      ]
+    ],
+    "other_active_nvs_keys_unchanged": true,
+    "reason": "Iris records boot/crash_loop state during ordinary application startup.",
+    "regions": [
+      {
+        "name": "partition_table",
+        "offset": 32768,
+        "size": 4096,
+        "unchanged": true,
+        "sha256": "0d4cbbd15c6909e8736684e2c8d04dedc1b617c80f2385e50ec8b36c19a917d7"
+      },
+      {
+        "name": "phy_init",
+        "offset": 61440,
+        "size": 4096,
+        "unchanged": true,
+        "sha256": "5bbcc34f3201dc86997796413637ef9ad2c9c985aafce3b53064fdacfc03ad6e"
+      },
+      {
+        "name": "storage",
+        "offset": 1114112,
+        "size": 458752,
+        "unchanged": true,
+        "sha256": "da4449303183baec69b0a0c8a711c1804690659299c00b75b44c64535e55bc6c"
+      },
+      {
+        "name": "atomic",
+        "offset": 1572864,
+        "size": 524288,
+        "unchanged": true,
+        "sha256": "3bd0ef160a9eeab0164330b7ffbc550edab475cb5ec3a786c1515df05259e504"
+      },
+      {
+        "name": "unused_upper_flash",
+        "offset": 2097152,
+        "size": 2097152,
+        "unchanged": true,
+        "sha256": "4bda3a28f4ffe603c0ec1258c0034d65a1a0d35ab7bd523a834608adabf03cc5"
+      }
+    ],
+    "whole_chip_erase_used": false,
+    "native_write_offsets": [
+      0,
+      32768,
+      65536
+    ],
+    "original_backup": {
+      "file": "original-flash.bin",
+      "size": 4194304,
+      "sha256": "41377666fcff683df7e5b02f26561715521760a11d922274f1cc985c2e059dfb"
+    },
+    "final_readback": {
+      "file": "after-usj-flash.bin",
+      "sha256": "ee0945d85f6eb3c50dbc63a6d9311d6bb62a0670a9a9a0f96a74e6aea05b9a6b"
+    }
+  },
+  "final_state": {
+    "device_id": "4553502d4952495301006055f9f72e60",
+    "chip_target": "esp32h2",
+    "project_name": "iris_native_flash_h2_usj",
+    "firmware_sha256": "48f791600c6ed665c730134c9f87e1ab87ba32305235a106d8a00f69c7989860",
+    "transport": 3,
+    "rpc_ok": true
+  },
+  "fixture_source_sha256": {
+    "projects/esp32h2/CMakeLists.txt": "d5dd2d457621f3618a5c59d41359dc9e24f6bf3865948d70c79aa611e67ba5e9",
+    "projects/esp32h2/main/CMakeLists.txt": "2a242ab9846015e31435f32d7e3177622d3147da265755442f9ecabdff66961f",
+    "projects/esp32h2/main/main.c": "879d32510f51c25fc126ec2446a6cdad1f7f28442211e3e4ca544dbd169a9b1c",
+    "projects/esp32h2/partitions.csv": "d902563c2a2a862b0658c9392218dcd45f2fa39a22487d1c3ad555a6430730e7",
+    "projects/esp32h2/sdkconfig.defaults": "1cb72fd34cbc2a63cd4970a20c854db865d72af0952cb488986b94cbcccb6438",
+    "projects/plain/CMakeLists.txt": "b80f468df41d776b7350d338daf753e49d6d329a18cb031d5edade196697e336",
+    "projects/plain/main/CMakeLists.txt": "b4a327ea58686c86faae1c3fd02fc715a9be560380c78da7f1de38c8e3a813f7",
+    "projects/plain/main/main.c": "b924007211f4bfddb17cfeca0db285ac2756dfd3aa1a438e0012c9e9d042dac5",
+    "projects/plain/partitions.csv": "d902563c2a2a862b0658c9392218dcd45f2fa39a22487d1c3ad555a6430730e7",
+    "projects/plain/sdkconfig.defaults": "f32e47b663cc6faa10064b167ba2bf5a854c87b2ad0ac8237c1bf7439d24509f",
+    "projects/plain-usj/CMakeLists.txt": "22961c34df59f53abded57be1307209a59b96dcd1961a0a47a31f54db0e23b3c",
+    "projects/plain-usj/main/CMakeLists.txt": "b4a327ea58686c86faae1c3fd02fc715a9be560380c78da7f1de38c8e3a813f7",
+    "projects/plain-usj/main/main.c": "f1a8d3bfb4dfb393a93f0dc69607b996a36da2754939a2a2e19685580507ca66",
+    "projects/plain-usj/partitions.csv": "d902563c2a2a862b0658c9392218dcd45f2fa39a22487d1c3ad555a6430730e7",
+    "projects/plain-usj/sdkconfig.defaults": "38c007a05572716c823c3c3b15abb038ab16472817befefb0af4cb976365954d",
+    "projects/usj/CMakeLists.txt": "9bf291e0590ad930086c30a20fb76c2e999393e1371708f8c76ec02ebca92d5b",
+    "projects/usj/main/CMakeLists.txt": "2a242ab9846015e31435f32d7e3177622d3147da265755442f9ecabdff66961f",
+    "projects/usj/main/main.c": "468bd2074b59582876dfc0f928b8e21ab93501838dd8a7c6e3fb6a63357f8bb7",
+    "projects/usj/partitions.csv": "d902563c2a2a862b0658c9392218dcd45f2fa39a22487d1c3ad555a6430730e7",
+    "projects/usj/sdkconfig.defaults": "e9f694bb08a52f6ee2afabb11ee3bea24c1c1cb6752a10f37e3a54f12c1df051"
+  },
+  "launcher_sha256": {
+    "mosaico.py": "8b660f5624f1bcccbac8b4a27fd096f2790f262872b17fb098f5513a0dcdd95a",
+    "validation.py": "7d911af014ceac9fb0cec67824120be73860d90582d9f15b169b0ede73d86f17"
+  },
+  "raw_evidence": [
+    {
+      "file": "e2e-backup.json",
+      "sha256": "297a30936d8630f081ea8bd74da6adc6bdc250be3b0d54f16ad7a283ee4e4911"
+    },
+    {
+      "file": "e2e-build-plain-usj.json",
+      "sha256": "84f9e81fe40eb55f30728fd9792131ca0e6287b3c255111f6893896906ba6d38"
+    },
+    {
+      "file": "e2e-build-plain.json",
+      "sha256": "808c4474c7bfc7e4f0ffaa3b96602d8340b86e021d1a5187f8bedcd91764b89a"
+    },
+    {
+      "file": "e2e-build-usj.json",
+      "sha256": "44631b6c8e311e9e730ee824b7b7039b953b48f9045ab0626bef9f7857f1b251"
+    },
+    {
+      "file": "e2e-build.json",
+      "sha256": "3f0372c5aa8178ea16806bbcc7b5eb09564adda85841f55e1e70a6ead9639a59"
+    },
+    {
+      "file": "e2e-flash-0-events.json",
+      "sha256": "107fdf13c4b8284e681b5d3c0fd47bbbcc776ce4470a35e13f60e775147d3e4b"
+    },
+    {
+      "file": "e2e-flash.json",
+      "sha256": "053f1896454e35030a25b0bb3d54b50c390c43a6ff85883ea31467171b5a09e9"
+    },
+    {
+      "file": "e2e-plain-flash.json",
+      "sha256": "2deca2fba18af81727b98b78908a0557835fbf054679cf8fe2a5ca2de2bfb7ce"
+    },
+    {
+      "file": "e2e-probe.json",
+      "sha256": "5cdaba52a09afa22eb1ed43c7bbba5594bc17a16d980b09cedde48d179a6cfb9"
+    },
+    {
+      "file": "e2e-readback.json",
+      "sha256": "ecd4d170ba0b887aa8d9cec75e897fd8e0b95c8bcafce87257d75dde061c9fd9"
+    },
+    {
+      "file": "e2e-repeat-0-events.json",
+      "sha256": "6d3302b5d65e9f5e25e275a9ab892c15ab4d505caee9abe9cd8e1baed092428a"
+    },
+    {
+      "file": "e2e-repeat-1-events.json",
+      "sha256": "2b2cc0a4be2883bcb0200cae5e6ad35da095f80fce67c1d45b468fa1461eb398"
+    },
+    {
+      "file": "e2e-repeat-2-events.json",
+      "sha256": "572f656ed19536bf4e888402514106f4bf93ca69404c0eac8bcc249734542987"
+    },
+    {
+      "file": "e2e-repeat.json",
+      "sha256": "bc773d9878bd449336689a278bdc5313bdcd5f594fc2583824270838fa579a3f"
+    },
+    {
+      "file": "e2e-usj-app-flash-0-events.json",
+      "sha256": "1bbef0ff93a9905917b138dd9aaa448edb15dcb6d17d46da0a423b49880d423d"
+    },
+    {
+      "file": "e2e-usj-app-flash.json",
+      "sha256": "4c9d326cec2b814e8285ec62682232283b4a5febb9840e0610f79225f342660d"
+    },
+    {
+      "file": "e2e-usj-check.json",
+      "sha256": "67b6d56697ea8de9a35d3cd140839b9be9ce2805e7a87378ff8afe88f4e76f0b"
+    },
+    {
+      "file": "e2e-usj-final-status.json",
+      "sha256": "c3d126b1f4c89e46cc8b6cc2471cd219003fb1adfe14c35e77f4f4afb0650bb8"
+    },
+    {
+      "file": "e2e-usj-flash-0-events.json",
+      "sha256": "45778cfcf73667cd833f51dffd120ee55db94d3c3bed1f8dd0da8f55944ed3f3"
+    },
+    {
+      "file": "e2e-usj-flash.json",
+      "sha256": "bcd85d883c244b79f111100599765f745f9e11c7e0e303b02b7b34b90dd2934b"
+    },
+    {
+      "file": "e2e-usj-plain-flash.json",
+      "sha256": "d9c27706dd04186be26dfc872e8e001d074fe4415166ef766a5cad1e1713bb77"
+    },
+    {
+      "file": "e2e-usj-readback.json",
+      "sha256": "9864a7e576609ae90a6b6905f9d040dc1a51098693cd5b4da56d1dbdd81a4bb2"
+    },
+    {
+      "file": "e2e-usj-repeat-0-events.json",
+      "sha256": "f67f045fd1f2918a635708acd9c60ce85a364670b34cdac4fe5f3c5af3d97b84"
+    },
+    {
+      "file": "e2e-usj-repeat-1-events.json",
+      "sha256": "09fd60194f1f3ce2bdd5dc342cfdd5e496081c2b6769097f6391121d009ccd55"
+    },
+    {
+      "file": "e2e-usj-repeat-2-events.json",
+      "sha256": "91514f164fadf58d0d5d46c4d083a90c346dc8751574a2c8bc09af19348911e4"
+    },
+    {
+      "file": "e2e-usj-repeat.json",
+      "sha256": "f86e88e1b303eb0a9d966b0a4b6c35d5e22ea754725c74ab9e132c7b34667765"
+    },
+    {
+      "file": "final-preservation.json",
+      "sha256": "1884c0d39bb7cd66ea2864156f3843d7a7588565c08b14f327ead7c951f0e1aa"
+    }
+  ],
+  "limitations": [
+    "One H2 board and Linux host; other chips, adapters and operating systems require separate validation.",
+    "Repeated unchanged-image timings include esptool skipping unchanged sectors, not a full transfer benchmark.",
+    "Power-loss recovery, unplugging during a write, and Gateway termination during a write were not induced on hardware.",
+    "NVS is not byte-identical: normal Iris startup updates the esp_iris/crash_loop key. Other active NVS entries and listed data regions were preserved.",
+    "Firmware fixtures use a 2 MB layout on the 4 MB device; the upper 2 MB was read back unchanged.",
+    "Early startup logs were missing in the saved captures: UART first capture starts at esp_image segment 3 (166 ms); USB Serial/JTAG misses boot logs and application heartbeat=0. Zero Iris log_dropped_bytes does not imply lossless startup capture."
+  ],
+  "early_startup_logs": {
+    "complete": false,
+    "reviewed_date": "2026-10-30",
+    "uart": {
+      "evidence_file": "e2e-flash-0-events.json",
+      "capture_id": "f01b372f224ad897a2cb37d4e2010591",
+      "first_captured_text": "I (166) esp_image: segment 3:",
+      "rom_banner_captured": false,
+      "application_heartbeat_zero_captured": true
+    },
+    "usb_serial_jtag": {
+      "evidence_file": "e2e-usj-app-flash-0-events.json",
+      "capture_id": "a27ad1bb7273a7f2388ed6979d84ebd5",
+      "first_application_log": "IRIS_NATIVE_FLASH_H2_USJ heartbeat=1",
+      "rom_banner_captured": false,
+      "bootloader_logs_captured": false,
+      "application_heartbeat_zero_captured": false
+    },
+    "counter_scope": "log_dropped_bytes == 0 describes the Iris counter after connection; it does not prove capture of bytes emitted before the host reader attaches.",
+    "handoff_order": "Native IDF/esptool resets the target, then exits; Gateway resumes its console reader after worker completion. The capture has an early-boot gap; precise duration and each buffering contribution were not measured."
+  },
+  "startup_log_fix_validation": "native-flash-startup-validation.json"
+}

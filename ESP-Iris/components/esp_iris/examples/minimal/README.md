@@ -20,7 +20,28 @@ behavior.
 
 ## Build
 
-From the repository root, build each profile in an isolated directory:
+### From the Component Registry
+
+After the selected version is published, create a standalone example in an
+empty working directory. For H2 USB Serial/JTAG with IDF 5.5 or later:
+
+```bash
+idf.py create-project-from-example "espressif/esp_iris=0.2.0:minimal"
+cd minimal
+idf.py -D IDF_TARGET=esp32h2 -D SDKCONFIG_DEFAULTS=sdkconfig.usj.defaults build
+```
+
+For S31 application USB, use an IDF version supporting S31 (the package CI uses
+a pinned IDF 6.2 development revision), `IDF_TARGET=esp32s31` and
+`SDKCONFIG_DEFAULTS=sdkconfig.usb.defaults`. Use a separate project directory
+for each target/profile. Select board-specific Flash settings in `menuconfig`
+before flashing. The downloaded dependency is installed under
+`managed_components/espressif__esp_iris`; its `tools` directory contains the
+[Gateway and prebuilt Workbench](../../tools/README.md#install-the-gateway).
+
+### From source
+
+From the repository's `ESP-Iris` directory, build each profile in an isolated directory:
 
 ```bash
 idf.py -C components/esp_iris/examples/minimal \
@@ -58,7 +79,11 @@ The S31 application USB profile enables `CONFIG_ESP_IRIS_USB_AUTO_DOWNLOAD`.
 After installing it once, `idf.py -p CONSOLE_PORT flash monitor` can use the
 same high-speed USB connector: CDC0 recognizes the BSP-style DTR/RTS download
 handshake, while CDC1 remains the data interface. The project `idf_ext.py`
-loads Iris's host extension before the first build. It builds before reset,
+loads Iris's host extension from the source tree or the installed
+`managed_components/espressif__esp_iris` directory. In a freshly downloaded
+example, run `idf.py reconfigure` once to fetch the component before using the
+USB download handshake. Native configuration remains available before that
+download. The extension builds before reset,
 follows the selected USB location into ROM, checks the MAC in its USB serial descriptor, calls
 IDF's original flash target, and waits for the matching application console
 before starting monitor with `--no-reset`. Multiple boards require explicit

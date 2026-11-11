@@ -17,9 +17,10 @@ import time
 from typing import Any
 
 from .link import EndpointLock
+from .native_flash import prepare_native_flash
 from .source_identity import source_identity
 
-__all__ = ["API_MAJOR", "LocalProject", "LocalStateError", "inspect_system_update_bundle", "registry_snapshot", "source_identity"]
+__all__ = ["API_MAJOR", "LocalProject", "LocalStateError", "inspect_system_update_bundle", "prepare_native_flash", "registry_snapshot", "source_identity"]
 
 API_MAJOR = 2
 REGISTRY_VERSION = 200

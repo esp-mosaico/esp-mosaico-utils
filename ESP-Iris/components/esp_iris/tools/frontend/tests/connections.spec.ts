@@ -118,13 +118,35 @@ test("late status responses cannot overwrite the selected device", async ({ page
 });
 
 test("failed mode switch restores the button and shows the error", async ({ page }) => {
+  let finishRefresh: (() => void) | undefined;
+  let firstRefresh = true;
+  let allowSwitch = false;
+  let mode = "develop";
   await page.route("**/v2/mode", async (route) => {
-    if (route.request().method() === "PUT") await route.fulfill({ status: 409, json: { error: { message: "Device operation still running" } } });
-    else await route.continue();
+    if (route.request().method() === "PUT") {
+      if (!allowSwitch) {
+        await route.fulfill({ status: 409, json: { error: { message: "Device operation still running" } } });
+        return;
+      }
+      mode = route.request().postDataJSON().mode;
+    } else if (firstRefresh) {
+      firstRefresh = false;
+      await new Promise<void>((resolve) => { finishRefresh = resolve; });
+    }
+    await route.fulfill({ json: { mode, transitioning: false } });
   });
   await openWorkbench(page);
+  await expect.poll(() => Boolean(finishRefresh)).toBe(true);
   await page.locator(".mode-switch").click();
   await expect(page.locator(".global-error")).toContainText("Device operation still running");
   await expect(page.locator(".mode-switch")).toBeEnabled();
   await expect(page.locator(".mode-switch")).not.toContainText("切换中");
+  // A refresh that started before the failed write must not erase its error.
+  finishRefresh!();
+  await expect(page.locator(".device-select").first()).toBeVisible();
+  await expect(page.locator(".global-error")).toContainText("Device operation still running");
+  allowSwitch = true;
+  await page.locator(".mode-switch").click();
+  await expect(page.locator(".mode-switch")).toBeEnabled();
+  await expect(page.locator(".global-error")).toHaveCount(0);
 });

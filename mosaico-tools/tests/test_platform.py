@@ -50,29 +50,6 @@ class PlatformTests(unittest.TestCase):
         home_patch = mock.patch("pathlib.Path.home", return_value=self.root)
         home_patch.start()
         self.addCleanup(home_patch.stop)
-        self.manifest = {
-            "schema": "mosaico-ideas/project-upload/v1",
-            "project": {"title": "Demo", "categories": ["sensors"], "license": "MIT"},
-            "content": {
-                "readme": "README.md",
-                "covers": ["cover.png"],
-                "attachments": ["circuit.pdf"],
-            },
-            "release": {"changelog": "Fixed reconnect"},
-        }
-        (self.root / "README.md").write_text(
-            "![cover](cover.png)\n[doc][c]\n[c]: circuit.pdf\n[site](https://example.com)\n`![code](missing.png)`\n",
-            encoding="utf-8",
-        )
-        (self.root / "cover.png").write_bytes(b"cover")
-        (self.root / "circuit.pdf").write_bytes(b"pdf")
-        self.write_manifest()
-
-    def write_manifest(self):
-        (self.root / "mosaico-ideas.json").write_text(
-            json.dumps(self.manifest), encoding="utf-8"
-        )
-
     def args(self, **updates):
         values = {
             "server": "https://ideas.test",
@@ -87,24 +64,6 @@ class PlatformTests(unittest.TestCase):
         }
         values.update(updates)
         return SimpleNamespace(**values)
-
-    def plan(self):
-        return {
-            "release": "1.2.3",
-            "chip_id": 32,
-            "flash_size": 16 * 1024 * 1024,
-            "signature_verified": False,
-            "key_id": None,
-            "components": [
-                {
-                    "kind": "application",
-                    "flags": 0,
-                    "target_offset": 0x10000,
-                    "size": 32,
-                }
-            ],
-        }
-
 
     def test_account_without_workspace(self):
         with ExitStack() as stack:

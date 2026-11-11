@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 from .errors import (
     DeviceError,
     EnvironmentError,
+    NativeFlashError,
     OperationError,
     OutcomeUnknownError,
     SelectionError,
@@ -377,6 +378,8 @@ def run_host_operation(context: RunContext, session: GatewaySession, spec: dict[
     health = gateway_json(context, session, "health")
     if HOST_OPERATION_CAPABILITY not in health.get("capabilities", []):
         raise EnvironmentError("Gateway lacks local host operations; restart it with the current tools.")
+    if spec.get("action") == "host.flash" and "native-flash/v1" not in health.get("capabilities", []):
+        raise EnvironmentError("Gateway lacks native flash support; restart it with the current tools.")
     descriptor, filename = tempfile.mkstemp(prefix="iris-command-", suffix=".json", dir=context.directory)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
@@ -391,7 +394,27 @@ def run_host_operation(context: RunContext, session: GatewaySession, spec: dict[
         json.dumps({"operation_id": operation_id}), encoding="utf-8")
     deadline = time.monotonic() + timeout
     terminal = {"succeeded", "failed", "cancelled", "interrupted", "outcome_unknown"}
+    output_offset = 0
+
+    def emit_native_output(log_path):
+        nonlocal output_offset
+        if spec.get("action") != "host.flash" or not log_path or not Path(log_path).is_file():
+            return
+        with Path(log_path).open("rb") as stream:
+            stream.seek(output_offset)
+            data = stream.read()
+            output_offset = stream.tell()
+        if data:
+            output = sys.stderr if getattr(context, "json_output", False) else sys.stdout
+            if hasattr(output, "buffer"):
+                output.buffer.write(data)
+                output.buffer.flush()
+            else:
+                print(data.decode("utf-8", errors="replace"), end="", flush=True, file=output)
+
     while operation["status"] not in terminal:
+        progress = operation.get("progress") or {}
+        emit_native_output(progress.get("log_path"))
         if time.monotonic() >= deadline:
             raise OutcomeUnknownError(
                 "Stopped waiting for the ROM operation; its writer was not cancelled. "
@@ -410,17 +433,28 @@ def run_host_operation(context: RunContext, session: GatewaySession, spec: dict[
             ) from error
         operation = observed
         operation = operation.get("operation", operation)
+    emit_native_output((operation.get("progress") or {}).get("log_path"))
     if operation["status"] != "succeeded":
         progress = operation.get("progress") or {}
         message = operation.get("error") or "ROM operation did not succeed."
+        if spec.get("action") == "host.flash" and progress.get("native_returncode"):
+            log_path = progress.get("log_path")
+            if log_path and Path(log_path).is_file():
+                context.note(Path(log_path).read_text(encoding="utf-8", errors="replace"))
+            raise NativeFlashError(message, progress["native_returncode"],
+                                   details={"operation_id": operation_id, "log_path": log_path})
         if progress.get("write_completed"):
-            message = ("ROM write completed; Vibe Mode acceptance is pending. "
+            pending = ("Native flash completed; connection observation is pending. "
+                       if spec.get("action") == "host.flash" else
+                       "ROM write completed; Vibe Mode acceptance is pending. ")
+            message = (pending +
                        f"Continue with: python mosaico.py iris operation-reconcile {operation_id}. " + message)
         error_type = OutcomeUnknownError if operation["status"] in {"outcome_unknown", "interrupted"} or progress.get("write_completed") else OperationError
         raise error_type(message, details={"operation_id": operation_id, "status": operation["status"],
                                            "write_completed": bool(progress.get("write_completed"))})
     result = operation.get("result") or {}
     log_path = result.get("log_path")
+    emit_native_output(log_path)
     if log_path and Path(log_path).is_file():
         context.note(Path(log_path).read_text(encoding="utf-8", errors="replace"))
     return {**result, "operation_id": operation_id}

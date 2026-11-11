@@ -1,2 +1,0 @@
-# Ideas display publication dependencies shared with the host CLI.
--r ../../../../shared/ideas/requirements.txt

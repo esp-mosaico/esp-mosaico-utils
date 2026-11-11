@@ -134,7 +134,7 @@ def add_commands(commands, project_commands):
 
 
 def run(arguments, workspace):
-    tools_root = workspace.recovery_project.parents[2] / "mosaico-tools"
+    tools_root = workspace.tool_root
     if arguments.command == "sim":
         project = resolve_project(workspace, arguments.project, Path.cwd())
         command = [sys.executable, str(tools_root / "tools/gsp-sim/run.py"),

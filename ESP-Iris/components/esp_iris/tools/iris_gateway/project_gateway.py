@@ -23,7 +23,14 @@ from .host_worker import active_workers
 from .http_support import error_response, request_is_loopback
 from .ownership import CAPABILITY, OwnershipConflict, OwnershipRegistry
 from .takeover import CAPABILITY as TAKEOVER_CAPABILITY
-from .takeover import busy_error, drain_device, drain_timeout, public_record
+from .takeover import (
+    IDLE_CAPABILITY,
+    busy_error,
+    drain_device,
+    drain_timeout,
+    handoff_idle_owner,
+    public_record,
+)
 from .takeover import register_routes as register_takeover_routes
 
 
@@ -142,9 +149,9 @@ class ProjectGateway:
     def snapshot(self, *, endpoints: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         claims = self.registry.claims()
         return {"session": self.registry.session(self.registry.session_id),
-                "capability": CAPABILITY, "capabilities": [TAKEOVER_CAPABILITY], "closing": self.closing,
+                "capability": CAPABILITY, "capabilities": [TAKEOVER_CAPABILITY, IDLE_CAPABILITY], "closing": self.closing,
                 "lifecycle": self.clients.snapshot(self.keepalive_reasons()) if self.shared else None,
-                "pairing_configured": bool(self.pairing_token),
+                "pairing_configured": bool(self.pairing_token or self.tokens),
                 "busy": self.busy(), "sessions": self.registry.sessions(),
                 "claims": claims, "endpoints": self.service.list_endpoints() if endpoints is None else endpoints,
                 "takeovers": [public_record(self.registry.transfer(key)) for key in sorted({
@@ -271,6 +278,13 @@ class ProjectGateway:
             raise OwnershipConflict("device is draining for handoff")
         if device_id:
             claim = self.registry.claim("device:" + str(device_id))
+            if claim and claim["owner"] != self.registry.session_id:
+                # With an explicit endpoint, admission carries that choice
+                # through the reserved handoff after canonical discovery.
+                if endpoint:
+                    claim = None
+                else:
+                    await handoff_idle_owner(self, claim)
             if claim:
                 self.registry._require("device:" + str(device_id), ("owned",))
                 connected = next((item for item in self.hub.list_devices() if item["device_id"] == device_id), None)
@@ -280,8 +294,9 @@ class ProjectGateway:
                         if str(connected.get("endpoint", "")).startswith("usb:") and not str(endpoint).startswith("tcp:"):
                             canonical = usb_endpoint(await to_thread(resolve_usb_port, str(endpoint)))
                         if canonical != connected.get("endpoint"):
-                            self.selection_error("Requested endpoint differs from the active device connection.", [connected])
-                    return connected
+                            connected = None
+                    if connected is not None:
+                        return connected
                 if automatic:
                     # Its existing supervisors own reconnect. Never substitute
                     # a different board while this identity is temporarily absent.
@@ -321,8 +336,32 @@ class ProjectGateway:
                 raise OwnershipConflict("device is draining for handoff")
         if not candidates:
             self.selection_error("No available endpoint for the selected Device ID.", [])
-        admitted = await admit_candidates(self, candidates, str(device_id) if device_id else None,
-                                          token, float(body.get("timeout", 10)))
+        switch_device = None
+        if endpoint and len(candidates) == 1:
+            selected = candidates[0]["endpoint"]
+            # Current claims and previously verified identities are selection
+            # hints; admission still requires the same Device ID from HELLO.
+            for owned in self.hub.list_devices():
+                known = self.registry.known_endpoints(owned["device_id"])
+                claim = self.registry.claim(selected)
+                if (owned["endpoint"] != selected and candidates[0].get("link_role") != "data"
+                        and (device_id == owned["device_id"]
+                             or claim and claim.get("device_id") == owned["device_id"]
+                             or any(item["endpoint"] == selected for item in known))):
+                    switch_device = owned["device_id"]
+                    if self.busy(switch_device):
+                        busy_error(self, switch_device)
+                    break
+        if switch_device:
+            self.blocked.add(switch_device)
+        try:
+            if switch_device:
+                await self.hub.suspend_owned(switch_device)
+            admitted = await admit_candidates(self, candidates, device_id or switch_device,
+                                              token, float(body.get("timeout", 10)))
+        finally:
+            if switch_device:
+                self.blocked.discard(switch_device)
         self.service.store.remember_device(admitted)
         return admitted
 
@@ -344,13 +383,34 @@ class ProjectGateway:
         if self.closing:
             raise OwnershipConflict("project session is draining")
         timeout = drain_timeout(body)
+        if body.get("idle_only") and not existing:
+            self.clients.expire()
+            reasons = self.keepalive_reasons()
+            # This peer prepare request itself holds one control reference.
+            reasons["requests"] = max(0, reasons["requests"] - 1)
+            if not self.shared or self.clients.clients or any(reasons.values()):
+                response = error_response(409, "owner_active", "Owning project still has active clients or work.",
+                    owner=self.registry.session(self.registry.session_id),
+                    clients=self.clients.snapshot(reasons)["clients"], keepalive=reasons)
+                raise web.HTTPConflict(text=response.text, content_type="application/json")
+            if body.get("force"):
+                raise ValueError("automatic idle handoff cannot force active work")
         if self.busy(device_id) and not body.get("force"):
             busy_error(self, device_id)
         self.blocked.add(device_id)
         try:
             if body.get("force"):
                 await drain_device(self, device_id, timeout)
-            self.registry.prepare(device_id, target, transfer_id)
+            preferred = (existing or {}).get("metadata", {}).get("preferred_endpoint") or body.get("preferred_endpoint")
+            active = self.hub._devices.get(device_id)
+            if preferred is None and active is not None:
+                endpoint = self.registry._require(active.link.endpoint)
+                preferred = {"resource": endpoint["resource"], "metadata": endpoint["metadata"]}
+            self.registry.prepare(device_id, target, transfer_id,
+                                  preferred_endpoint=preferred)
+            control = self.hub._links.get(device_id, {}).get("control")
+            if preferred and control and preferred["resource"] != control.link.endpoint:
+                await control.release_binding()
             await self.hub.detach_owned(device_id)
             result = self.registry.offer(transfer_id)
             self.audit(result)
@@ -366,16 +426,20 @@ class ProjectGateway:
         if self.closing:
             raise OwnershipConflict("project session is draining")
         proposed = self.registry.transfer(transfer_id)
-        if any(item["metadata"].get("pairing") == "hmac" for item in proposed["metadata"]["endpoints"]) and not self.pairing_token:
+        preferred = proposed["metadata"].get("preferred_endpoint") or proposed["metadata"]["endpoints"][0]
+        token = self.tokens.get(preferred["resource"], self.pairing_token)
+        if any(item["metadata"].get("pairing") == "hmac" for item in proposed["metadata"]["endpoints"]) and not token:
             raise OwnershipConflict("target requires its own pairing token before acceptance")
         result = self.registry.accept(transfer_id)
         if result["state"] == "completed":
             return result
         endpoints = result["metadata"]["endpoints"]
         # A single verified transport is sufficient. Credentials stay local.
-        endpoint = endpoints[0]
-        await self.hub.connect_owned(endpoint["resource"], endpoint["metadata"], pairing_token=self.pairing_token)
-        admitted = await self.wait_device(result["device_id"], endpoint["resource"], 15)
+        endpoint = result["metadata"].get("preferred_endpoint") or endpoints[0]
+        await self.hub.connect_owned(endpoint["resource"], endpoint["metadata"], pairing_token=token)
+        admitted = await self.wait_device(None, endpoint["resource"], 15)
+        if admitted["device_id"] != result["device_id"]:
+            raise OwnershipConflict("handoff endpoint returned a different Device ID")
         self.service.store.remember_device(admitted)
         result = self.registry.complete(transfer_id, result["device_id"])
         self.audit(result)

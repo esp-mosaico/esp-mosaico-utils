@@ -1,4 +1,5 @@
 """Stop S31 USB DMA before CPU reset without tearing down a running worker."""
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -32,3 +33,5 @@ def test_usb_shutdown_ownership_and_initialization_rollback(
         str(tests / "usb_host/main.c"), "-o", str(output),
     ], check=True, capture_output=True, timeout=30)
     subprocess.run([str(output)], check=True, capture_output=True, timeout=10)
+    subprocess.run([str(output)], check=True, capture_output=True, timeout=10,
+                   env={**os.environ, "IRIS_USB_SHUTDOWN_RACE": "1"})

@@ -884,6 +884,10 @@ def test_device_follow_replays_boot_logs_only_after_identity_binding(tmp_path, b
             all_events = await client.ws_connect("/v2/events/ws")
             if not before_connect:
                 await service.on_device_event(early)
+            # Submission queues a durable write. Windows storage startup can
+            # exceed the receive timeout; wait for publication before checking
+            # routing and identity replay rather than timing disk latency.
+            await service.flush_events()
             original = await all_events.receive_json(timeout=1)
             assert original["text"] == early["text"]
             assert original["device_id"] is None

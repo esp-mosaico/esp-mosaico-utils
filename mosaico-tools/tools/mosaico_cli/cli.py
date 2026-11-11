@@ -21,13 +21,12 @@ from .commands import (
     list_devices,
     monitor,
     monitor_memory,
-    read_bridge_code,
     recover,
     start_system_update,
 )
 from .doctor import diagnose_host, print_diagnosis
 from .errors import MosaicoError, SelectionError
-from .platform_client import DEFAULT_SERVER
+from .platform_client import DEFAULT_SERVER, PlatformError
 from .project_setup import print_setup
 from .runtime import RunContext
 from .scaffold import initialize_project
@@ -42,7 +41,20 @@ class MosaicoArgumentParser(argparse.ArgumentParser):
     def parse_args(self, args=None, namespace=None):
         if self.prog == "mosaico.py":
             args = _normalize_globals(list(sys.argv[1:] if args is None else args))
-        return super().parse_args(args, namespace)
+        result = super().parse_args(args, namespace)
+        for source_name, path_name, flag in (
+            ("source", "source_path", "--source-path"),
+            ("recovery_source", "recovery_source_path", "--recovery-source-path"),
+        ):
+            if not hasattr(result, source_name):
+                continue
+            source = getattr(result, source_name)
+            path = getattr(result, path_name, None)
+            if source == "current" and not path:
+                self.error(f"current requires {flag} PATH to the Vibe Mode firmware project")
+            if source != "current" and path is not None:
+                self.error(f"{flag} is only valid with the current source")
+        return result
 
     def error(self, message: str) -> NoReturn:
         if self.json_errors:
@@ -134,7 +146,9 @@ PUBLIC_COMMAND_PATHS = {
     "rpc": ("iris", "rpc"),
     "enter-recovery": ("iris", "test", "enter-recovery"),
     "recovery-wifi": ("iris", "test", "recovery-wifi"),
-    "bridge-code": ("iris", "test", "bridge-code"),
+    "flash": ("iris", "flash"),
+    "app-flash": ("iris", "app-flash"),
+    "run-app": ("iris", "run-app"),
 }
 
 
@@ -172,12 +186,10 @@ def build_parser() -> argparse.ArgumentParser:
     upload_parser = project_commands.add_parser("upload", help="Upload one validated Ideas ZIP as a draft")
     upload_parser.set_defaults(command="project-upload")
     upload_parser.add_argument("package", help="Existing release ZIP; never rebuilt during upload")
-    upload_parser.add_argument("--expected-project-version", type=int, help="Required optimistic concurrency version for updates")
     upload_parser.add_argument("--ca-file", help="Configured server CA trust PEM for a test/private origin")
-    upload_parser.add_argument("--wait-timeout", type=positive_timeout, default=600, help="Seconds to wait for validation; preserves upload_id on timeout")
     upload_target = upload_parser.add_mutually_exclusive_group()
     upload_target.add_argument("--create", action="store_true")
-    upload_target.add_argument("--update", metavar="APPLICATION_ID")
+    upload_target.add_argument("--update", metavar="PUBLIC_ID", help="Replace the unsubmitted draft of this cloud project")
     upload_parser.add_argument("--yes", action="store_true", help="Confirm creation/update and replacement of any existing draft")
     server_help = (
         "Mosaico Ideas HTTPS origin; overrides MOSAICO_IDEAS_SERVER, then "
@@ -194,7 +206,7 @@ def build_parser() -> argparse.ArgumentParser:
             account_child.add_argument("--open-browser", action="store_true", help="Open the verification page in the system browser")
     iris_parser = commands.add_parser("iris", help="Project Gateway and ESP-Iris device operations")
     iris_commands = iris_parser.add_subparsers(dest="iris_action", required=True)
-    test_parser = iris_commands.add_parser("test", help="Test Vibe Mode transitions, Wi-Fi and Bridge pairing")
+    test_parser = iris_commands.add_parser("test", help="Test Vibe Mode transitions and Wi-Fi")
     test_commands = test_parser.add_subparsers(dest="test_action", required=True)
     leaves = []
 
@@ -255,6 +267,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Vibe Mode reference bundle; current explicitly uses the candidate prepared by recover --source current",
     )
     install_parser.add_argument(
+        "--recovery-source-path",
+        help="Required with --recovery-source current: firmware project path (relative to cwd)",
+    )
+    install_parser.add_argument(
         "--validation",
         choices=("elf-sha256", "version"),
         default="elf-sha256",
@@ -302,6 +318,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="System Update timeout in seconds",
     )
 
+    for target in ("flash", "app-flash"):
+        flash_parser = command(target, help="Run native IDF flashing through Gateway, then resume Iris logs/RPC")
+        flash_parser.add_argument("--project")
+        selection = flash_parser.add_mutually_exclusive_group()
+        selection.add_argument("--device-id")
+        selection.add_argument("--endpoint", help="UART / USB Serial/JTAG port; no Iris handshake required")
+        flash_parser.add_argument("--skip-build", action="store_true",
+                                  help="Compatibility option; IDF always owns build dependencies")
+        flash_parser.add_argument("idf_args", nargs=argparse.REMAINDER,
+                                  help="Arguments after -- are passed unchanged to idf.py")
+        flash_parser.add_argument("--monitor", action="store_true", help="Follow the Gateway console after flashing, even without Iris HELLO")
+        flash_parser.add_argument("--run-app", action="store_true",
+                                  help="If Vibe Mode reconnects, explicitly retry its application and verify Iris reconnection")
+        flash_parser.add_argument("--timeout", type=positive_timeout, default=600)
+        flash_parser.add_argument("--reconnect-timeout", type=monitor_timeout,
+                                  help="Seconds to observe Iris reconnection (default: 0 with --monitor, otherwise 10); independent of flash result")
+
+    run_parser = command("run-app", help="Retry the installed application from Vibe Mode over USB or UART")
+    run_selection = run_parser.add_mutually_exclusive_group()
+    run_selection.add_argument("--device-id")
+    run_selection.add_argument("--endpoint", help="Local Iris control port, for example /dev/ttyUSB0")
+    run_parser.add_argument("--gateway-profile", help="Use an external ESP-Iris Gateway profile")
+    run_parser.add_argument("--timeout", type=positive_timeout, default=30.0)
+
     recover_parser = command(
         "recover",
         help="Restore base firmware through ROM Download Mode and verify Vibe Mode",
@@ -315,6 +355,10 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("reviewed", "current"),
         default="reviewed",
         help="Reviewed base bundle or current-source candidate bundle",
+    )
+    recover_parser.add_argument(
+        "--source-path",
+        help="Required with --source current: firmware project path (relative to cwd)",
     )
     recover_identity = recover_parser.add_mutually_exclusive_group()
     recover_identity.add_argument(
@@ -368,23 +412,6 @@ def build_parser() -> argparse.ArgumentParser:
     recovery_wifi_parser.add_argument(
         "--timeout", type=positive_timeout, default=30.0,
         help="Wi-Fi connection timeout in seconds",
-    )
-
-    update_code_parser = command(
-        "bridge-code",
-        help="Open Vibe Mode's Bridge download page and wait for its pairing code over USB",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    update_code_parser.add_argument(
-        "--device-id", help="Target Device ID; omit for the sole connected/owned device or available USB device"
-    )
-    update_code_parser.add_argument(
-        "--gateway-profile", help="ESP-Iris profile; use the local Gateway by default"
-    )
-
-    update_code_parser.add_argument(
-        "--timeout", type=positive_timeout, default=60.0,
-        help="Maximum wait for Wi-Fi and Bridge pairing code in seconds",
     )
 
     monitor_parser = command(
@@ -580,6 +607,9 @@ def _normalize_globals(argv: Sequence[str]) -> list[str]:
     index = 0
     while index < len(argv):
         value = argv[index]
+        if value == "--":
+            rest.extend(argv[index:])
+            break
         if value in {"--json", "--verbose", "--version"}:
             globals_found.append(value)
         elif value == "--workspace":
@@ -655,6 +685,14 @@ def _emit_error(error: MosaicoError, json_output: bool, verbose: bool) -> None:
         )
     else:
         print(f"mosaico: {error}", file=sys.stderr)
+        if isinstance(error, PlatformError):
+            for field in ("reason", "path", "field"):
+                value = error.details.get(field)
+                if value:
+                    print(f"{field.capitalize()}: {value}", file=sys.stderr)
+            delay = error.details.get("retry_after_seconds")
+            if delay is not None:
+                print(f"Retry-After: wait at least {delay:g} seconds.", file=sys.stderr)
         candidates = error.details.get("candidates")
         if isinstance(candidates, list) and candidates:
             print("Available device targets:", file=sys.stderr)
@@ -823,7 +861,10 @@ def _main(
     if arguments.verbose and not arguments.json:
         print(f"Run log: {context.log_path}", file=sys.stderr)
     try:
-        if arguments.command == "install":
+        if arguments.command in {"flash", "app-flash"}:
+            from .native_flash import flash_application
+            result = flash_application(arguments, context)
+        elif arguments.command == "install":
             result = install(arguments, context)
         elif arguments.command == "system-update":
             result = start_system_update(arguments, context)
@@ -831,6 +872,9 @@ def _main(
             result = recover(arguments, context)
         elif arguments.command == "enter-recovery":
             result = enter_recovery(arguments, context)
+        elif arguments.command == "run-app":
+            from .run_app import run_application
+            result = run_application(arguments, context)
         elif arguments.command == "recovery-wifi":
             result = configure_recovery_network(arguments, context)
         elif arguments.command == "rpc":
@@ -842,8 +886,6 @@ def _main(
             result = collect_evidence(arguments, context)
         elif arguments.command == "memory":
             return monitor_memory(arguments, context, arguments.json)
-        elif arguments.command == "bridge-code":
-            result = read_bridge_code(arguments, context)
         else:
             return monitor(arguments, context, arguments.json)
     except MosaicoError as error:
@@ -859,14 +901,6 @@ def _main(
     else:
         status = result.get("status", "succeeded")
         print(f"{arguments.public_command}: {status}")
-        if arguments.command == "bridge-code":
-            authorization = result.get("bridge", {})
-            print(f"Bridge pairing code: {authorization.get('code', '')}")
-            print(
-                "Expires in: "
-                f"{int(authorization.get('expires_in_ms', 0)) // 1000}s"
-            )
-            print(f"Bridge website: {result.get('server_url', '')}")
         if arguments.command == "recover" and status == "dry_run":
             print("Checks passed; no firmware was built or written.")
         if arguments.verbose:

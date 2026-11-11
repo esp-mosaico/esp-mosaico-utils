@@ -1244,6 +1244,10 @@ static void test_scheduled_restart_lifecycle(void)
     now_us += IRIS_RESTART_FLUSH_GRACE_US;
     iris_services_poll(&g_iris);
     assert(restart_calls == 1); /* a stalled receiver cannot strand Vibe entry */
+    assert(esp_iris_schedule_restart(100) == ESP_ERR_INVALID_STATE);
+    assert(iris_services_init(&g_iris) == ESP_ERR_INVALID_STATE);
+    s_restart_started = false; /* Fake esp_restart returned: model a new CPU boot. */
+    assert(iris_services_init(&g_iris) == ESP_OK);
     restart_calls = 0;
     g_iris.tx_wire_length = 0;
     assert(esp_iris_schedule_restart(100) == ESP_OK);
@@ -1282,8 +1286,51 @@ static void test_acknowledged_restart_survives_disconnect(void)
     assert(restart_calls == 1);
     iris_services_poll(&g_iris);
     assert(restart_calls == 1);
+    s_restart_started = false; /* A real restart resets BSS before another test. */
     allow_restart = false;
     g_iris.started = false;
+}
+
+static void restart_overlap(void)
+{
+    restart_hook = NULL;
+    assert(esp_iris_restart_now() == ESP_ERR_INVALID_STATE);
+    assert(esp_iris_schedule_restart(100) == ESP_ERR_INVALID_STATE);
+    now_us += 100000;
+    iris_services_poll(&g_iris);
+}
+
+static void test_single_restart_owner(void)
+{
+    assert(!iris_services_restart_claimed());
+    assert(iris_services_init(&g_iris) == ESP_OK);
+    now_us = 1000;
+    restart_calls = 0;
+    allow_restart = true;
+    assert(esp_iris_schedule_restart(100) == ESP_OK);
+    now_us += 100000;
+    restart_hook = restart_overlap; /* A timer fires while shutdown is executing. */
+    iris_services_poll(&g_iris);
+    assert(restart_calls == 1);
+    assert(iris_services_restart_claimed());
+    assert(esp_iris_restart_now() == ESP_ERR_INVALID_STATE);
+
+    s_restart_started = false; /* Next simulated boot: the fallback wins first. */
+    assert(iris_services_init(&g_iris) == ESP_OK);
+    assert(esp_iris_schedule_restart(100) == ESP_OK);
+    restart_hook = restart_overlap;
+    assert(esp_iris_restart_now() == ESP_OK);
+    assert(restart_calls == 2);
+    assert(iris_services_init(&g_iris) == ESP_ERR_INVALID_STATE);
+
+    s_restart_started = false;
+    iris_services_deinit(&g_iris);
+    /* Autonomous product fallbacks must also work without the Iris worker. */
+    assert(esp_iris_restart_now() == ESP_OK);
+    assert(restart_calls == 3);
+    s_restart_started = false;
+    restart_calls = 0;
+    allow_restart = false;
 }
 
 static void test_pending_console_logs(void)
@@ -1356,6 +1403,7 @@ int main(void) {
     test_console_snapshot_binding_crc_expiry();
     test_scheduled_restart_lifecycle();
     test_acknowledged_restart_survives_disconnect();
+    test_single_restart_owner();
     test_pending_console_logs();
     executor_work_free(s_executor.work); return 0;
 }

@@ -1,10 +1,10 @@
 # ESP-Mosaico Tools
 
-The [0.2 software specification (中文)](docs/mosaico-tools-software-spec-zh.md)
-and [migration guide (中文)](docs/migration-0.2.md) describe the breaking release.
+The [0.2 software specification](docs/mosaico-tools-software-spec-zh.md)
+and [migration guide](docs/migration-0.2.md) describe the breaking release.
 The source uses Gateway API 2 and the new test-partition product contract.
-Default updates validate the matching reviewed 0.2.0 base bundle; see the
-[0.2 validation record (中文)](../esp-mosaico-vibe-mode/docs/validation-0.2.md).
+Default updates validate the published Recovery bundle in `../firmware/recovery/`;
+the GitLab source checkout does not include generated images.
 Old devices and old bundles require their separate 0.1 environment.
 
 Workspace-consumed command-line tools for ESP-Mosaico development and device
@@ -17,7 +17,32 @@ Shared GSP acquisition and Ideas resource generation live in
 The user-facing retained firmware is **Vibe Mode** (`firmware_mode=recovery`).
 **ROM Download Mode** runs the chip download program without ESP-Iris.
 `iris test enter-recovery` enters Vibe Mode; `recover` writes base firmware.
-See the [firmware guide](../esp-mosaico-vibe-mode/firmware/vibe-mode/README.md).
+See [application integration](docs/application-integration.md).
+
+Vibe builds with UART maintenance support retain USB High-Speed and can retry
+the installed application without a screen or application USB cable:
+
+```sh
+python mosaico.py iris run-app --endpoint /dev/ttyUSB0 --baudrate 115200
+python mosaico.py iris app-flash --endpoint /dev/ttyUSB0 --baudrate 115200 --run-app
+```
+
+Run these from the consuming application's workspace. Vibe defaults to UART0,
+TX GPIO58 / RX GPIO59 at 115200 baud; both firmware images and the host must use
+the connected pins and matching baud rate. `--run-app` also works with `iris flash`.
+It is opt-in: normal native flashing keeps its existing behavior. If the
+application is already running after flashing, no additional restart is sent.
+Otherwise the command uses Vibe product RPC `0x1202/8` to verify/select `ota_0`,
+reset the crash-loop quarantine and restart. It verifies the same device's new
+Boot ID and selected ELF SHA through Iris. An acknowledgement timeout or a
+return to Vibe never triggers an automatic retry. Applications without Iris
+cannot provide this reconnection verification.
+
+This requires updating the retained Vibe image with UART support first; an
+application's UART configuration cannot enable it in an older Vibe image.
+Current-source builds do not replace the reviewed recovery bundle. The UART
+control entry does not carry bulk updates: native UART flashing still uses
+ROM Download Mode, while USB CDC1 / TCP retain Iris bulk transfer support.
 
 Local Gateways are shared project services. Device commands start or reuse one
 and retain a renewable client lease for their duration. Every
@@ -70,7 +95,7 @@ mosaico.py
 │   ├── device-status / screenshot / operation-status
 │   ├── app-update
 │   ├── system-update
-│   └── test enter-recovery / recovery-wifi / bridge-code
+│   └── test enter-recovery / recovery-wifi
 └── recover
 ```
 
@@ -118,7 +143,10 @@ is unreachable. `iris test` groups individual Vibe Mode test operations:
 | --- | --- |
 | `enter-recovery` | A reachable application restarts into Vibe Mode; verify the same Device ID and a new Boot ID. If already in Vibe Mode, return its current status. |
 | `recovery-wifi` | Requires Vibe Mode over USB; submit the SSID and password and wait for Wi-Fi connectivity. |
-| `bridge-code` | Requires Vibe Mode over USB, configured Bridge service and network connectivity; open the device's download page and return the pairing code, validity and website URL. |
+
+> [!TIP]
+> Bridge push-based downloads and `iris test bridge-code` have been removed.
+> Use the six-digit application ID on the device download page to pull Ideas.
 
 Only the public command paths above are accepted. Replace old script commands
 using the [0.2 migration table](docs/migration-0.2.md); there are no compatibility
@@ -127,11 +155,14 @@ aliases. `iris logs` follows by default (`--snapshot` prints retained logs only)
 
 The consuming repository owns a `.mosaico.json` file with `schema_version: 2`.
 All configured relative
-paths are resolved from the directory containing that file. Vibe Mode firmware
-source and its reviewed bundle live under `../esp-mosaico-vibe-mode/firmware/vibe-mode` and are resolved
-from this checkout so the CLI and Vibe Mode implementation are versioned
-together. ESP-Iris is included alongside this project in the workspace, making
-the workspace the single source of its device-side Iris implementation.
+paths are resolved from the directory containing that file. The reviewed bundle
+lives in `../firmware/recovery/`; `recover --source reviewed` uses the public
+`recovery/` staging project and needs no private source checkout. Building a
+candidate requires `recover --source current --source-path PATH`. Candidate-based
+app validation requires `iris app-update --recovery-source current --recovery-source-path PATH`.
+These explicit source paths are relative to the calling shell and must point to
+the firmware project itself; they are rejected with the reviewed source. The
+prepared candidate is read from `PATH/build-mosaico-vibe-mode/recovery-current/`.
 
 From a consuming workspace, prefer its root launcher:
 
@@ -176,7 +207,7 @@ template configuration takes precedence; preserved filenames are reported.
 Output goes under `workspace.projects_dir`;
 `default_project` is unchanged. The generic renderer handles path variables,
 validated replacements, exclusive creation and failure cleanup without assuming
-an application layout. See [the template format](../esp-mosaico-vibe-mode/docs/project-template.md).
+an application layout. See [the template format](docs/project-template.md).
 
 Names use 1–31 ASCII letters, digits or underscores, starting with a letter,
 and cannot be Windows reserved names. Existing destinations are rejected.
@@ -199,7 +230,7 @@ endpoint without writing, repeats the MAC check immediately before flashing,
 and verifies the same MAC in Vibe Mode after re-enumeration:
 
 ```sh
-python mosaico.py recover --hardware-mac 30:ed:a0:12:34:56 --source current
+python mosaico.py recover --hardware-mac 30:ed:a0:12:34:56 --source current --source-path /path/to/firmware/vibe-mode
 ```
 
 After upgrading from an older ESP-Iris release, the live Device ID changes once
@@ -212,12 +243,10 @@ The pairing token and other retained NVS state are not erased.
 Run the self-contained tool tests with:
 
 ```sh
-python3 -m pytest -q ../esp-mosaico-vibe-mode/tests
+python3 -m pytest -q tests
 ```
 
 
-
-See [component boundaries](../docs/component-boundaries.md) for API compatibility, source provenance and Recovery contracts.
 
 Local System Update bundles are inspected before device admission; the CLI records
 each image's offset, size, and hash. `app-update` layout mismatches return
@@ -269,7 +298,7 @@ commands require `--takeover-id`; `status` never starts a Gateway.
 
 ## Publish a Mosaico Ideas file collection
 
-The [file release protocol](docs/ideas-file-release/README.zh-CN.md) uses one immutable
+The [file release protocol](docs/ideas-file-release/README.md) uses one immutable
 ZIP upload and direct device manifest GET requests. The CLI, local integration
 server and Vibe Mode implement the new format only. An upload creates a **draft**;
 publication is separate. Ordinary Ideas cannot contain Vibe Mode or bootloader
@@ -279,12 +308,18 @@ Install host-only dependencies with `python3 -m pip install -r mosaico-tools/req
 Display generation also needs the platform's FreeType/libraqm runtime. Device
 resources are generated before the ZIP is frozen; uploading never rebuilds them.
 
+Before packaging for upload, fetch the public category list from the selected server
+with `curl --fail --silent --show-error "https://mosaico.ai/api/v1/categories?group=software"`
+(use `group=hardware` for hardware projects). Choose a category by `name`/`name_en`
+and put its integer `id` in `project.category_id`. Replace the illustrative `123`
+below with that returned ID; IDs depend on the server and must not be guessed.
+
 Keep this author configuration in the application's `mosaico-ideas.json`:
 
 ```json
 {
   "schema": "mosaico-ideas/project-release/1",
-  "project": {"title": "Bilingual demo", "categories": ["display"]},
+  "project": {"title": "Bilingual demo", "content_type": "software", "category_id": 123},
   "firmware": "build/demo-system-update.irisfw",
   "website": {"readme": "website/readme.md", "covers": ["website/cover.png"]},
   "device": {
@@ -310,8 +345,8 @@ python mosaico.py project package --project projects/demo --output dist/release.
 python mosaico.py project validate dist/release.zip --json
 python mosaico.py account login
 python mosaico.py project upload dist/release.zip --create --yes --json
-# Update requires the draft version returned by the last accepted upload.
-python mosaico.py project upload dist/release.zip --update APPLICATION_ID --expected-project-version 1 --yes --json
+# Replace an unsubmitted draft using the cloud project public_id.
+python mosaico.py project upload dist/release.zip --update PUBLIC_ID --yes --json
 ```
 
 `project package --bundle PATH` overrides the configured firmware input. Packaging
@@ -320,19 +355,33 @@ all hashes, the Iris firmware/product layout, actual image encoding, MIFF glyphs
 and complete Chinese/English dependency sets. They reject extra or missing files,
 links, traversal, ambiguous paths, animations and unsupported firmware components.
 
-Upload state lives in the private 0.2 account directory, scoped by server, stable
-account ID and request. Repeating the same command resumes the upload receipt and
-idempotency key, including after token rotation. A changed ZIP or target is a new
-request. `--wait-timeout` stops waiting while preserving a validating upload ID;
-it does not turn a pending upload into a business failure. `--server` chooses the
-API origin; `--ca-file` trusts a private test CA without disabling TLS checks.
+Uploads use synchronous Agent API POST/PATCH requests with a single `release`
+file. A successful response returns `public_id` and `status: draft`; a six-digit
+app number is not required. Cloud publication owns app IDs, app numbers and
+published-version uniqueness. No draft version or asynchronous receipt is needed.
+Every explicit upload sends a request; writes are not automatically retried.
+If a response is lost, check the website before creating another project.
+`--server` chooses the API origin; `--ca-file` trusts a private test CA.
+The CLI requires `project.category_id` before upload, although the release schema
+keeps it optional for offline packaging and validation. The server checks that the
+category exists, is enabled and belongs to `content_type` (default `software`).
+For `invalid_category`, fetch the list again, correct the author configuration and
+repackage. PATCH replaces all metadata, so include the category on updates too.
+The category stays inside the ZIP; the multipart request still has only `release`.
+
+Provide bilingual descriptions and an icon when practical. A generated description
+may be omitted or empty, and an icon may be omitted; supplied assets must still
+pass format and size checks. Names, fonts and both locales remain required.
+Do not supply `categories` or `license` in author configuration or the upload manifest.
+See the [OpenAPI contract](docs/ideas-file-release/api.openapi.yaml) and
+[integration checks](docs/ideas-file-release/testing.md) for server requirements.
 
 For a runnable server, TLS setup, explicit test publication and device acceptance,
-see [local integration testing](docs/ideas-file-release/testing.zh-CN.md).
+see [local integration testing](docs/ideas-file-release/testing.md).
 
 ```sh
 python3 -m pytest mosaico-tools/tests
-python3 -m pytest esp-mosaico-vibe-mode/tests
+python3 -m pytest mosaico-tools/tests
 ```
 
 Streaming build commands write complete stdout/stderr bytes to a unique

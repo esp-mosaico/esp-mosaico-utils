@@ -15,6 +15,18 @@ Run `recover` before the first install on a blank or unverified device.
 Use `system-update` for new apps or changed resources/layouts. Use `app-update`
 only for code changes with an identical full partition table and resources.
 
+To add an Iris UART link, run from the generated project directory with ESP-IDF
+activated:
+
+```sh
+idf.py -B build-uart -D SDKCONFIG_DEFAULTS="sdkconfig.defaults;sdkconfig.application.defaults;sdkconfig.uart.defaults" build
+```
+
+For USB Serial/JTAG, replace `uart` with `usj` in the build directory and overlay
+filename. These optional overlays retain the default transports. UART uses the
+UART0 console pins at 115200 baud. Separate build directories keep each generated
+`sdkconfig` independent; changing defaults does not override an existing config.
+
 Application components:
 
 - `components/app_hello`: portable UI behavior and private controller state.

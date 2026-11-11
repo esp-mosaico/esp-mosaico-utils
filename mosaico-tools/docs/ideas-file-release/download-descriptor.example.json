@@ -1,6 +1,7 @@
 {
   "schema": "mosaico-ideas/device-release/1",
   "release_id": "weather-20261013-1",
+  "author": "Mosaico Team",
   "application": {
     "id": "weather-station",
     "code": "042731"

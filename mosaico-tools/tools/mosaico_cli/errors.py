@@ -46,3 +46,12 @@ class OperationError(MosaicoError):
 
 class OutcomeUnknownError(OperationError):
     category = "outcome_unknown"
+
+
+class NativeFlashError(OperationError):
+    """Preserve the native IDF process exit status."""
+    category = "native_flash_failed"
+
+    def __init__(self, message: str, returncode: int, *, details: dict | None = None) -> None:
+        super().__init__(message, details=details)
+        self.exit_code = returncode if returncode >= 0 else 128 - returncode

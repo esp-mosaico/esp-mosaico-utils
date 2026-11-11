@@ -1,24 +1,24 @@
-# GSP Hello World 概念设计 v1
+# GSP Hello World concept design v1
 
-状态：用户已确认的概念效果图，由内置 imagegen 生成。不是 GSP 模拟器或设备截图。
+Status: user-approved concept image generated with built-in imagegen. Not a GSP simulator or device screenshot.
 
-参考：https://mosaico.espressif.com/ （2026-09-19）
+Reference: https://mosaico.espressif.com/ (2026-09-19)
 
-目标屏幕：480×480；效果图为放大的方形设计稿。
+Target screen: 480×480; the concept is an enlarged square design.
 
-视觉：官网暖白底、近黑文字、品牌橙 #FF4C01；大标题、模块化几何图形、胶囊按钮。
+Visual style: website-inspired warm white background, near-black text and brand orange #FF4C01; large headings, modular geometry and pill buttons.
 
-拟定交互：点击 Say hello，hellos 计数增加；初始值为 00。计数不是系统遥测。顶部模块图形是装饰，不是菜单入口。
+Proposed interaction: tapping Say hello increments hellos from an initial 00. The counter is not system telemetry. The top modular graphic is decoration, not a menu entry.
 
-用户随后确认实现。当前应用统一位于 `projects/hello_world`，采用 GSP 原生控件和共享 C 点击逻辑；详见 [实现与验证](implementation.md)。
+The user subsequently approved implementation. The application is consolidated in `projects/hello_world`, using native GSP controls and shared C tap logic; see [implementation and validation](implementation.md).
 
-效果图：hello-world-concept-v1.png
+Concept image: hello-world-concept-v1.png
 
-## 生成提示词
+## Generation prompts
 
-使用内置 imagegen；下列为原始提示词与修正提示词。
+Generated with built-in imagegen; original and revision prompts follow.
 
-### 原始提示词
+### Original prompt
 
 Use case: ui-mockup.
 Create ONE beautiful, high-fidelity flat front-facing UI design concept for the ESP-Mosaico Hello World firmware, designed on a 480 by 480 logical pixel square touchscreen. Output a square high-resolution image of just the screen, edge-to-edge, no physical device, no perspective, no presentation border, no surrounding labels.
@@ -36,6 +36,6 @@ Layout using 480x480 coordinates:
 
 The screen must feel like an elegant welcome page for a tiny embedded development board, not a website dashboard. Show no wifi, battery, connected indicators, fabricated telemetry, runtime version, gradients, shadows, neon, glass panels, extra cards, or controls. Crisp text, carefully balanced optical spacing, restrained monochrome+orange palette. All text exactly as specified. This is a concept still of the initial state; intended interaction is that each Say hello tap increments the displayed hello count.
 
-### 最终修正提示词
+### Final revision prompt
 
 Edit this ESP-Mosaico UI concept image. Fix ONLY the missing background and restore text opacity: Composite the entire current design onto a completely SOLID OPAQUE warm off-white #F6F6F3 background filling every pixel of the square canvas. No transparency anywhere, opaque final screenshot, alpha 255 throughout. This is a SCREENSHOT of a device UI with an off-white screen background, not a cutout asset. Preserve all existing layout, positions, typography, black/orange palette, button, tiles and wording. Make all black lettering fully opaque #101010, gray supporting text fully opaque #70706C, keep white button text. The background should be visibly warm light gray as on premium paper. Keep everything else unchanged. Do not remove the background.

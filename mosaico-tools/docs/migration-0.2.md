@@ -1,26 +1,26 @@
-# mosaico-tools 0.2 迁移
+# Migrating to mosaico-tools 0.2
 
-0.2 使用 Gateway API major 2、Iris wire version 2 与
-`esp-iris-system-update/0.2` bundle。旧设备、旧 Gateway 和旧 bundle 均须使用
-独立旧环境处理；没有兼容解析、协议切换或自动制品转换。
+Version 0.2 uses Gateway API major 2, Iris wire version 2 and
+`esp-iris-system-update/0.2` bundles. Older devices, Gateways and bundles must be handled
+in a separate legacy environment; there is no compatibility parser, protocol switching or automatic artifact conversion.
 
-主机的项目会话、设备所有权和基础固件验证记录隔离到 `esp-mosaico/0.2` 状态目录。
-Ideas 账户凭据和续传记录也在该目录下，须重新登录；旧目录保持原样，不自动导入。
-工具不读取、搬迁或删除旧验证记录，不接管仍存活的旧 Gateway。
-Python 依赖环境与可变设备状态分开；不再复用源码目录的旧 `.venv`。
+Host project sessions, device ownership and base-firmware validation records are isolated in the `esp-mosaico/0.2` state directory.
+Ideas credentials and resume records also live there, so sign in again. The old directory remains unchanged and is not imported automatically.
+The tools do not read, move or delete old validation records, or take over a still-running older Gateway.
+Python dependency environments are separate from mutable device state; the old source-directory `.venv` is no longer reused.
 
-使用工具所属目录的 `mosaico-tools/mosaico.py`，或工作区的对应 launcher。
-旧 `esp-mosaico-vibe-mode/mosaico.py`、其 Python 转发包和旧构建脚本路径已移除。
-应用接入 [公共集成入口](application-integration.md)，使用新的 test 分区契约后重建。
-不能仅替换旧包的版本字符串。
+Use `mosaico-tools/mosaico.py` in the tools directory or the corresponding workspace launcher.
+The former `mosaico.py` in the Vibe Mode directory, its Python forwarding package and old build-script paths have been removed.
+Integrate applications through the [public integration entry point](application-integration.md) and rebuild with the new test-partition contract.
+Changing an old bundle's version string alone is insufficient.
 
-工作区 `.mosaico.json` 使用 `schema_version: 2`，旧 schema 1 会直接报错。
-根据当前路径重新创建配置；本仓库的配置已明确更新，不提供运行时转换器。
-模板描述自身的 schema 与工作区 schema 独立；格式未变化的模板仍使用 schema 1。
+Workspace `.mosaico.json` uses `schema_version: 2`; the old schema 1 is rejected immediately.
+Recreate the configuration for the current paths. This repository's configuration has been explicitly updated; no runtime converter is provided.
+The template descriptor schema is independent of the workspace schema. Templates with an unchanged format still use schema 1.
 
-更新自动化脚本中的命令路径，旧写法不再接受：
+Update command paths in automation scripts; the old forms are no longer accepted:
 
-| 旧路径 | 0.2 路径 |
+| Old path | 0.2 path |
 | --- | --- |
 | `init` | `project init` |
 | `install` | `iris app-update` |
@@ -30,32 +30,31 @@ Python 依赖环境与可变设备状态分开；不再复用源码目录的旧 
 | `memory` / `crash` / `rpc` | `iris memory` / `iris crash` / `iris rpc` |
 | `session run` / `session status` | `iris run` / `iris status` |
 | `device claim` / `release` / `reconcile` | `iris claim` / `iris release` / `iris reconcile` |
-| `enter-recovery` / `recovery-wifi` / `bridge-code` | `iris test enter-recovery` / `iris test recovery-wifi` / `iris test bridge-code` |
+| `enter-recovery` / `recovery-wifi` | `iris test enter-recovery` / `iris test recovery-wifi` |
 
-`doctor`、`recover` 等未改变的正式命令名继续使用。
+Unchanged public commands such as `doctor` and `recover` remain available.
 
-默认仍通过 `iris system-update` 安装新工程、布局或资源，通过 `iris app-update`
-更新完整分区表不变的应用代码。两者需要高速 USB 或 TCP 独立数据链路；
-只有 UART／USB Serial/JTAG 时，日志、RPC、状态、按需截图可用，固件更新会明确失败。
-该限制不影响原生 `idf.py flash monitor` 或 ROM 基础恢复。
+By default, use `iris system-update` to install a new project, layout or resources, and `iris app-update`
+to update application code while keeping the complete partition table unchanged. Both require a separate high-speed USB or TCP data link.
+With only UART or USB Serial/JTAG, logs, RPC, status and on-demand screenshots remain available, but firmware updates fail explicitly.
+This restriction does not affect native `idf.py flash monitor` or base recovery through ROM.
 
-本地工程的 System Update 在写入前核对 bundle 与构建镜像哈希，并将 BIN、ELF、
-map 归档到项目 Gateway，以便后续按完整 ELF 哈希解码崩溃。仅提供 `--bundle`
-的安装没有工程调试文件，不自动推断或借用其他构建的 ELF。
+Before writing a local project's System Update, the tools verify bundle and build-image hashes and archive BIN, ELF and
+map files in the project Gateway for later crash decoding by the full ELF hash. An installation using only `--bundle`
+has no project debug files and does not infer or borrow an ELF from another build.
 
-显式连接串口时使用 `iris run --endpoint PORT --baudrate 74880`，也可在
-`iris claim`、`iris device-status` 等首次连接命令上指定这两个参数。
-默认波特率为 115200，应与设备原生 console 配置一致。显式指定 USB Serial/JTAG
-端口即允许连接该控制台；自动发现不会主动打开 Serial/JTAG 或通用 UART 桥。
-握手后仍须验证实时 Device ID；端口路径和 USB 描述不能代替设备身份。
+For an explicit serial connection, use `iris run --endpoint PORT --baudrate 74880`. These parameters can also be supplied to
+initial-connection commands such as `iris claim` and `iris device-status`.
+The default baud rate is 115200 and should match the device's native console configuration. Explicitly specifying a USB Serial/JTAG
+port authorizes connecting to that console; automatic discovery does not proactively open Serial/JTAG or generic UART bridges.
+The live Device ID must still be verified after the handshake. Port paths and USB descriptions do not establish device identity.
 
-已有匹配 0.2 基础固件时，可关闭所属 Gateway，直接使用原版 monitor 或原生烧录。
-空白设备、第三方完整烧录后的设备及旧布局设备先执行 recover，再核验实时身份、
-模式与契约。迁移擦写范围和启动意图详见
-[Vibe Mode 迁移指南](../../esp-mosaico-vibe-mode/docs/migration-0.2.md)。
+If matching 0.2 base firmware is already installed, stop the owning Gateway and use the original monitor or native flashing tools directly.
+For blank devices, devices fully flashed by third-party tools, or devices with an old layout, run recover first, then verify live identity,
+mode and contract. See the Vibe Mode specification for migration erase/write scope and boot intent.
 
-仓库内评审基础包已更新为 0.2.0，普通 `recover` 和 `app-update` 默认使用它。
-验证后续源码候选使用 `recover --source current`，通过验收后再整体替换评审包。
-候选固件的代码更新验收使用 `iris app-update --recovery-source current`，明确以
-上述命令生成的候选包做版本和兼容性校验；不替换评审目录，也不会在候选缺失时
-回退到其他基础包。普通 `app-update` 仍默认校验评审包。
+The repository's reviewed base bundle has been updated to 0.2.0 and is the default for ordinary `recover` and `app-update` operations.
+Validate later source candidates with `recover --source current --source-path /path/to/firmware/vibe-mode`, then replace the reviewed bundle as a whole after acceptance.
+For candidate-firmware code-update acceptance, use `iris app-update --recovery-source current --recovery-source-path /path/to/firmware/vibe-mode` to explicitly
+validate version and compatibility against the candidate bundle generated above. This does not replace the reviewed directory or
+fall back to another base bundle when the candidate is missing. Ordinary `app-update` still validates the reviewed bundle by default.

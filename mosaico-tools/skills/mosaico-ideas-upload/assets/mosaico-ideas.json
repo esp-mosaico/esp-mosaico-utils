@@ -1,20 +1,13 @@
 {
-  "schema": "mosaico-ideas/project-upload/v1",
-  "project": {
-    "title": "",
-    "categories": [],
-    "boards": [],
-    "tags": [],
-    "license": "",
-    "external_links": []
-  },
-  "content": {
-    "readme": "README.md",
-    "covers": [],
-    "resources": [],
-    "attachments": []
-  },
-  "release": {
-    "changelog": ""
+  "schema": "mosaico-ideas/project-release/1",
+  "project": {"title": "", "content_type": "software", "category_id": null, "boards": [], "tags": [], "external_links": []},
+  "firmware": "build/app-system-update.irisfw",
+  "website": {"readme": "README.md", "covers": [], "resources": [], "attachments": []},
+  "device": {
+    "default_locale": "zh-CN",
+    "presentations": {
+      "zh-CN": {"name": "", "description": "", "font": "assets/font.ttf"},
+      "en": {"name": "", "description": "", "font": "assets/font.ttf"}
+    }
   }
 }

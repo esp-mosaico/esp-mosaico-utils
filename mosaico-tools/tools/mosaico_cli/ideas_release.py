@@ -107,12 +107,12 @@ class Release:
     displays: dict
     archive_sha256: str
 
-    def device_release(self, application_id, code, release_id):
+    def device_release(self, application_id, code, release_id, *, author):
         output = {"firmware/" + name: data for name, data in self.firmware_files.items()}
         for presentation in self.manifest["device"]["presentations"]:
             for ref in [presentation["display"], *presentation["assets"]]:
                 output[ref["path"]] = self.files[ref["path"]]
-        root = {"schema": "mosaico-ideas/device-release/1", "release_id": release_id,
+        root = {"schema": "mosaico-ideas/device-release/1", "release_id": release_id, "author": author,
                 "application": {"id": application_id, "code": code},
                 "firmware": {"manifest": descriptor("firmware/manifest.json", output["firmware/manifest.json"])},
                 "device": self.manifest["device"]}
@@ -146,6 +146,6 @@ def validate_release(source):
     displays = {p["display"]["path"].split("/")[1]: validate_display(p, files)
                 for p in manifest["device"]["presentations"]}
     release = Release(manifest, files, firmware, members, displays, digest(raw))
-    # Reserve worst-case identity lengths before accepting a source ZIP.
-    release.device_release("a"*64, "000000", "r"*64)
+    # Reserve identities and worst-case JSON escaping (six bytes per author character).
+    release.device_release("a"*64, "000000", "r"*64, author="\x01"*128)
     return release

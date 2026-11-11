@@ -1,0 +1,330 @@
+{
+  "schema": "esp-iris-native-flash-startup-validation/v1",
+  "date": "2026-10-30",
+  "host_base_commit": "0e2c3102ba59d2ef3ed55b82fd772e936ef2a985",
+  "host_worktree_modified": true,
+  "device_operations_entrypoint": "consuming workspace mosaico.py e2e-startup-uart / e2e-startup-usj",
+  "consuming_workspace": "test/iris-native-flash-20261030 (sibling of esp-mosaico-utils)",
+  "device": {
+    "chip_target": "esp32h2",
+    "hardware_mac": "60:55:f9:f7:2e:60",
+    "device_id": "4553502d4952495301006055f9f72e60"
+  },
+  "behavior": "Native flash retains its normal reset. Gateway starts its reader and performs one additional run reset on the same open port, then permits Iris discovery. These captures cover the second boot. Ordinary reconnect and reconciliation never request the extra reset.",
+  "previous_validation": "native-flash-validation.json",
+  "host_source_sha256": {
+    "iris_gateway/host_operations.py": "c556a5c5c8f8f7e7b8829836b9227d0f775c99367ebfc016a83ec420a9005f7b",
+    "iris_gateway/hub.py": "77d5b822bd28a0195c2fecd1ad4f7c2ff7ade9040eeacd8eefb2fed00774f6c5",
+    "iris_gateway/session.py": "3f45d14a1d18cfc115991ee44d90b336f1552f65f066eca3c201b8b1cbc1a801",
+    "iris_gateway/link.py": "f83af7425809fc6dc7fe64271591eb32eda5f7c6e8f30d97ebbb3b2e29c12ea1",
+    "iris_gateway/hardware_reset.py": "58d21b6dcac686c3fff11c02cdf29250dd1732d52fde597b259e2803835d6bab"
+  },
+  "transports": [
+    {
+      "transport": "uart",
+      "endpoint": "/dev/serial/by-id/usb-Silicon_Labs_CP2102N_USB_to_UART_Bridge_Controller_766d89915224ed1184cb95e8f9a97352-if00-port0",
+      "cases": [
+        {
+          "operation_id": "7f5ebd48-1a33-4c0d-a0b3-81b16caec393",
+          "target": "flash",
+          "startup_reset": {
+            "kind": "hardware_reset",
+            "endpoint": "usb:location=1-7",
+            "capture_id": "6c4089ddcf4196579ea1ced52d3af04f",
+            "mode": "run",
+            "circuit": "uart",
+            "device_id": null,
+            "boot_id": null,
+            "host_receive_wall_ns": 1793343332770131803,
+            "state": "sequence_completed",
+            "reader_started_before_reset": true
+          },
+          "capture": {
+            "rom_banner": true,
+            "bootloader": true,
+            "heartbeat_zero": true,
+            "capture_id": "6c4089ddcf4196579ea1ced52d3af04f",
+            "first_text": "ESP-ROM:esp32h2-20221101\r\nBuild:Nov  1 2022\r\nrst:0x1 (POWERON),boot:0xc (SPI_FAST_FLASH_BOOT)\r\nSPIWP:0xee\r\nmode:DIO, clock div:1\r\nload:0x408460f0,len:0x150c\r\nload:0x4083c2d0,len:0xda0\r\nload:0x4083efd0,len:0x2f08\r\nentry 0x4083c2da\r\nI (23) boot: ESP-IDF v6.2-dev-2221-g7b9cc1ac79f-dirt 2nd stage bootloader\r\nI (24) boot: compile time Oct 30 2026 14:18:41\r\nI (25) boot: chip revision: v0.1\r\nI (26) boot."
+          },
+          "gateway_run_reset_count": 1,
+          "rpc_echo_payload_bytes": [
+            0,
+            1,
+            32,
+            128,
+            512
+          ],
+          "boot_id": "17834098239115094785",
+          "elf_sha256": "a75376f12e4e810d8c322fdba3001dc1b951da38b50fdc85e6cfb039c61e0c8a",
+          "invalid_frames": 0,
+          "log_dropped_bytes": 0
+        },
+        {
+          "operation_id": "2a84ddb0-2e51-4888-ac9e-2cdb973dab27",
+          "target": "app-flash",
+          "startup_reset": {
+            "kind": "hardware_reset",
+            "endpoint": "usb:location=1-7",
+            "capture_id": "f09c8c437d3f8841eaab790f5d4cbeed",
+            "mode": "run",
+            "circuit": "uart",
+            "device_id": null,
+            "boot_id": null,
+            "host_receive_wall_ns": 1793343350633289126,
+            "state": "sequence_completed",
+            "reader_started_before_reset": true
+          },
+          "capture": {
+            "rom_banner": true,
+            "bootloader": true,
+            "heartbeat_zero": true,
+            "capture_id": "f09c8c437d3f8841eaab790f5d4cbeed",
+            "first_text": "ESP-ROM:esp32h2-20221101\r\nBuild:Nov  1 2022\r\nrst:0x1 (POWERON),boot:0xc (SPI_FAST_FLASH_BOOT)\r\nSPIWP:0xee\r\nmode:DIO, clock div:1\r\nload:0x408460f0,len:0x150c\r\nload:0x4083c2d0,len:0xda0\r\nload:0x4083efd0,len:0x2f08\r\nentry 0x4083c2da\r\nI (23) boot: ESP-IDF v6.2-dev-2221-g7b9cc1ac79f-dirt 2nd stage bootloader\r\nI (24) boot: compile time Oct 30 2026 14:18:41\r\nI (25) boot: chip revision: v0.1\r\nI (26) boot."
+          },
+          "gateway_run_reset_count": 1,
+          "rpc_echo_payload_bytes": [
+            0,
+            1,
+            32,
+            128,
+            512
+          ],
+          "boot_id": "15292464587306067304",
+          "elf_sha256": "a75376f12e4e810d8c322fdba3001dc1b951da38b50fdc85e6cfb039c61e0c8a",
+          "invalid_frames": 0,
+          "log_dropped_bytes": 0
+        },
+        {
+          "operation_id": "75b61bd4-700e-43c6-a842-03cf6296d87f",
+          "target": "app-flash",
+          "startup_reset": {
+            "kind": "hardware_reset",
+            "endpoint": "usb:location=1-7",
+            "capture_id": "32e1ee1c8253f1014ec6253ab7677980",
+            "mode": "run",
+            "circuit": "uart",
+            "device_id": null,
+            "boot_id": null,
+            "host_receive_wall_ns": 1793343358849531282,
+            "state": "sequence_completed",
+            "reader_started_before_reset": true
+          },
+          "capture": {
+            "rom_banner": true,
+            "bootloader": true,
+            "heartbeat_zero": true,
+            "capture_id": "32e1ee1c8253f1014ec6253ab7677980",
+            "first_text": "ESP-ROM:esp32h2-20221101\r\nBuild:Nov  1 2022\r\nrst:0x1 (POWERON),boot:0xc (SPI_FAST_FLASH_BOOT)\r\nSPIWP:0xee\r\nmode:DIO, clock div:1\r\nload:0x408460f0,len:0x150c\r\nload:0x4083c2d0,len:0xda0\r\nload:0x4083efd0,len:0x2f08\r\nentry 0x4083c2da\r\nI (23) boot: ESP-IDF v6.2-dev-2221-g7b9cc1ac79f-dirt 2nd stage bootloader\r\nI (24) boot: compile time Oct 30 2026 14:18:41\r\nI (25) boot: chip revision: v0.1\r\nI (26) boot."
+          },
+          "gateway_run_reset_count": 1,
+          "rpc_echo_payload_bytes": [
+            0,
+            1,
+            32,
+            128,
+            512
+          ],
+          "boot_id": "8529511098530427777",
+          "elf_sha256": "a75376f12e4e810d8c322fdba3001dc1b951da38b50fdc85e6cfb039c61e0c8a",
+          "invalid_frames": 0,
+          "log_dropped_bytes": 0
+        }
+      ]
+    },
+    {
+      "transport": "usj",
+      "endpoint": "/dev/serial/by-id/usb-Espressif_USB_JTAG_serial_debug_unit_60:55:F9:F7:2E:60-if00",
+      "cases": [
+        {
+          "operation_id": "4e692531-44ff-4cd8-8310-42e39b867d61",
+          "target": "flash",
+          "startup_reset": {
+            "kind": "hardware_reset",
+            "endpoint": "usb:location=1-8:1.0",
+            "capture_id": "1808ff9e7ea02d2b08053cbbd8e7923c",
+            "mode": "run",
+            "circuit": "usb_serial_jtag",
+            "device_id": null,
+            "boot_id": null,
+            "host_receive_wall_ns": 1793343452059412915,
+            "state": "sequence_completed",
+            "reader_started_before_reset": true
+          },
+          "capture": {
+            "rom_banner": true,
+            "bootloader": true,
+            "heartbeat_zero": true,
+            "capture_id": "1808ff9e7ea02d2b08053cbbd8e7923c",
+            "first_text": "ESP-ROM:esp32h2-20221101\r\nBuild:Nov  1 2022\r\nrst:0x15 (USB_UART_HPSYS),boot:0xc (SPI_FAST_FLASH_BOOT)\r\nSaved PC:0x40803a5c\r\nSPIWP:0xee\r\nmode:DIO, clock div:1\r\nload:0x408460f0,len:0x154c\r\nload:0x4083c2d0,len:0xd60\r\nload:0x4083efd0,len:0x2f1c\r\nentry 0x4083c2da\r\nI (23) boot: ESP-IDF v6.2-dev-2221-g7b9cc1ac79f-dirt 2nd stage bootloader\r\nI (23) boot: compile time Oct 30 2026 14:27:04\r\nI (24) boot: chip"
+          },
+          "gateway_run_reset_count": 1,
+          "rpc_echo_payload_bytes": [
+            0,
+            1,
+            32,
+            128,
+            512
+          ],
+          "boot_id": "235413012631422193",
+          "elf_sha256": "48f791600c6ed665c730134c9f87e1ab87ba32305235a106d8a00f69c7989860",
+          "invalid_frames": 0,
+          "log_dropped_bytes": 0
+        },
+        {
+          "operation_id": "ab0d1fcd-373b-434d-89e3-76dd7dbe7a92",
+          "target": "app-flash",
+          "startup_reset": {
+            "kind": "hardware_reset",
+            "endpoint": "usb:location=1-8:1.0",
+            "capture_id": "f75d16d12d955e639dba202727f4b754",
+            "mode": "run",
+            "circuit": "usb_serial_jtag",
+            "device_id": null,
+            "boot_id": null,
+            "host_receive_wall_ns": 1793343466817395075,
+            "state": "sequence_completed",
+            "reader_started_before_reset": true
+          },
+          "capture": {
+            "rom_banner": true,
+            "bootloader": true,
+            "heartbeat_zero": true,
+            "capture_id": "f75d16d12d955e639dba202727f4b754",
+            "first_text": "ESP-ROM:esp32h2-20221101\r\nBuild:Nov  1 2022\r\nrst:0x15 (USB_UART_HPSYS),boot:0xc (SPI_FAST_FLASH_BOOT)\r\nSaved PC:0x40803a5c\r\nSPIWP:0xee\r\nmode:DIO, clock div:1\r\nload:0x408460f0,len:0x154c\r\nload:0x4083c2d0,len:0xd60\r\nload:0x4083efd0,len:0x2f1c\r\nentry 0x4083c2da\r\nI (23) boot: ESP-IDF v6.2-dev-2221-g7b9cc1ac79f-dirt 2nd stage bootloader\r\nI (23) boot: compile time Oct 30 2026 14:27:04\r\nI (24) boot: chip"
+          },
+          "gateway_run_reset_count": 1,
+          "rpc_echo_payload_bytes": [
+            0,
+            1,
+            32,
+            128,
+            512
+          ],
+          "boot_id": "7536787326991744885",
+          "elf_sha256": "48f791600c6ed665c730134c9f87e1ab87ba32305235a106d8a00f69c7989860",
+          "invalid_frames": 0,
+          "log_dropped_bytes": 0
+        },
+        {
+          "operation_id": "a7f833d3-3edd-4090-baf9-6cc36af89fe4",
+          "target": "app-flash",
+          "startup_reset": {
+            "kind": "hardware_reset",
+            "endpoint": "usb:location=1-8:1.0",
+            "capture_id": "ec5c1dcd1b92d4686891932c13f97cfc",
+            "mode": "run",
+            "circuit": "usb_serial_jtag",
+            "device_id": null,
+            "boot_id": null,
+            "host_receive_wall_ns": 1793343471398519825,
+            "state": "sequence_completed",
+            "reader_started_before_reset": true
+          },
+          "capture": {
+            "rom_banner": true,
+            "bootloader": true,
+            "heartbeat_zero": true,
+            "capture_id": "ec5c1dcd1b92d4686891932c13f97cfc",
+            "first_text": "ESP-ROM:esp32h2-20221101\r\nBuild:Nov  1 2022\r\nrst:0x15 (USB_UART_HPSYS),boot:0xc (SPI_FAST_FLASH_BOOT)\r\nSaved PC:0x40803a5c\r\nSPIWP:0xee\r\nmode:DIO, clock div:1\r\nload:0x408460f0,len:0x154c\r\nload:0x4083c2d0,len:0xd60\r\nload:0x4083efd0,len:0x2f1c\r\nentry 0x4083c2da\r\nI (23) boot: ESP-IDF v6.2-dev-2221-g7b9cc1ac79f-dirt 2nd stage bootloader\r\nI (23) boot: compile time Oct 30 2026 14:27:04\r\nI (24) boot: chip"
+          },
+          "gateway_run_reset_count": 1,
+          "rpc_echo_payload_bytes": [
+            0,
+            1,
+            32,
+            128,
+            512
+          ],
+          "boot_id": "6047350666174602147",
+          "elf_sha256": "48f791600c6ed665c730134c9f87e1ab87ba32305235a106d8a00f69c7989860",
+          "invalid_frames": 0,
+          "log_dropped_bytes": 0
+        }
+      ]
+    }
+  ],
+  "raw_evidence": [
+    {
+      "file": "startup-uart-0.log",
+      "sha256": "8be4f380020db081769af17ed3589497d3e8f02c9c28d2362da5e0fb2a8ee486"
+    },
+    {
+      "file": "startup-uart-0-events.json",
+      "sha256": "ce8699e9eacbd9c537403c072d5ef9c430cab59f22acbbecacf6a304e3eb8ca8"
+    },
+    {
+      "file": "startup-uart-1.log",
+      "sha256": "8be4f380020db081769af17ed3589497d3e8f02c9c28d2362da5e0fb2a8ee486"
+    },
+    {
+      "file": "startup-uart-1-events.json",
+      "sha256": "29108c28bac7b48a4af4ada29cce192c81b77fbcd9fdabe5bb7433bf86c20860"
+    },
+    {
+      "file": "startup-uart-2.log",
+      "sha256": "6d2fbb566bb65d014ba3d47adb0d602e873db05cb9d3dbc6531c81d091651f81"
+    },
+    {
+      "file": "startup-uart-2-events.json",
+      "sha256": "0d29cfb1c49efb83a5d7bb78003004987c8dba903b9171ed4ec6601b958791fd"
+    },
+    {
+      "file": "startup-uart.json",
+      "sha256": "32f8c5dd66c98b86cea5b7d0d67ca7aa6c2ff112bb6a9bf28372fa7dca4e6072"
+    },
+    {
+      "file": "startup-usj-0.log",
+      "sha256": "9dad18ed25e7f17e4fa091cb26cf555fdbb0b38972e355b61146b1879523c08b"
+    },
+    {
+      "file": "startup-usj-0-events.json",
+      "sha256": "deee29f968668fabac33b682ff0810eb4ea3ba0cb526d68b9cd62aa0d54a7d65"
+    },
+    {
+      "file": "startup-usj-1.log",
+      "sha256": "5eeb3b5049f47647f9280a7f396ff9cc27ea62edea73c0447f9bf1ac394a26c7"
+    },
+    {
+      "file": "startup-usj-1-events.json",
+      "sha256": "9097a73a4ec3fc54b68d48c187e06d7bacbd95934a7da626398eaff13310108a"
+    },
+    {
+      "file": "startup-usj-2.log",
+      "sha256": "b1f112ed4e48f69ee5e566086cb6ea40f689f2bd97802d595ee95135e0c2f858"
+    },
+    {
+      "file": "startup-usj-2-events.json",
+      "sha256": "9cc705b9e6cf259c61b7f02fbda1907d128ea4a47cdb6a4f4a1afd76703283fc"
+    },
+    {
+      "file": "startup-usj.json",
+      "sha256": "76214fb654b7a1ce8f96d92e2dcd97a95baeefcfefeb4e7bf22e750702e3cb00"
+    }
+  ],
+  "validation": {
+    "iris_full_suite": {
+      "passed": 906,
+      "seconds": 54.51
+    },
+    "startup_suite_after_additional_handshake_gate_case": {
+      "passed": 4
+    },
+    "mosaico_full_suite": {
+      "passed": 569,
+      "skipped": 26,
+      "seconds": 61.65
+    },
+    "ruff": "passed for changed Iris modules and native flash tests",
+    "python38_syntax": "passed"
+  },
+  "launcher_source_sha256": {
+    "mosaico.py": "f82784bf1a34ea1d77c93239f871692315b0e105f19770d2c937093171fcdc6e",
+    "boot_validation.py": "f03ff31716c4d1ec07b0fa94f89f98919f9cc37485b7aca5a8cfecff91d380fe"
+  },
+  "limitations": [
+    "Validated on one ESP32-H2 using CP2102N UART and native USB Serial/JTAG on Linux.",
+    "The application may run briefly after the native tool reset before the additional captured reset.",
+    "Missing hardware, failed reset, USB disconnection or other board/OS behavior cannot guarantee complete startup capture.",
+    "This follow-up did not repeat the previous full-flash data preservation readback; write manifests remained limited to bootloader, unchanged partition table and application."
+  ]
+}

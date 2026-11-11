@@ -163,7 +163,8 @@ class SessionScope:
         from .gateway import GatewaySession, _require_compatible_gateway
 
         args = self.arguments
-        project = resolve_project(context.workspace, getattr(args, "project", None), Path.cwd())
+        project = resolve_project(context.workspace, getattr(args, "project", None), Path.cwd(),
+                                  **({"native": True} if getattr(args, "command", None) in {"flash", "app-flash"} else {}))
         api = host_api(context.workspace)
         local = api.LocalProject((state_root("esp-mosaico") / "0.2"), context.workspace.root, project,
                                  data_dir=getattr(args, "gateway_data_dir", None))
@@ -313,7 +314,7 @@ class SessionScope:
         # selection rules. A ROM hardware MAC is never an implicit USB selector.
         automatic = command in {
             "monitor", "memory", "crash", "rpc", "install", "system-update",
-            "enter-recovery", "recovery-wifi", "bridge-code", "recover",
+            "enter-recovery", "recovery-wifi", "recover", "run-app",
             "device-status", "screenshot",
         } and not getattr(args, "hardware_mac", None)
         if command not in {"device", "list"} and (selected or endpoint or automatic):

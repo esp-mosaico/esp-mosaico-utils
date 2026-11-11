@@ -139,6 +139,48 @@ def test_sqlite_contention_preserves_batch_and_listings_do_not_write(tmp_path):
     asyncio.run(scenario())
 
 
+def test_writer_startup_waits_for_existing_state_transaction(tmp_path, monkeypatch):
+    async def scenario():
+        store = GatewayStore(tmp_path)
+        service = GatewayService(store, instance_id="startup-contention")
+        entered, release = threading.Event(), threading.Event()
+        set_setting = GatewayStore.set_setting
+
+        def mark_active(self, key, value):
+            if key == "events.writer_active" and value is True:
+                entered.set()
+                assert release.wait(5)
+            return set_setting(self, key, value)
+
+        monkeypatch.setattr(GatewayStore, "set_setting", mark_active)
+        blocker = sqlite3.connect(tmp_path / "gateway.sqlite3")
+        try:
+            await service.on_device_event({"kind": "log", "text": "startup"})
+            async def wait_for_startup():
+                while not entered.is_set():
+                    await asyncio.sleep(0.005)
+            await asyncio.wait_for(wait_for_startup(), 5)
+            blocker.execute("BEGIN IMMEDIATE")
+            release.set()
+            # The startup marker is durable state, not disposable history.
+            # An ordinary state transaction may outlast the 100 ms batch budget.
+            await asyncio.sleep(0.3)
+            writer = service._event_writer
+            assert not writer.closing and writer.snapshot()["status"] == "ok"
+            blocker.rollback()
+            await asyncio.wait_for(service.flush_events(), 10)
+            assert writer.snapshot()["written_events"] == 1
+            assert writer.snapshot()["dropped_events"] == 0
+            assert [row["text"] for row in store.latest_events()] == ["startup"]
+        finally:
+            release.set()
+            blocker.close()
+            await service.close_events()
+            store.close()
+
+    asyncio.run(scenario())
+
+
 def test_slow_disk_does_not_block_loop_and_batches_coalesce_devices(tmp_path, monkeypatch):
     async def scenario():
         store = GatewayStore(tmp_path)

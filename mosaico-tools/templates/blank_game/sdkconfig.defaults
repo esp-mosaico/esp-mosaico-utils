@@ -11,8 +11,6 @@ CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
 CONFIG_APP_RETRIEVE_LEN_ELF_SHA=64
 CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
-CONFIG_FACTORY_RECOVERY_BOOT_GPIO=7
-CONFIG_FACTORY_RECOVERY_BOOT_DEBOUNCE_MS=50
 
 # USB High-Speed is owned by ESP-Iris. Device installation and logs go through
 # the repository's mosaico.py commands. Keep the console on UART and avoid the
