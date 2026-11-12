@@ -169,6 +169,10 @@ leave the application's sdkconfig and source unchanged. Existing product configs
 are validated and never overwritten; preserve an incomplete/mismatched component
 outside `components/` before retrying. Native builds preserve existing selections.
 No global `esp-bmgr-assist` installation or initial failed build is needed.
+Default product game builds exclude the retained base bootloader from `ALL`;
+they compile the application and resources consumed by System Update. Explicit
+bootloader/flash targets keep IDF's existing dependencies and size checks.
+No partition offsets, bootloader implementation or reviewed base binaries change.
 
 The wrapper supplies the Engine Board and common native launcher, then invokes
 existing Recovery-first packaging. It consumes user `sdkconfig.defaults` and

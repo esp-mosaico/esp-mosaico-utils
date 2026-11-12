@@ -92,6 +92,12 @@ include("${_raylib_iris_utils}/esp-mosaico-vibe-mode/cmake/mosaico_idf_project.c
 # An external Game main component does not receive IDF's local-main implicit
 # dependencies. Preserve the explicit selected-Board link for its audio calls.
 function(raylib_lite_iris_link_game_board)
+    # Games update only the application through retained Vibe Mode. Keep the
+    # immutable base bootloader out of the default application build; explicit
+    # bootloader/flash targets retain IDF's normal dependency and size checks.
+    if(TARGET bootloader)
+        set_property(TARGET bootloader PROPERTY EXCLUDE_FROM_ALL TRUE)
+    endif()
     idf_component_get_property(_game_lib main COMPONENT_LIB)
     idf_component_get_property(_board_lib "${RAYLIB_LITE_BOARD}" COMPONENT_LIB)
     target_link_libraries(${_game_lib} PUBLIC ${_board_lib})

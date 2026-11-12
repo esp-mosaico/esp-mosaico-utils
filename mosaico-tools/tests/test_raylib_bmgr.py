@@ -182,9 +182,20 @@ def test_wrapper_cmake_excludes_native_generated_board(tmp_path):
         f'set(RAYLIB_LITE_GAME_DIR "{source.as_posix()}")\n'
         f'include("{(cmake_dir / original.name).as_posix()}")\n'
         'project(wrapper NONE)\n'
+        'add_custom_target(bootloader ALL COMMAND "${CMAKE_COMMAND}" -E false)\n'
+        'function(idf_component_get_property result)\n'
+        '  set(${result} unused PARENT_SCOPE)\n'
+        'endfunction()\n'
+        'function(target_link_libraries)\nendfunction()\n'
+        'raylib_lite_iris_link_game_board()\n'
         'file(WRITE "${CMAKE_BINARY_DIR}/components.txt" "${EXTRA_COMPONENT_DIRS}")\n')
     subprocess.run(["cmake", "-S", str(project), "-B", str(project / "build")],
                    check=True, capture_output=True, text=True)
+    subprocess.run(["cmake", "--build", str(project / "build")],
+                   check=True, capture_output=True, text=True)
+    explicit_boot = subprocess.run(["cmake", "--build", str(project / "build"), "--target", "bootloader"],
+                                   capture_output=True, text=True)
+    assert explicit_boot.returncode != 0  # Explicit bootloader target still executes.
     components = (project / "build/components.txt").read_text().split(";")
     assert (source / "main").as_posix() in components
     assert (source / "components/game_logic").as_posix() in components
