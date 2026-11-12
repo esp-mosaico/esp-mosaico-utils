@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "component": "espressif2022/raylib-lite-engine",
+  "version": "0.1.1",
+  "revision": "040b84e75640c325bca45515a4135f4b1640fd82",
+  "archive_url": "https://codeload.github.com/espressif2022/raylib-lite-engine/tar.gz/040b84e75640c325bca45515a4135f4b1640fd82",
+  "archive_sha256": "bf7b23b4c4fce3a0b9b9271e8f57da37fd07394b70dd431500e7587d66783471"
+}

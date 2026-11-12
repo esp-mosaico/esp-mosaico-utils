@@ -177,6 +177,9 @@ def load_workspace(
         else workspace_path(runner_value, "build.runner")
     )
 
+    raylib = (workspace_path(dependencies["raylib"], "dependencies.raylib")
+              if dependencies.get("raylib") is not None else None)
+
     return WorkspaceConfig(
         tool_root=tool_root.resolve(),
         root=root,
@@ -195,7 +198,7 @@ def load_workspace(
         configdep=configdep,
         devices=tuple(dict(item) for item in devices_value),
         gateway_source_policy=source_policy,
-        raylib_path=workspace_path(dependencies.get("raylib", "submodule/raylib-lite-engine"), "dependencies.raylib"),
+        raylib_path=raylib,
         init_template=(
             workspace_path(workspace["init_template"], "workspace.init_template")
             if "init_template" in workspace else None

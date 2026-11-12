@@ -281,21 +281,33 @@ def test_missing_shared_checker_fails_before_writing(workspace, monkeypatch):
 
 @pytest.mark.parametrize("action", ["create", "new"])
 @pytest.mark.parametrize("template", ["shooter", "sky-hop", "tower-defense"])
-def test_engine_setup_and_dry_run(workspace, capsys, action, template):
+def test_engine_setup_and_dry_run(workspace, capsys, action, template, monkeypatch):
+    source = workspace.root / "downloaded-registry-example"
+    source.mkdir()
+    (source / "CMakeLists.txt").write_text("project(example VERSION 1.0.0)\n")
+    (source / ".gitignore").write_text("# registry policy\n")
+    calls = []
+    def download(*args):
+        calls.append(args)
+        return source
+    monkeypatch.setattr("mosaico_cli.registry_examples.ensure_example", download)
     arguments = ["--workspace", str(workspace.root), "game", action, "demo", "--template", template, "--json"]
     assert main([*arguments, "--dry-run"]) == 0
     planned = json.loads(capsys.readouterr().out)
     assert planned["git"]["status"] == "planned"
-    assert planned["quality"]["preserved_files"] == [".gitignore"]
+    assert planned["quality"]["preserved_files"] == []
+    assert calls == []  # Do not download a template just to preview setup.
     assert not workspace.projects_dir.exists()
     assert main(arguments) == 0
     created = json.loads(capsys.readouterr().out)
-    assert set(planned["files"]) == set(created["files"])
+    assert set(planned["files"]) <= set(created["files"])
+    assert created["quality"]["preserved_files"] == [".gitignore"]
+    assert len(calls) == 1
     project = Path(created["project"])
     assert (project / ".git").is_dir()
-    assert (project / ".gitignore").read_text() == "# engine policy\n"
+    assert (project / ".gitignore").read_text() == "# registry policy\n"
     assert main(arguments) != 0
-    assert (project / ".gitignore").read_text() == "# engine policy\n"
+    assert (project / ".gitignore").read_text() == "# registry policy\n"
 
 
 @pytest.mark.parametrize("name", [".gitignore", ".GitIgnore", "Tools"])
