@@ -92,7 +92,7 @@ jobs:
           -r ESP-Iris/components/esp_iris/tools/requirements.lock
           -r ESP-Iris/components/esp_iris/tools/requirements-test.txt
           -r esp-mosaico-vibe-mode/tests/requirements-ui.txt
-          -r mosaico-tools/requirements-ideas.txt
+          -r mosaico-tools/requirements-test.txt
       - name: Install Recovery C test dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libssl-dev zlib1g-dev libraqm0
@@ -196,7 +196,7 @@ jobs:
       - run: >-
           python -m pip install --disable-pip-version-check
           -r ESP-Iris/components/esp_iris/tools/requirements-test.txt
-          -r mosaico-tools/requirements-ideas.txt
+          -r mosaico-tools/requirements-test.txt
       - name: Install Recovery C test dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libssl-dev zlib1g-dev libraqm0
