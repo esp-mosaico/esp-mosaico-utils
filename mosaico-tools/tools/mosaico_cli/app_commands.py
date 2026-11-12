@@ -23,7 +23,7 @@ GAME_TEMPLATES = {"shooter": "raylib_shooter", "sky-hop": "sky_hop", "tower-defe
 DEFAULT_GAME_TEMPLATE = "blank"
 EXAMPLE_COPY_IGNORES = (
     "build", "build-*", "managed_components", "dependencies.lock",
-    "sdkconfig", "sdkconfig.old", ".codex-runs", "__pycache__", "*.pyc",
+    "sdkconfig", "sdkconfig.old", "gen_bmgr_codes", ".codex-runs", "__pycache__", "*.pyc",
     ".mosaico-registry-example.json",
 )
 
@@ -74,12 +74,14 @@ def _iris_project(workspace, selected):
     template = workspace.tool_root / "templates" / "blank_game"
     # Source paths, including named examples in another Engine checkout, must
     # never reuse each other's component-manager lock or build cache.
-    key = name + "-" + hashlib.sha256(str(source).encode()).hexdigest()[:12]
+    key = name + "-bmgr-" + hashlib.sha256(str(source).encode()).hexdigest()[:12]
     project = workspace.run_dir / "raylib-iris" / key / "project"
     project.mkdir(parents=True, exist_ok=True)
     (project / "CMakeLists.txt").write_text(IRIS_PROJECT_CMAKE.format(
         game=name, source=_cmake_literal(source.as_posix()), version=version,
         module=(workspace.tool_root / "cmake/raylib_lite_iris_app.cmake").as_posix()), encoding="utf-8")
+    (project / ".mosaico-game-source.json").write_text(
+        json.dumps({"source": str(source)}) + "\n", encoding="utf-8")
     (project / "sdkconfig.game.defaults").write_text(
         'CONFIG_APP_PROJECT_VER="' + version + '"\n', encoding="utf-8")
     (project / "partitions.csv").write_bytes((template / "partitions.csv").read_bytes())
@@ -233,6 +235,9 @@ def run(arguments, workspace):
         os.environ["RAYLIB_LITE_BSP_DIR"] = str(workspace.bsp_path)
         os.environ["RAYLIB_LITE_UTILS_DIR"] = str(workspace.tool_root.parent)
         context = RunContext(workspace, "game-build", arguments.verbose, arguments.json)
+        if not iris and "raylib_lite_iris_app.cmake" not in (project / "CMakeLists.txt").read_text(encoding="utf-8"):
+            from .raylib_bmgr import prepare_board
+            prepare_board(context, project, project, engine, product=False)
         build_application(context, project)
         if iris:
             from .gateway import ensure_iris_tools

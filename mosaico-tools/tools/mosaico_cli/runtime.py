@@ -183,7 +183,14 @@ def build_application(context: RunContext, project: Path) -> None:
     cmake = project / "CMakeLists.txt"
     if cmake.is_file() and "raylib_lite_iris_app.cmake" in cmake.read_text(encoding="utf-8"):
         from .raylib_toolchain import ensure_toolchain
-        environment["RAYLIB_LITE_ENGINE_ROOT"] = str(ensure_toolchain(context.workspace))
+        engine = ensure_toolchain(context.workspace)
+        environment["RAYLIB_LITE_ENGINE_ROOT"] = str(engine)
+        from .raylib_bmgr import prepare_board
+        source_marker = project / ".mosaico-game-source.json"
+        source = project
+        if source_marker.is_file():
+            source = Path(json.loads(source_marker.read_text(encoding="utf-8"))["source"])
+        prepare_board(context, project, source, engine)
     context.status(f"build: preparing {project}")
     result = context.run(
         [

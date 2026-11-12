@@ -152,12 +152,23 @@ games. This wrapper supplies `app_main` through that launcher. Applications with
 their own `app_main` use the ordinary native build and application integration
 path described above.
 
-The wrapper references the original `main/` and optional `components/` directory,
+The wrapper references the original `main/` and optional `components/` children,
+excluding the original `gen_bmgr_codes` Board configuration,
 so component-relative resources and `idf_component.yml` dependencies stay with
 user source. Source files, manifests and existing build/sdkconfig files are not
 copied or edited. Generated projects and build output live under the configured
 workspace run directory, with separate directories for equal game names at
 different paths. Native and Iris builds therefore do not share sdkconfig.
+
+Before application configuration, the CLI generates missing Board Manager code
+using pinned generator `0.7.5` in an isolated bootstrap project. The blank template
+uses the pinned Engine's `esp_mosaico` profile; Registry examples use their private
+`shared/boards/esp-mosaico/bmgr` profile. The wrapper owns its generated component,
+so a native Board selection cannot leak into the Iris build. Generation failures
+leave the application's sdkconfig and source unchanged. Existing product configs
+are validated and never overwritten; preserve an incomplete/mismatched component
+outside `components/` before retrying. Native builds preserve existing selections.
+No global `esp-bmgr-assist` installation or initial failed build is needed.
 
 The wrapper supplies the Engine Board and common native launcher, then invokes
 existing Recovery-first packaging. It consumes user `sdkconfig.defaults` and

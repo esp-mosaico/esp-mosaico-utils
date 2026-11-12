@@ -74,7 +74,16 @@ else()
 endif()
 list(APPEND EXTRA_COMPONENT_DIRS "${_raylib_iris_game}/main")
 if(EXISTS "${_raylib_iris_game}/components")
-    list(APPEND EXTRA_COMPONENT_DIRS "${_raylib_iris_game}/components")
+    # The wrapper owns its selected Board configuration. Never import the
+    # original game's gen_bmgr_codes (which may select another Board).
+    file(GLOB _raylib_iris_components LIST_DIRECTORIES true "${_raylib_iris_game}/components/*")
+    foreach(_component IN LISTS _raylib_iris_components)
+        get_filename_component(_name "${_component}" NAME)
+        if(IS_DIRECTORY "${_component}" AND NOT _name STREQUAL "gen_bmgr_codes"
+                AND EXISTS "${_component}/CMakeLists.txt")
+            list(APPEND EXTRA_COMPONENT_DIRS "${_component}")
+        endif()
+    endforeach()
 endif()
 set(MOSAICO_ESP_IRIS_ROOT "${_raylib_iris_utils}/ESP-Iris")
 set(MOSAICO_SYSTEM_UPDATE_CMAKE "${_raylib_iris_tools}/cmake/system_update.cmake")

@@ -146,7 +146,7 @@ def test_built_registry_example_creates_a_fresh_reconfigurable_project(workspace
         "build-host/game.so", "build-release/firmware.bin", "managed_components/driver/driver.c",
         "dependencies.lock", "sdkconfig", "sdkconfig.old", ".codex-runs/raw.log",
         "__pycache__/prepare.pyc", "shared/boards/board/build/CMakeCache.txt",
-        ".mosaico-registry-example.json",
+        ".mosaico-registry-example.json", "components/gen_bmgr_codes/gen_board_metadata.yaml",
     )
     authored = (
         "sdkconfig.defaults", "main/idf_component.yml", "assets_src/sprite.png",

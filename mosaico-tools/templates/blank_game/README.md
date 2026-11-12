@@ -55,5 +55,8 @@ there are no gameplay keyboard bindings yet. Add each new input behavior to the
 shared model and map it from the device and Host adapters.
 
 Host needs a C compiler and Pillow, and uses the same C renderer as firmware.
-Firmware needs the pinned workspace ESP-IDF and initialized BSP, engine and utils.
+Firmware needs the pinned workspace ESP-IDF and initialized BSP and utils.
+The CLI downloads the pinned Engine tools and Registry runtime on demand, and
+prepares missing Board Manager code before compiling; no manual `idf.py bmgr`
+step is needed. Existing product Board configurations are checked and preserved.
 Before using any other Raylib API, check the engine's supported public headers.
