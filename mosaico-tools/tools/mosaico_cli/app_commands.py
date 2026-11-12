@@ -21,6 +21,11 @@ GAME_TEMPLATES = {"shooter": "raylib_shooter", "sky-hop": "sky_hop", "tower-defe
                   "last-zone": "last_zone_extraction", "living-worlds": "living_worlds",
                   "neon-rift-rally": "neon_rift_rally"}
 DEFAULT_GAME_TEMPLATE = "blank"
+EXAMPLE_COPY_IGNORES = (
+    "build", "build-*", "managed_components", "dependencies.lock",
+    "sdkconfig", "sdkconfig.old", ".codex-runs", "__pycache__", "*.pyc",
+    ".mosaico-registry-example.json",
+)
 
 IRIS_PROJECT_CMAKE = """cmake_minimum_required(VERSION 3.16)
 set(RAYLIB_LITE_GAME {game})
@@ -171,7 +176,7 @@ def run(arguments, workspace):
                 from .registry_examples import ensure_example
                 source = ensure_example(workspace, GAME_TEMPLATES[arguments.template])
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copytree(source, destination, ignore=shutil.ignore_patterns(".mosaico-registry-example.json"))
+                shutil.copytree(source, destination, ignore=shutil.ignore_patterns(*EXAMPLE_COPY_IGNORES))
                 cmake = destination / "CMakeLists.txt"
                 cmake.write_text(re.sub(r"(?m)^project\([^\s)]+", "project(" + arguments.name,
                                         cmake.read_text(encoding="utf-8")), encoding="utf-8")

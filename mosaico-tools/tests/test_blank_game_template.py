@@ -3,6 +3,8 @@ import csv
 import json
 from pathlib import Path
 import re
+import shutil
+import subprocess
 import sys
 from tempfile import TemporaryDirectory
 
@@ -126,3 +128,48 @@ def test_example_dry_run_does_not_download(workspace, capsys, monkeypatch):
     assert main(["--workspace", str(workspace), "game", "create", "demo", "--template", "last-zone", "--dry-run", "--json"]) == 0
     assert json.loads(capsys.readouterr().out)["status"] == "dry_run"
     assert not (workspace / "projects").exists()
+
+
+@pytest.mark.skipif(shutil.which("cmake") is None, reason="Reconfiguration regression needs CMake")
+@pytest.mark.parametrize("action", ["create", "new"])
+def test_built_registry_example_creates_a_fresh_reconfigurable_project(workspace, capsys, monkeypatch, action):
+    source = workspace / "downloaded" / "sky_hop"
+    source.mkdir(parents=True)
+    (source / "CMakeLists.txt").write_text(
+        "cmake_minimum_required(VERSION 3.16)\nproject(sky_hop NONE)\n"
+    )
+    configured = subprocess.run(
+        ["cmake", "-S", str(source), "-B", str(source / "build")], capture_output=True, text=True
+    )
+    assert configured.returncode == 0, configured.stdout + configured.stderr
+    generated = (
+        "build-host/game.so", "build-release/firmware.bin", "managed_components/driver/driver.c",
+        "dependencies.lock", "sdkconfig", "sdkconfig.old", ".codex-runs/raw.log",
+        "__pycache__/prepare.pyc", "shared/boards/board/build/CMakeCache.txt",
+        ".mosaico-registry-example.json",
+    )
+    authored = (
+        "sdkconfig.defaults", "main/idf_component.yml", "assets_src/sprite.png",
+        "assets/sprite.bin", "shared/boards/board/sdkconfig.defaults", "LICENSE",
+    )
+    for name in (*generated, *authored):
+        path = source / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("source content\n")
+    monkeypatch.setattr("mosaico_cli.registry_examples.ensure_example", lambda *_: source)
+    assert main([
+        "--workspace", str(workspace), "game", action, "fresh_game", "--template", "sky-hop", "--json"
+    ]) == 0
+    result = json.loads(capsys.readouterr().out)
+    project = Path(result["project"])
+    assert not (project / "build").exists()
+    for name in generated:
+        assert not (project / name).exists(), name
+        assert name not in result["files"]
+        assert (source / name).exists()  # Do not clean or modify the cached source.
+    for name in authored:
+        assert (project / name).read_bytes() == (source / name).read_bytes()
+    rebuilt = subprocess.run(
+        ["cmake", "-S", str(project), "-B", str(project / "build")], capture_output=True, text=True
+    )
+    assert rebuilt.returncode == 0, rebuilt.stdout + rebuilt.stderr
