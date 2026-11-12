@@ -126,7 +126,6 @@ Vibe Mode's `product_contract.json` owns host identity and fixed partition value
 The C ABI remains in `esp-mosaico-vibe-mode/include/mosaico_recovery_contract.h`;
 contract tests compare the product manifest, configuration and partition tables.
 
-Install Tools test dependencies with `python -m pip install -r mosaico-tools/requirements-test.txt`.
 Host validation: run `pytest mosaico-tools/tests` and
 `pytest esp-mosaico-vibe-mode/tests/test_*.py` separately. Vibe Mode UI tests use the native lightweight backend without GSP.
 Hardware acceptance remains separate from these host checks.

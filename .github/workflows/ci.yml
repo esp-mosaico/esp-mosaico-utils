@@ -88,11 +88,11 @@ jobs:
           "TMP=$testTemp" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Install host dependencies
         run: >-
-          python -m pip install --disable-pip-version-check
+          python -m pip install --disable-pip-version-check -r mosaico-tools/requirements-test.txt
           -r ESP-Iris/components/esp_iris/tools/requirements.lock
           -r ESP-Iris/components/esp_iris/tools/requirements-test.txt
           -r esp-mosaico-vibe-mode/tests/requirements-ui.txt
-          -r mosaico-tools/requirements-test.txt
+          -r mosaico-tools/requirements-ideas.txt
       - name: Install Recovery C test dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libssl-dev zlib1g-dev libraqm0
@@ -194,9 +194,9 @@ jobs:
         with:
           python-version: "3.12"
       - run: >-
-          python -m pip install --disable-pip-version-check
+          python -m pip install --disable-pip-version-check -r mosaico-tools/requirements-test.txt
           -r ESP-Iris/components/esp_iris/tools/requirements-test.txt
-          -r mosaico-tools/requirements-test.txt
+          -r mosaico-tools/requirements-ideas.txt
       - name: Install Recovery C test dependencies
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libssl-dev zlib1g-dev libraqm0
