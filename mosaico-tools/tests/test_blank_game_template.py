@@ -3,6 +3,8 @@ import csv
 import json
 from pathlib import Path
 import re
+import shutil
+import subprocess
 import sys
 from tempfile import TemporaryDirectory
 
@@ -62,6 +64,10 @@ def test_blank_creation_uses_project_identity_without_example_assets(workspace, 
     assert 'project(my_snake VERSION' in (project / "CMakeLists.txt").read_text()
     assert 'ESP-Iris Mosaico my_snake' in (project / "sdkconfig.application.defaults").read_text()
     assert (project / "README.md").read_text().startswith("# my_snake\n")
+    import yaml
+    manifest = yaml.safe_load((project / "main/idf_component.yml").read_text())
+    pin = json.loads((TOOLS / "raylib-toolchain.json").read_text())
+    assert manifest["dependencies"][pin["component"]] == "==" + pin["version"]
     cmake = (project / "CMakeLists.txt").read_text()
     for variable, expected in (("MOSAICO_UTILS_ROOT", TOOLS.parent),
                                ("MOSAICO_BSP_ROOT", workspace / "board"),
@@ -91,25 +97,79 @@ def test_blank_dry_run_and_refusal_to_overwrite(workspace, capsys):
     assert marker.read_text() == "user game\n"
 
 
-@pytest.mark.parametrize("option", ["shooter", "sky-hop", "tower-defense"])
-def test_example_selection_uses_engine_creator(workspace, capsys, option, monkeypatch):
-    from types import SimpleNamespace
-    import subprocess
-    engine = workspace / "engine"
-    (engine / "tools").mkdir()
-    (engine / "tools/game_cli.py").touch()
+@pytest.mark.parametrize("option,example", [
+    ("shooter", "raylib_shooter"), ("sky-hop", "sky_hop"),
+    ("tower-defense", "tower_defense"), ("last-zone", "last_zone_extraction"),
+])
+def test_example_selection_uses_registry_download(workspace, capsys, option, example, monkeypatch):
+    source = workspace / "downloaded" / example
+    (source / "main").mkdir(parents=True)
+    (source / "CMakeLists.txt").write_text("project(" + example + " VERSION 1.0.0)\n")
+    (source / "main/idf_component.yml").write_text("dependencies: {}\n")
+    (source / "LICENSE").write_text("example license\n")
     calls = []
-    real_run = subprocess.run
-    def create(command, **kwargs):
-        if str(engine / "tools/game_cli.py") not in command:
-            return real_run(command, **kwargs)
-        calls.append(command)
-        project = workspace / "projects/demo"
-        project.mkdir(parents=True)
-        (project / "CMakeLists.txt").write_text("# engine example\n")
-        return SimpleNamespace(returncode=0, stdout=json.dumps({"project": str(workspace / "projects/demo")}), stderr="")
-    monkeypatch.setattr("mosaico_cli.app_commands.subprocess.run", create)
+
+    def download(selected_workspace, name):
+        calls.append(name)
+        return source
+
+    monkeypatch.setattr("mosaico_cli.registry_examples.ensure_example", download)
     assert main(["--workspace", str(workspace), "game", "create", "demo", "--template", option, "--json"]) == 0
-    assert str(engine / "tools/game_cli.py") in calls[0]
-    assert option in calls[0]
+    result = json.loads(capsys.readouterr().out)
+    project = Path(result["project"])
+    assert calls == [example]
+    assert "project(demo VERSION" in (project / "CMakeLists.txt").read_text()
+    assert (project / "LICENSE").read_text() == "example license\n"
     assert not (workspace / "board").exists()
+
+
+def test_example_dry_run_does_not_download(workspace, capsys, monkeypatch):
+    monkeypatch.setattr("mosaico_cli.registry_examples.ensure_example", lambda *_: pytest.fail("dry run downloads"))
+    assert main(["--workspace", str(workspace), "game", "create", "demo", "--template", "last-zone", "--dry-run", "--json"]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "dry_run"
+    assert not (workspace / "projects").exists()
+
+
+@pytest.mark.skipif(shutil.which("cmake") is None, reason="Reconfiguration regression needs CMake")
+@pytest.mark.parametrize("action", ["create", "new"])
+def test_built_registry_example_creates_a_fresh_reconfigurable_project(workspace, capsys, monkeypatch, action):
+    source = workspace / "downloaded" / "sky_hop"
+    source.mkdir(parents=True)
+    (source / "CMakeLists.txt").write_text(
+        "cmake_minimum_required(VERSION 3.16)\nproject(sky_hop NONE)\n"
+    )
+    configured = subprocess.run(
+        ["cmake", "-S", str(source), "-B", str(source / "build")], capture_output=True, text=True
+    )
+    assert configured.returncode == 0, configured.stdout + configured.stderr
+    generated = (
+        "build-host/game.so", "build-release/firmware.bin", "managed_components/driver/driver.c",
+        "dependencies.lock", "sdkconfig", "sdkconfig.old", ".codex-runs/raw.log",
+        "__pycache__/prepare.pyc", "shared/boards/board/build/CMakeCache.txt",
+        ".mosaico-registry-example.json", "components/gen_bmgr_codes/gen_board_metadata.yaml",
+    )
+    authored = (
+        "sdkconfig.defaults", "main/idf_component.yml", "assets_src/sprite.png",
+        "assets/sprite.bin", "shared/boards/board/sdkconfig.defaults", "LICENSE",
+    )
+    for name in (*generated, *authored):
+        path = source / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("source content\n")
+    monkeypatch.setattr("mosaico_cli.registry_examples.ensure_example", lambda *_: source)
+    assert main([
+        "--workspace", str(workspace), "game", action, "fresh_game", "--template", "sky-hop", "--json"
+    ]) == 0
+    result = json.loads(capsys.readouterr().out)
+    project = Path(result["project"])
+    assert not (project / "build").exists()
+    for name in generated:
+        assert not (project / name).exists(), name
+        assert name not in result["files"]
+        assert (source / name).exists()  # Do not clean or modify the cached source.
+    for name in authored:
+        assert (project / name).read_bytes() == (source / name).read_bytes()
+    rebuilt = subprocess.run(
+        ["cmake", "-S", str(project), "-B", str(project / "build")], capture_output=True, text=True
+    )
+    assert rebuilt.returncode == 0, rebuilt.stdout + rebuilt.stderr

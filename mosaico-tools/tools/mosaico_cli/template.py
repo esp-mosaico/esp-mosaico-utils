@@ -61,7 +61,7 @@ def _paths(value: Any, workspace: WorkspaceConfig, template: Path) -> dict[str, 
         "workspace": workspace.root,
         "utils": workspace.tool_root.parent,
         "tools": workspace.tool_root,
-        "engine": workspace.raylib_path or workspace.root / "submodule/raylib-lite-engine",
+        "engine": workspace.raylib_path,
         "template": template.parent,
         "bsp": workspace.bsp_path,
         "esp_iris": workspace.esp_iris_path,
@@ -79,7 +79,11 @@ def _paths(value: Any, workspace: WorkspaceConfig, template: Path) -> dict[str, 
             raise EnvironmentError(f"Unknown template path base: {base}")
         path_text = _string(entry["path"], f"path {name}.path")
         relative = Path(".") if path_text == "." else _file_path(path_text, f"path {name}.path")
-        path = (anchors[base] / relative).resolve()
+        anchor = anchors[base]
+        if base == "engine" and anchor is None:
+            from .raylib_toolchain import cache_path
+            anchor = cache_path(workspace.tool_root, workspace.run_dir)
+        path = (anchor / relative).resolve()
         required = entry.get("required")
         if "required" in entry and required not in ("file", "directory"):
             raise EnvironmentError(f"Template path {name}.required must be 'file' or 'directory'.")

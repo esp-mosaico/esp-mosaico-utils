@@ -18,11 +18,20 @@ Template schema v1 provides `workspace`, `template`, `utils`, `tools`, `bsp`,
 `esp_iris`, and `engine` path anchors. Paths are rendered relative to each
 output file. `workspace.init_template` remains configurable. `game create/new`
 defaults to the tools-owned `templates/blank_game/mosaico-template.json`.
-`--template shooter`, `sky-hop` or `tower-defense` uses the Engine game creator
-to copy a maintained game with its private shared launcher/Board. The blank
+`--template shooter`, `sky-hop`, `tower-defense`, `last-zone`, `living-worlds`
+or `neon-rift-rally` downloads the published Registry example through
+`idf.py create-project-from-example`, then copies its private shared launcher/Board. The blank
 template uses the exclusive application writer; Engine copies also refuse to
-overwrite an existing project. Configure `dependencies.raylib`
-for the engine location; it is only required for games.
+overwrite an existing project. Firmware Engine dependencies are pinned to Registry `0.1.1` without a local
+source override. `mosaico.py game prepare` downloads the matching Host/blank-game
+source archive specified by `raylib-toolchain.json`, verifies its SHA-256 and
+atomically caches it under the workspace run directory. Game creation, simulation
+and builds prepare it on demand; blank creation dry runs do not download it.
+`game prepare --example last_zone_extraction --json` returns a separately downloaded
+Registry example path. First download needs the configured SDK; cached examples
+can be located/copied offline. Named-game builds use this Registry example cache.
+An explicit `dependencies.raylib` selects developer Host/blank-game sources,
+without changing Registry examples or the application's component dependency.
 
 All creators supplement missing files from the tools-owned project management
 profile (`templates/common/git_quality/mosaico-template.json`) and initialize a
@@ -37,9 +46,8 @@ of checks, and manual Cppcheck analysis using the actual compilation database.
 Custom templates retain schema v1 and their application layout. The public JSON
 result adds `git` (status/branch) and `quality` (guide, preserved files and setup
 commands); `files` includes management files but excludes internal Git metadata.
-Dry-run reports the planned setup without writing. An Engine dry-run uses the
-Engine's reported file inventory to identify preserved configuration; if the
-Engine omits that inventory, preservation is determined during actual creation.
+Dry-run reports the planned setup without writing or downloading an example.
+Template-owned configuration is discovered and preserved during actual creation.
 
 The blank game provides shared C state/update/rendering with separate device and
 Host adapters, generated project identity and the retained Vibe Mode layout. It
@@ -183,7 +191,8 @@ python mosaico.py game build /path/to/my_game --target iris
 python mosaico.py game build sky_hop --target iris
 ```
 
-Configure `dependencies.raylib` with a current Engine source checkout. Named
+Run `mosaico.py game prepare` for the pinned Host/example toolchain, or explicitly
+configure `dependencies.raylib` when developing against a local Engine checkout. Named
 examples and explicit project paths use the same wrapper. Explicit projects
 need a top-level ESP-IDF `CMakeLists.txt` containing `project(...)` and a
 `main/CMakeLists.txt` component. They do not need registration in Engine examples.
@@ -192,12 +201,27 @@ games. This wrapper supplies `app_main` through that launcher. Applications with
 their own `app_main` use the ordinary native build and application integration
 path described above.
 
-The wrapper references the original `main/` and optional `components/` directory,
+The wrapper references the original `main/` and optional `components/` children,
+excluding the original `gen_bmgr_codes` Board configuration,
 so component-relative resources and `idf_component.yml` dependencies stay with
 user source. Source files, manifests and existing build/sdkconfig files are not
 copied or edited. Generated projects and build output live under the configured
 workspace run directory, with separate directories for equal game names at
 different paths. Native and Iris builds therefore do not share sdkconfig.
+
+Before application configuration, the CLI generates missing Board Manager code
+using pinned generator `0.7.5` in an isolated bootstrap project. The blank template
+uses the pinned Engine's `esp_mosaico` profile; Registry examples use their private
+`shared/boards/esp-mosaico/bmgr` profile. The wrapper owns its generated component,
+so a native Board selection cannot leak into the Iris build. Generation failures
+leave the application's sdkconfig and source unchanged. Existing product configs
+are validated and never overwritten; preserve an incomplete/mismatched component
+outside `components/` before retrying. Native builds preserve existing selections.
+No global `esp-bmgr-assist` installation or initial failed build is needed.
+Default product game builds exclude the retained base bootloader from `ALL`;
+they compile the application and resources consumed by System Update. Explicit
+bootloader/flash targets keep IDF's existing dependencies and size checks.
+No partition offsets, bootloader implementation or reviewed base binaries change.
 
 The wrapper supplies the Engine Board and common native launcher, then invokes
 existing Recovery-first packaging. It consumes user `sdkconfig.defaults` and
