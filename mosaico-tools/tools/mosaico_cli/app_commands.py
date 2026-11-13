@@ -220,6 +220,9 @@ def run(arguments, workspace):
         from .registry_examples import RELEASED_EXAMPLES, ensure_example
         example = GAME_TEMPLATES.get(selected, selected)
         if selected and not Path(selected).exists() and example in RELEASED_EXAMPLES:
+            # Named native builds/sims deliberately use this shared cache as
+            # scratch space. Run them serially, or create independent projects
+            # for concurrent work; the Iris wrapper uses an isolated directory.
             project = ensure_example(workspace, example)
         else:
             project = resolve_project(workspace, selected, Path.cwd())

@@ -53,6 +53,13 @@ def _validate(component: Path, board_dir: Path) -> None:
                                "Preserve it outside components/ before retrying the product build.")
 
 
+def _relative_or_absolute(path: Path, start: Path) -> str:
+    try:
+        return Path(os.path.relpath(path, start)).as_posix()
+    except ValueError:  # Windows paths on different drives.
+        return path.as_posix()
+
+
 def prepare_board(context, project: Path, source: Path, engine: Path, *, product: bool = True) -> None:
     """Generate missing esp_mosaico config without overwriting existing config."""
     from .runtime import idf_target_command, resolve_idf_path, run_idf_target
@@ -106,11 +113,8 @@ def prepare_board(context, project: Path, source: Path, engine: Path, *, product
     _validate(generated, board_dir)
     # BMGR emits paths relative to its output component. Relocate those paths
     # when publishing; do not copy application build/lock/sdkconfig state.
-    relative = Path(os.path.relpath(board_dir, generated)).as_posix()
-    try:
-        destination_relative = Path(os.path.relpath(board_dir, component)).as_posix()
-    except ValueError:  # Windows application on a different drive.
-        destination_relative = board_dir.as_posix()
+    relative = _relative_or_absolute(board_dir, generated)
+    destination_relative = _relative_or_absolute(board_dir, component)
     cmake = generated / "CMakeLists.txt"
     cmake.write_text(cmake.read_text(encoding="utf-8").replace(
         '"' + relative + '"', '"' + destination_relative + '"'), encoding="utf-8")

@@ -201,3 +201,27 @@ def test_wrapper_cmake_excludes_native_generated_board(tmp_path):
     assert (source / "components/game_logic").as_posix() in components
     assert (source / "components/gen_bmgr_codes").as_posix() not in components
     assert (source / "components").as_posix() not in components
+
+
+@pytest.mark.parametrize("cross_drive_calls", [(1,), (2,), (1, 2)])
+def test_cross_drive_board_paths_publish_absolute_fallback(setup, monkeypatch, cross_drive_calls):
+    context, source, engine, profile, _ = setup
+    board = profile.resolve() / bmgr.BOARD
+    generated = context.directory / "bmgr-bootstrap" / source.name / "components/gen_bmgr_codes"
+    component = source / "components/gen_bmgr_codes"
+    write_generated(generated, board)
+    real_relpath = os.path.relpath
+    original_path = board.as_posix() if 1 in cross_drive_calls else Path(real_relpath(board, generated)).as_posix()
+    (generated / "CMakeLists.txt").write_text(f'idf_component_register(SRC_DIRS "." "{original_path}")\n')
+    context.run = lambda *args, **kwargs: SimpleNamespace(returncode=0)
+    calls = []
+    def relpath(path, start):
+        calls.append(start)
+        if len(calls) in cross_drive_calls:
+            raise ValueError("path is on a different drive")
+        return real_relpath(path, start)
+    monkeypatch.setattr(bmgr.os.path, "relpath", relpath)
+    bmgr.prepare_board(context, source, source, engine)
+    expected = board.as_posix() if 2 in cross_drive_calls else Path(real_relpath(board, component)).as_posix()
+    assert f'"{expected}"' in (component / "CMakeLists.txt").read_text()
+    assert calls == [generated, component]

@@ -133,3 +133,33 @@ def test_new_example_uses_registry_without_touching_other_overrides(source):
     dependencies = yaml.safe_load(manifest.read_text())["dependencies"]
     assert dependencies["espressif2022/raylib-lite-engine"] == "==0.1.0"
     assert dependencies["example/other"]["override_path"] == "/developer/other"
+
+
+@pytest.mark.parametrize("quote", ["", "'", '"'])
+def test_engine_keys_accept_yaml_quotes(source, quote):
+    workspace, pin, _ = source
+    manifest = workspace.tool_root / "idf_component.yml"
+    manifest.write_text(
+        f'dependencies:\n  {quote}{pin["component"]}{quote}:\n'
+        '    version: "^0.1.0"\n    override_path: /local/engine\n', encoding="utf-8")
+    tools.use_registry_engine(manifest, workspace.tool_root)
+    import yaml
+    assert yaml.safe_load(manifest.read_text())["dependencies"][pin["component"]] == "==" + pin["version"]
+
+
+@pytest.mark.parametrize("extra", [
+    "    git: https://example.invalid/engine.git\n",
+    "    require: public\n",
+    "    matches:\n      - if: target == esp32s31\n",
+    "    version: |\n      ^0.1.0\n",
+    "      version: nested-too-deep\n",
+])
+def test_unexpected_engine_structure_preserves_manifest(source, extra):
+    workspace, pin, _ = source
+    manifest = workspace.tool_root / "idf_component.yml"
+    original = (f'dependencies:\n  {pin["component"]}:\n'
+                '    version: "^0.1.0"\n' + extra + '    override_path: /local/engine\n')
+    manifest.write_text(original, encoding="utf-8")
+    with pytest.raises(EnvironmentError, match="Unsupported nested Engine dependency"):
+        tools.use_registry_engine(manifest, workspace.tool_root)
+    assert manifest.read_text(encoding="utf-8") == original

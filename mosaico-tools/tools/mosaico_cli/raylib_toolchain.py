@@ -147,12 +147,17 @@ def use_registry_engine(manifest, tool_root):
     component = descriptor(tool_root)["component"]
     version = descriptor(tool_root)["version"]
     lines = manifest.read_text(encoding="utf-8").splitlines(keepends=True)
+    key = re.escape(component)
+    entry = re.compile(r"^( *)(?:" + key + r"|'" + key + r"'|\"" + key + r"\")\s*:\s*(.*)$")
     output = []
     inside = False
     indent = 0
     for line in lines:
-        if line.strip().startswith(component + ":"):
-            indent = len(line) - len(line.lstrip())
+        match = entry.match(line.rstrip("\r\n"))
+        if match:
+            if match.group(2).startswith(("{", "[", "|", ">", "&", "*", "!")):
+                raise EnvironmentError(f"Unsupported Engine dependency format in {manifest}; manifest unchanged.")
+            indent = len(match.group(1))
             output.append(" " * indent + component + ': "==' + version + '"\n')
             inside = True
             continue
@@ -160,7 +165,14 @@ def use_registry_engine(manifest, tool_root):
             level = len(line) - len(line.lstrip())
             if level <= indent:
                 inside = False
-            elif re.match(r"(?:version|override_path):", line.lstrip()):
+            else:
+                child = re.match(r"(?:version|override_path)\s*:\s*(.*)$", line.lstrip())
+                if (level != indent + 2 or child is None or
+                        child.group(1).startswith(("{", "[", "|", ">", "&", "*", "!"))):
+                    raise EnvironmentError(
+                        f"Unsupported nested Engine dependency in {manifest}. "
+                        "Only version and override_path scalars can be pinned; manifest unchanged."
+                    )
                 continue
         output.append(line)
     manifest.write_text("".join(output), encoding="utf-8")
