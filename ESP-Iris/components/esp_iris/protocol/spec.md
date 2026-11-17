@@ -164,6 +164,7 @@ Implemented control types:
 | RESTART | `0x15` | `delay_ms:u32` |
 | AUTH_RESULT | `0x16` | `accepted:u8` |
 | TASKS_REQUEST/TASKS_RESPONSE | `0x17/0x18` | empty / task stack snapshot |
+| PAIRING_REQUEST/PAIRING_RESPONSE | `0x19/0x1a` | empty / 64 ASCII hexadecimal characters; verified USB data link only |
 | ERROR | `0x7f` | `esp_err:u32, channel:u8, type:u8, reserved:u16` |
 
 CONTROL and reliable EVENT traffic are not charged against media/log credit.
@@ -565,7 +566,7 @@ Hub receives one physical stream and fans it out to bounded local queues.
 USB is always auth mode 0. With `CONFIG_ESP_IRIS_TCP_PAIRING`, the device
 stores a random 32-byte token in the existing `esp_iris` NVS namespace and
 advertises auth mode 1 plus a fresh 32-byte challenge in HELLO. The token is
-never sent on the link.
+never sent on a TCP or printable console link.
 
 The TCP HELLO_ACK is `binding[17] || client_nonce[16] || hmac_sha256[32]`,
 where binding is `role:u8 || owner_id[16]`. The HMAC key is the token and its
@@ -582,6 +583,25 @@ AUTH_RESULT makes the session ready; before that, every frame except
 HELLO_ACK is discarded without reaching status, crash, RPC, media or OTA
 handlers. Token get/rotate is intended for a product-owned secure
 provisioning surface; Iris never logs the token.
+
+When `CAP_USB_PAIRING` (bit 20) is advertised on a USB link, an explicit
+host pairing action may send empty PAIRING_REQUEST on the authenticated USB
+**data** session. PAIRING_RESPONSE contains the existing token as exactly 64
+lowercase ASCII hexadecimal characters. This does not rotate the credential
+or change NVS. TCP (including authenticated TCP), UART, USB Serial/JTAG and
+the printable USB control session reject this request; unbound sessions
+discard it under the normal HELLO_ACK admission rule. Older firmware does
+not advertise this capability and continues to support manual token entry.
+
+Gateway pairs only through a local HTTP request and a verified Device ID/
+Boot ID/owner binding. The binary data response is never captured as console
+text, published as an event, returned over HTTP, or included in exports.
+Credentials are stored by Device ID in host-private files (directory 0700,
+files 0600 on POSIX), outside project diagnostics. Network discovery is only
+a hint: successful HELLO authentication still verifies the advertised
+identity. Reconnects resolve the saved credential using HELLO identity,
+including after address changes. Forgetting removes the local record without
+rotating the device credential or closing existing sessions.
 
 ## OTA and recovery
 

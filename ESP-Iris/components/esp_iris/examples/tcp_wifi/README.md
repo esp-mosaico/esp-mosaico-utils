@@ -9,6 +9,30 @@ ESP-Iris to publish `_esp-iris._tcp.local.` after DHCP succeeds.
 Pairing is disabled here so the example focuses on networking. Use
 [`tcp_pairing`](../tcp_pairing/README.md) when authentication is required.
 
+## Standalone setup
+
+Create this example from the Component Registry, then run the commands below
+from its directory:
+
+```bash
+idf.py create-project-from-example "espressif/esp_iris=0.2.0:tcp_wifi"
+cd tcp_wifi
+```
+
+With a source checkout, change to `ESP-Iris/components/esp_iris/examples/tcp_wifi`
+from the repository root instead. The checked default target is ESP32-S31 with the pinned IDF 6.2 revision.
+The application owns Wi-Fi credentials and network initialization.
+After the first build downloads the component, prepare its bundled Gateway:
+
+```bash
+python esp_iris.py setup
+python esp_iris.py doctor
+python esp_iris.py web
+```
+
+The launcher uses an isolated cached environment and does not change the IDF
+Python environment. Close the Gateway before flashing or monitoring its ports.
+
 ## Configure credentials
 
 Create `sdkconfig.local.defaults` in this directory:
@@ -25,10 +49,10 @@ generated `sdkconfig`, which also contains the credentials.
 ## Build and flash
 
 ```bash
-idf.py -C components/esp_iris/examples/tcp_wifi \
+idf.py \
   -B build-tcp-wifi build
 
-idf.py -C components/esp_iris/examples/tcp_wifi \
+idf.py \
   -B build-tcp-wifi \
   -p /dev/serial/by-id/<programming-port> flash
 ```

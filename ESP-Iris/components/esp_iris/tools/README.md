@@ -124,10 +124,12 @@ host should connect only to explicit endpoints:
 python "$ESP_IRIS_COMPONENT_DIR/tools/esp_iris.py" web --no-discover-mdns
 ```
 
-Discovered services must advertise protocol version 1, a 32-character device
+Discovered services must advertise protocol version 2, a 32-character device
 ID, TCP port, firmware mode, and `none` or `hmac` pairing metadata. The HELLO
 identity must match the advertised device ID. Pairing tokens are never read
-from mDNS; supply the existing `--pairing-token` option when required. mDNS
+from mDNS; the Gateway resolves saved credentials by the live HELLO Device ID,
+including after an IP address changes. An explicit token remains available for
+older firmware. mDNS
 does not cross routed subnets unless the network provides an mDNS reflector.
 
 ### Automatic application USB discovery
@@ -265,6 +267,32 @@ The device application must first create its network interface. Then select its
 TCP endpoint in the Gateway/Workbench. Start with the
 [`tcp_wifi`](../examples/tcp_wifi/README.md) or
 [`tcp_pairing`](../examples/tcp_pairing/README.md) example.
+
+For firmware advertising `usb_pairing`, connect its application USB control and
+data interfaces, then choose **通过 USB 配对** in the connection dialog, or run:
+
+```bash
+python "$ESP_IRIS_COMPONENT_DIR/tools/esp_iris.py" ctl pair <device-id>
+```
+
+Pairing reads the credential over the bound binary USB data interface. It is
+never returned in HTTP responses or copied to console logs, audit, or exports.
+The local Gateway saves a private per-device credential file (0700 directory,
+0600 file on POSIX), shared by project Gateways on this host. Future TCP
+connections use that credential; control and data links still authenticate
+independently. UART and USB Serial/JTAG cannot perform this USB pairing step.
+
+Older firmware supports manual tokens: enter one in the discovered TCP row or
+manual connection form. A successful project connection remembers it; a failed
+connection cannot replace a saved credential. Use **忘记配对** or
+`ctl forget-pairing <device-id>` to remove the host record. This does not revoke
+the device key or close an existing connection. Explicit command-line or
+environment tokens remain independent of the saved record.
+
+TCP requires working device networking and reachable control/data ports. It
+does not provide ROM recovery or hardware JTAG. Pairing authenticates the
+connection; raw TCP is not encrypted. Missing or rejected credentials and
+unreachable data ports are reported separately in the connection dialog.
 
 ### Select UART and reset explicitly
 
@@ -646,7 +674,9 @@ See the [component README](../README.md), [Chinese README](../README_zh.md), and
 Use `iris_gateway.client` (API major 1) for local project coordination, passive
 registry snapshots and terminal operation evidence. Its standard-library-only
 API owns state layout and schema checks. Consumer products must not import
-`link`, `ownership` or `store` internals.
+`link`, `ownership` or `store` internals. See
+[component boundaries](../docs/compatibility.md#public-host-integration) for compatibility,
+source fingerprints, shared lifecycle and product Recovery preconditions.
 
 ### Receiver-initiated device handoff
 

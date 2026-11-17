@@ -14,10 +14,11 @@ from .compat import to_thread
 from .device_activity import stop_session_work
 from .discovery import resolve_usb_port, usb_endpoint
 from .http_support import error_response, json_body, request_is_loopback
-from .ownership import OwnershipConflict
+from .ownership import OwnershipConflict, usb_instance_changed
 
 CAPABILITY = "device-takeover/v1"
 IDLE_CAPABILITY = "idle-device-handoff/v1"
+USB_REFRESH_CAPABILITY = "usb-endpoint-refresh/v1"
 
 
 def drain_timeout(body: dict) -> float:
@@ -79,6 +80,37 @@ async def peer_state(client: ClientSession, session: dict) -> dict:
                 or CAPABILITY not in state.get("capabilities", []) or state.get("closing")):
             raise OwnershipConflict("peer is unavailable, changed identity, or requires updated host tools")
         return state
+
+
+async def refresh_usb_binding(project: Any, endpoint: str, metadata: dict) -> bool:
+    """Ask the actual owner to close a replaced interface before forgetting it."""
+    if not endpoint.startswith("usb:"):
+        return False
+    claim = project.registry.claim(endpoint)
+    if claim is None:
+        return project.registry.forget_replaced_usb(endpoint, metadata)
+    if not usb_instance_changed(claim["metadata"], metadata):
+        return False
+    if claim["state"] != "owned":
+        raise OwnershipConflict("USB device changed during a takeover; inspect its takeover ID before recovery")
+    if claim["owner"] == project.registry.session_id:
+        return await project.hub.refresh_owned_usb(endpoint)
+    source = local_session(project, claim["owner"])
+    try:
+        async with ClientSession(timeout=ClientTimeout(total=10)) as client:
+            state = await peer_state(client, source)
+            if USB_REFRESH_CAPABILITY not in state.get("capabilities", []):
+                raise OwnershipConflict("USB device changed; update the owning Gateway before retrying")
+            async with client.post(source["url"] + "/v2/project/handoff/refresh-usb", json={
+                "source_session_id": claim["owner"], "endpoint": endpoint,
+                "generation": claim["generation"],
+            }, allow_redirects=False) as response:
+                result = await response.json()
+                if response.status != 200:
+                    raise OwnershipConflict(f"Could not refresh replaced USB endpoint: {result.get('error', result)}")
+                return bool(result["changed"])
+    except (ClientError, asyncio.TimeoutError) as error:
+        raise OwnershipConflict("USB owner refresh unavailable; refresh selection before retrying") from error
 
 
 async def request_handoff(project: Any, source_id: str, device_id: str, transfer_id: str, body: dict) -> None:
@@ -151,8 +183,10 @@ async def takeover(project: Any, body: dict) -> dict:
         raise ValueError("select exactly one device_id or endpoint for takeover")
     if device_id and (not isinstance(device_id, str) or re.fullmatch(r"[0-9a-f]{32}", device_id) is None):
         raise ValueError("Device ID must contain 32 lowercase hexadecimal characters")
+    metadata = None
     if endpoint and not str(endpoint).startswith("tcp:"):
-        endpoint = usb_endpoint(await to_thread(resolve_usb_port, str(endpoint)))
+        metadata = await to_thread(resolve_usb_port, str(endpoint))
+        endpoint = usb_endpoint(metadata)
     try:
         previous = project.registry.transfer(transfer_id)
     except KeyError:
@@ -165,18 +199,26 @@ async def takeover(project: Any, body: dict) -> dict:
             raise OwnershipConflict("takeover ID already describes a different request")
         async with project.device_control[previous["device_id"]]:
             return {"takeover": public_record(await resume(project, transfer_id))}
+    if metadata is not None:
+        await refresh_usb_binding(project, endpoint, metadata)
     claim = project.registry.claim("device:" + device_id if device_id else str(endpoint))
+    if metadata is not None and claim is None:
+        # The previous owner's supervisor may already have retired this port.
+        # Admission still requires a fresh HELLO, even for an unclaimed port.
+        async with project.control_lock:
+            return {"device": await project.acquire({"endpoint": endpoint})}
     if claim is None or not claim.get("device_id"):
         raise OwnershipConflict("takeover requires an identified owned device; use claim for a free endpoint")
     device_id = claim["device_id"]
     if claim["owner"] == project.registry.session_id:
         async with project.control_lock:
-            return {"device": await project.acquire({"device_id": device_id})}
+            return {"device": await project.acquire({"device_id": device_id,
+                                                     **({"endpoint": endpoint} if endpoint else {})})}
     if claim["state"] != "owned":
         raise OwnershipConflict("device already has a reserved takeover; query its takeover ID")
     async with project.device_control[device_id]:
         if endpoint:
-            body = {**body, "preferred_endpoint": {"resource": endpoint, "metadata": claim["metadata"]}}
+            body = {**body, "preferred_endpoint": {"resource": endpoint, "metadata": metadata or claim["metadata"]}}
         await request_handoff(project, claim["owner"], device_id, transfer_id, body)
         # The durable reservation, not the HTTP response, is the authority.
         return {"takeover": public_record(await project.accept(transfer_id))}
@@ -238,7 +280,28 @@ def register_routes(app: web.Application, project: Any) -> None:
         async with project.device_control[str(body["device_id"])]:
             return web.json_response({"handoff": await project.prepare(body)})
 
+    async def refresh_usb(request: web.Request) -> web.Response:
+        require_local(request)
+        body = await json_body(request)
+        if body["source_session_id"] != project.registry.session_id:
+            raise OwnershipConflict("owning session changed")
+        endpoint = str(body["endpoint"])
+        if not endpoint.startswith("usb:"):
+            raise ValueError("USB endpoint required")
+        claim = project.registry.claim(endpoint)
+        if claim is None:
+            return web.json_response({"changed": True})
+        async with project.device_control[claim.get("device_id") or endpoint]:
+            current = project.registry.claim(endpoint)
+            if current is None:
+                return web.json_response({"changed": True})
+            project.registry._require(endpoint, ("owned",))
+            if current["generation"] != body["generation"]:
+                raise OwnershipConflict("USB ownership changed; refresh selection before retrying")
+            return web.json_response({"changed": await project.hub.refresh_owned_usb(endpoint)})
+
     app.router.add_post("/v2/project/takeovers", start)
     app.router.add_get("/v2/project/takeovers/{takeover_id}", record)
     app.router.add_post("/v2/project/takeovers/{takeover_id}/{verb:resume|abort|reconcile}", record)
     app.router.add_post("/v2/project/handoff/prepare", prepare)
+    app.router.add_post("/v2/project/handoff/refresh-usb", refresh_usb)

@@ -24,6 +24,11 @@ files:
     - agent/**/*
     - test_apps/**/*
     - tools/tests/**/*
+    - tools/frontend/tests/**/*
+    - tools/frontend/**/*.test.ts
+    - tools/frontend/**/*.test.tsx
+    - tools/frontend/playwright.config.ts
+    - tools/frontend/vitest.config.ts
     - "**/.codex-runs/**/*"
     - "**/*.tsbuildinfo"
     - "**/.venv*/**/*"

@@ -767,17 +767,17 @@ static esp_err_t pairing_load_or_create(iris_service_state_t *state,
     if (err != ESP_OK) {
         return err;
     }
-    size_t size = sizeof(state->auth_token);
+    uint8_t token[IRIS_AUTH_TOKEN_BYTES] = {0};
+    size_t size = sizeof(token);
     if (!rotate) {
         err = nvs_get_blob(handle, IRIS_NVS_PAIR_TOKEN,
-                           state->auth_token, &size);
+                           token, &size);
     } else {
         err = ESP_ERR_NVS_NOT_FOUND;
     }
     if (err == ESP_ERR_NVS_NOT_FOUND) {
-        esp_fill_random(state->auth_token, sizeof(state->auth_token));
-        err = nvs_set_blob(handle, IRIS_NVS_PAIR_TOKEN, state->auth_token,
-                           sizeof(state->auth_token));
+        esp_fill_random(token, sizeof(token));
+        err = nvs_set_blob(handle, IRIS_NVS_PAIR_TOKEN, token, sizeof(token));
         if (err == ESP_OK) {
             err = nvs_commit(handle);
         }
@@ -785,7 +785,11 @@ static esp_err_t pairing_load_or_create(iris_service_state_t *state,
         err = ESP_ERR_INVALID_SIZE;
     }
     nvs_close(handle);
+    taskENTER_CRITICAL(&s_services_lock);
+    if (err == ESP_OK) memcpy(state->auth_token, token, sizeof(token));
     state->auth_token_ready = err == ESP_OK;
+    taskEXIT_CRITICAL(&s_services_lock);
+    memset(token, 0, sizeof(token));
     return err;
 #else
     (void)state;
@@ -830,7 +834,9 @@ esp_err_t esp_iris_pairing_token_get(char out[65])
         out[0] = '\0';
         return ESP_ERR_NOT_SUPPORTED;
     }
+    taskENTER_CRITICAL(&s_services_lock);
     token_format(state->auth_token, out);
+    taskEXIT_CRITICAL(&s_services_lock);
     return ESP_OK;
 }
 
@@ -845,7 +851,7 @@ esp_err_t esp_iris_pairing_token_rotate(char out[65])
     }
     esp_err_t err = pairing_load_or_create(state, true);
     if (err == ESP_OK) {
-        token_format(state->auth_token, out);
+        return esp_iris_pairing_token_get(out);
     } else {
         out[0] = '\0';
     }
@@ -1104,6 +1110,11 @@ uint64_t iris_services_capabilities(const iris_runtime_t *runtime)
     if (iris_runtime_transport_kind(runtime) == ESP_IRIS_TRANSPORT_KIND_TCP) {
         result |= ESP_IRIS_CAP_AUTH;
     }
+#if CONFIG_ESP_IRIS_DATA_LINK && CONFIG_ESP_IRIS_TRANSPORT_USB
+    if (iris_runtime_transport_kind(runtime) == ESP_IRIS_TRANSPORT_KIND_USB) {
+        result |= ESP_IRIS_CAP_USB_PAIRING;
+    }
+#endif
 #endif
     return result;
 }

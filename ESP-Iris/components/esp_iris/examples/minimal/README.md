@@ -29,7 +29,13 @@ empty working directory. For H2 USB Serial/JTAG with IDF 5.5 or later:
 idf.py create-project-from-example "espressif/esp_iris=0.2.0:minimal"
 cd minimal
 idf.py -D IDF_TARGET=esp32h2 -D SDKCONFIG_DEFAULTS=sdkconfig.usj.defaults build
+python esp_iris.py setup
+python esp_iris.py doctor
+python esp_iris.py web
 ```
+
+The launcher locates this project's managed component and uses an isolated
+cached Python environment. Stop the Gateway before flashing or monitoring.
 
 For S31 application USB, use an IDF version supporting S31 (the package CI uses
 a pinned IDF 6.2 development revision), `IDF_TARGET=esp32s31` and
@@ -114,8 +120,9 @@ candidates for the same role yield without disconnecting the other role.
 An unresponsive candidate cannot retain ownership indefinitely.
 
 The 2 MB defaults intentionally contain no coredump partition. Crash metadata
-remains queryable, while `core_dump_present` is false. Use the internal
-`test_apps/coredump` fixture when validating Flash coredump transfer.
+remains queryable, while `core_dump_present` is false. Use the packaged
+[`crash_recovery`](../crash_recovery/README.md) example to validate Flash coredump
+transfer on its explicit 16 MB layout.
 
 ## Next steps
 

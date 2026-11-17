@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 import struct
 import uuid
 from pathlib import Path
@@ -94,7 +95,8 @@ def test_system_inventory_ctl_command_parses_device() -> None:
     assert args.device == "device-a"
 
 
-def test_ota_archives_complete_bundle_and_returns_queryable_operation(tmp_path) -> None:
+@pytest.mark.parametrize("chunked", [False, True])
+def test_ota_archives_complete_bundle_and_returns_queryable_operation(tmp_path, chunked) -> None:
     async def scenario() -> None:
         store = GatewayStore(tmp_path)
         service = GatewayService(store, instance_id="test", demo=True)
@@ -105,14 +107,22 @@ def test_ota_archives_complete_bundle_and_returns_queryable_operation(tmp_path) 
         await client.start_server()
         try:
             binary, elf, map_data = _firmware_bundle()
+            binary += b"\xff" * (2 * 1024 * 1024 - len(binary))
+            assert len(binary) > service.limits.json_bytes
+
+            async def binary_chunks():
+                for offset in range(0, len(binary), 65536):
+                    yield binary[offset:offset + 65536]
+
             form = FormData()
-            form.add_field("bin", binary, filename="app.bin")
+            form.add_field("bin", binary_chunks() if chunked else binary, filename="app.bin")
             form.add_field("elf", elf, filename="app.elf")
             form.add_field("map", map_data, filename="app.map")
             uploaded = await client.post("/v2/firmware-artifacts", data=form)
             assert uploaded.status == 201
             artifact = (await uploaded.json())["artifact"]
             assert artifact["artifact_id"] == hashlib.sha256(elf).hexdigest()
+            assert (Path(artifact["path"]) / "firmware.bin").read_bytes() == binary
 
             preconditions = {"recovery_version": (await hub.status("demo-a1b2c3d4"))["app_version"],
                              "partition_table_sha256": "00" * 32}
@@ -184,11 +194,13 @@ def test_ota_archives_complete_bundle_and_returns_queryable_operation(tmp_path) 
 
 
 
-def test_unsigned_system_update_closes_actual_inventory_loop(tmp_path) -> None:
+@pytest.mark.parametrize("chunked", [False, True])
+def test_unsigned_system_update_closes_actual_inventory_loop(tmp_path, chunked) -> None:
     async def scenario() -> None:
         components = tmp_path / "components"
         components.mkdir()
         (components / "partition-table.bin").write_bytes(b"table-v2")
+        (components / "data.bin").write_bytes(os.urandom(2 * 1024 * 1024))
         manifest = {
             "schema": SYSTEM_UPDATE_SCHEMA,
             "target": {"chip_id": 0x20, "flash_size": 16 * 1024 * 1024},
@@ -199,7 +211,13 @@ def test_unsigned_system_update_closes_actual_inventory_loop(tmp_path) -> None:
                     "kind": "partition_table",
                     "target_offset": 0x8000,
                     "file": "partition-table.bin",
-                }
+                },
+                {
+                    "id": 2,
+                    "kind": "data",
+                    "target_offset": 0x200000,
+                    "file": "data.bin",
+                },
             ],
         }
         archive_path = build_system_update_bundle(
@@ -219,10 +237,17 @@ def test_unsigned_system_update_closes_actual_inventory_loop(tmp_path) -> None:
         client = TestClient(TestServer(create_app(service)))
         await client.start_server()
         try:
+            archive = archive_path.read_bytes()
+            assert len(archive) > service.limits.json_bytes
+
+            async def archive_chunks():
+                for offset in range(0, len(archive), 65536):
+                    yield archive[offset:offset + 65536]
+
             operation_id = str(uuid.uuid4())
             accepted = await client.post(
                 "/v2/devices/demo-a1b2c3d4/system-update",
-                data=archive_path.read_bytes(),
+                data=archive_chunks() if chunked else archive,
                 headers={
                     "Content-Type": "application/vnd.esp-iris.system-update+zip",
                     "X-Operation-ID": operation_id,
@@ -250,6 +275,7 @@ def test_unsigned_system_update_closes_actual_inventory_loop(tmp_path) -> None:
             )
             saved = list((store.artifacts_dir / "demo-a1b2c3d4").glob("*.irisfw"))
             assert len(saved) == 1
+            assert saved[0].read_bytes() == archive
             repeated = await client.post(
                 "/v2/devices/demo-a1b2c3d4/system-update",
                 data=archive_path.read_bytes(),
@@ -761,6 +787,76 @@ def test_crash_archive_preserves_and_decodes_exact_incident(
             )
             after = await after_boot.json()
             assert (after["crash_index"] == archived["crash_index"]) is bool(failed_boot_id)
+        finally:
+            await client.close()
+            await hub.close()
+            store.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("chunked", [False, True])
+def test_audio_upload_above_json_limit_preserves_content(tmp_path, chunked) -> None:
+    async def scenario() -> None:
+        store = GatewayStore(tmp_path)
+        service = GatewayService(store, instance_id="test", demo=True)
+        hub = DemoHub(service.on_device_event)
+        service.attach_hub(hub)
+        await hub.start()
+        client = TestClient(TestServer(create_app(service)))
+        await client.start_server()
+        try:
+            content = bytes(range(256)) * 8192
+            assert len(content) > service.limits.json_bytes
+            hub.audio_upload = AsyncMock(return_value={"accepted": True})
+
+            async def chunks():
+                for offset in range(0, len(content), 65536):
+                    yield content[offset:offset + 65536]
+
+            uploaded = await client.post(
+                "/v2/devices/demo-a1b2c3d4/audio",
+                data=chunks() if chunked else content,
+                headers={"Content-Type": "application/octet-stream"},
+            )
+            assert uploaded.status == 200, await uploaded.text()
+            hub.audio_upload.assert_awaited_once_with(
+                "demo-a1b2c3d4", content, "application/octet-stream"
+            )
+        finally:
+            await client.close()
+            await hub.close()
+            store.close()
+
+    asyncio.run(scenario())
+
+
+def test_file_upload_above_json_limit_preserves_content(tmp_path) -> None:
+    async def scenario() -> None:
+        store = GatewayStore(tmp_path)
+        service = GatewayService(store, instance_id="test", demo=True)
+        hub = DemoHub(service.on_device_event)
+        service.attach_hub(hub)
+        await hub.start()
+        client = TestClient(TestServer(create_app(service)))
+        await client.start_server()
+        try:
+            content = bytes(range(256)) * 8192
+            assert len(content) > service.limits.json_bytes
+            params = {"volume": "cfg", "path": "large.bin"}
+            uploaded = await client.put(
+                "/v2/devices/demo-a1b2c3d4/file", params=params, data=content
+            )
+            assert uploaded.status == 201, await uploaded.text()
+            result = (await uploaded.json())["file"]
+            assert result["size"] == len(content)
+            assert result["sha256"] == hashlib.sha256(content).hexdigest()
+            downloaded = await client.get(
+                "/v2/devices/demo-a1b2c3d4/file", params=params
+            )
+            assert downloaded.status == 200
+            assert await downloaded.read() == content
+            assert service.resource_usage["large_requests"] == 0
         finally:
             await client.close()
             await hub.close()

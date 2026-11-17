@@ -39,7 +39,8 @@ def test_package_runs_without_the_checkout(archive, tmp_path):
     checker.check_host(component, tmp_path, version)
 
 
-@pytest.mark.parametrize("fault", ["missing_frontend", "missing_asset", "build_log", "wrong_namespace", "wrong_version"])
+@pytest.mark.parametrize("fault", ["missing_frontend", "missing_asset", "build_log", "wrong_namespace",
+                                  "wrong_version", "broken_link", "frontend_test", "missing_changelog", "missing_launcher"])
 def test_package_rejects_incomplete_or_contaminated_release(archive, tmp_path, fault):
     files, _ = checker.validate_archive(archive)
     if fault == "missing_frontend":
@@ -52,6 +53,14 @@ def test_package_rejects_incomplete_or_contaminated_release(archive, tmp_path, f
     elif fault == "wrong_namespace":
         name = "examples/minimal/main/idf_component.yml"
         files[name] = files[name].replace(b"espressif/esp_iris", b"unpublished/esp_iris")
+    elif fault == "broken_link":
+        files["README.md"] += b'\n[Missing guide](../private/guide.md)\n'
+    elif fault == "frontend_test":
+        files["tools/frontend/src/views/workbench.test.tsx"] = b"test-only implementation"
+    elif fault == "missing_changelog":
+        files["CHANGELOG.md"] = b"## Unreleased\n"
+    elif fault == "missing_launcher":
+        del files["examples/rpc_jobs/esp_iris.py"]
     else:
         files["tools/iris_gateway/__init__.py"] = b'__version__ = "99.0.0"\n'
     broken = tmp_path / "broken.tgz"
@@ -122,3 +131,28 @@ def test_downloaded_example_uses_registry_dependency(tmp_path, monkeypatch, loca
         data = checker.YAML(typ="safe").load(project / "main/idf_component.yml")
         assert data["dependencies"]["espressif/esp_iris"] == {"version": "=0.2.0", "registry_url": registry}
         assert not component.exists()
+
+
+@pytest.mark.parametrize("example", ["rpc_jobs", "tcp_wifi", "ota"])
+def test_selected_example_runs_its_packaged_launcher(archive, tmp_path, example):
+    files, _ = checker.validate_archive(archive)
+    project, _ = checker.prepare_consumer(files, tmp_path, example)
+    result = subprocess.run([sys.executable, "-I", str(project / "esp_iris.py"), "--help"],
+                            cwd=tmp_path, capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
+    assert "setup|doctor|web|ctl" in result.stdout
+
+
+@pytest.mark.parametrize("example", ["unknown", "../minimal", "/minimal"])
+def test_invalid_example_is_rejected_before_writing(archive, tmp_path, example):
+    files, _ = checker.validate_archive(archive)
+    with pytest.raises(ValueError, match="Unknown package example"):
+        checker.prepare_consumer(files, tmp_path, example)
+    assert not list(tmp_path.iterdir())
+
+
+def test_content_fingerprint_tracks_names_and_bytes():
+    original = {"a": b"first", "b": b"second"}
+    assert checker.package_fingerprint(original) == checker.package_fingerprint(dict(reversed(list(original.items()))))
+    assert checker.package_fingerprint(original) != checker.package_fingerprint({**original, "b": b"changed"})
+    assert checker.package_fingerprint(original) != checker.package_fingerprint({"a": b"first", "c": b"second"})

@@ -25,6 +25,18 @@ class OwnershipConflict(RuntimeError):
     pass
 
 
+def usb_instance_changed(previous: dict[str, Any], current: dict[str, Any]) -> bool:
+    """Descriptors can invalidate a binding, but never establish an identity."""
+    old, new = previous.get("serial_number"), current.get("serial_number")
+    return bool(old and new and old != new)
+
+
+class UsbEndpointChanged(OwnershipConflict):
+    def __init__(self, endpoint: str, claim: dict, metadata: dict) -> None:
+        super().__init__(f"USB device changed at {endpoint}; a new HELLO is required")
+        self.claim, self.metadata = claim, metadata
+
+
 class OwnershipRegistry:
     def __init__(self, root: pathlib.Path) -> None:
         self.root = root.resolve()
@@ -210,6 +222,37 @@ class OwnershipRegistry:
     def _remember_generations(self) -> None:
         self.db.execute("""INSERT INTO generations SELECT resource, generation FROM claims WHERE 1
             ON CONFLICT(resource) DO UPDATE SET value=MAX(value, excluded.value)""")
+
+    def forget_replaced_usb(self, endpoint: str, metadata: dict[str, Any],
+                            *, generation: int | None = None) -> bool:
+        """Caller has closed this endpoint. Never release a peer or a transfer."""
+        if not endpoint.startswith("usb:"):
+            raise ValueError("USB endpoint required")
+        with self.transaction():
+            claim = self.claim(endpoint)
+            if claim is not None:
+                if (claim["owner"], claim["state"], claim["generation"]) != (
+                    self.session_id, "owned", generation,
+                ):
+                    raise OwnershipConflict("USB ownership changed; refresh selection before retrying")
+                if not usb_instance_changed(claim["metadata"], metadata):
+                    return False
+                self._remember_generations()
+                self.db.execute("DELETE FROM claims WHERE resource=?", (endpoint,))
+                if claim["device_id"]:
+                    remaining = self.db.execute(
+                        "SELECT 1 FROM claims WHERE device_id=? AND resource NOT LIKE 'device:%'",
+                        (claim["device_id"],)).fetchone()
+                    if remaining is None:
+                        self.db.execute("DELETE FROM claims WHERE resource=? AND owner=? AND state='owned'",
+                                        ("device:" + claim["device_id"], self.session_id))
+                self.db.execute("DELETE FROM identities WHERE endpoint=?", (endpoint,))
+                return True
+            previous = self.db.execute("SELECT metadata FROM identities WHERE endpoint=?", (endpoint,)).fetchone()
+            if previous and usb_instance_changed(json.loads(previous[0]), metadata):
+                self.db.execute("DELETE FROM identities WHERE endpoint=?", (endpoint,))
+                return True
+            return False
 
     def known_endpoints(self, device_id: str) -> list[dict[str, Any]]:
         return [{"endpoint": row[0], **json.loads(row[1])} for row in self.db.execute(

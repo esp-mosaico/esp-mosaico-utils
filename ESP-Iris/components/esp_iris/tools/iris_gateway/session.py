@@ -18,6 +18,7 @@ from .console_protocol import HELLO_COMMAND, ConsoleDecoder, encode_record
 from .device_info import DeviceInfo
 from .files import DeviceFiles
 from .link import Link
+from .pairing import validate_token
 from .protocol import (
     VERSION,
     Capability,
@@ -31,6 +32,7 @@ from .protocol import (
     MediaType,
     ProtocolError,
     TlvTag,
+    Transport,
     decode_tlv,
     encode_frame,
     tlv_u8,
@@ -78,6 +80,7 @@ class DeviceSession:
         on_media: MediaCallback | None = None,
         on_unready: ReadyCallback | None = None,
         pairing_token: str | bytes | None = None,
+        pairing_lookup: Callable[[str], str | None] | None = None,
         owner_id: bytes | None = None,
         clock_sync_interval: float = 30.0,
         clock_sync_timeout: float = 3.0,
@@ -98,6 +101,7 @@ class DeviceSession:
         if pairing_token is not None and len(pairing_token) != 32:
             raise ValueError("pairing token must contain 32 bytes")
         self._pairing_token = pairing_token
+        self._pairing_lookup = pairing_lookup
         self.owner_id = owner_id if owner_id is not None else secrets.token_bytes(16)
         if len(self.owner_id) != 16 or not any(self.owner_id):
             raise ValueError("link owner ID must contain 16 nonzero random bytes")
@@ -554,6 +558,10 @@ class DeviceSession:
         challenge = fields.get(int(TlvTag.AUTH_CHALLENGE), b"")
         if len(challenge) != 32:
             raise ProtocolError("authenticated HELLO has no 32-byte challenge")
+        if self._pairing_token is None and self._pairing_lookup is not None:
+            saved = self._pairing_lookup(info.device_id)
+            if saved is not None:
+                self._pairing_token = bytes.fromhex(validate_token(saved))
         if self._pairing_token is None:
             await asyncio.sleep(self.AUTH_MISSING_TOKEN_DELAY_SECONDS)
             raise ProtocolError("device requires a pairing token")
@@ -796,6 +804,14 @@ class DeviceSession:
             self._last_protocol_rx_ns = host_receive_ns
             return
         if self._reopen_session_id is not None:
+            if (frame.session_id == self._reopen_session_id and frame.channel == Channel.CONTROL
+                    and frame.type == ControlType.ERROR and len(frame.payload) == 8
+                    and frame.payload[4:6] == bytes((Channel.CONTROL, ControlType.HELLO_ACK))):
+                # NEW_SESSION rejects an invalid proof with CONTROL_ERROR,
+                # before a new HELLO/AUTH_RESULT can exist.
+                if self.info is not None and self.info.auth_mode == 1:
+                    raise ProtocolError("ESP-Iris pairing proof was rejected during session reopen")
+                raise ProtocolError("device rejected session reopen")
             return
         if self.info is None or frame.session_id != self.info.session_id:
             return
@@ -825,6 +841,26 @@ class DeviceSession:
             await self._handle_event(frame, host_receive_ns)
         elif frame.channel in (Channel.SCREEN, Channel.IMAGE, Channel.AUDIO):
             await self._handle_media(frame)
+
+    async def pairing_token_over_usb(self) -> str:
+        info = await self.wait_ready()
+        if info.transport != Transport.USB or not info.capabilities & Capability.USB_PAIRING:
+            raise ValueError("connect this device's USB control and data interfaces; firmware must support USB pairing")
+        data = await self._wait_data_link(5.0) if self._console else self
+        if data._console or data.info is None or data.info.transport != Transport.USB:
+            raise ValueError("pairing requires the verified USB data interface")
+        identity = (info.device_id, info.boot_id)
+        frame = await data._request(Channel.CONTROL, ControlType.PAIRING_REQUEST)
+        if (self.info is None or data.info is None or
+                (self.info.device_id, self.info.boot_id) != identity or
+                (data.info.device_id, data.info.boot_id) != identity):
+            raise ProtocolError("device identity changed during USB pairing")
+        if frame.type != ControlType.PAIRING_RESPONSE or len(frame.payload) != 64:
+            raise ProtocolError("invalid USB pairing response")
+        try:
+            return validate_token(frame.payload.decode("ascii"))
+        except (UnicodeError, ValueError) as error:
+            raise ProtocolError("invalid USB pairing response") from error
 
     async def status(self) -> dict[str, Any]:
         identity = (self.info.device_id, self.info.boot_id, self.info.session_id) if self.info else None

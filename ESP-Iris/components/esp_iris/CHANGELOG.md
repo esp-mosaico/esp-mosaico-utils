@@ -4,6 +4,17 @@ All notable ESP-Iris component changes are documented in this file.
 
 ## Unreleased
 
+## 0.2.0
+
+- Publish a self-contained component with Registry example launchers, isolated
+  Gateway setup and environment diagnostics, and package-local documentation.
+- Accept structurally compatible TinyUSB CDC sources without a fixed source hash;
+  preserve FIFO capacities and reject incomplete transformations.
+- Validate packaged examples, disabled and PSRAM profiles, and retain package
+  fingerprints, source revisions and build reports with release artifacts.
+- Exclude frontend development tests from runtime archives and reject broken
+  package documentation links during release validation.
+
 - Prepare distribution as `espressif/esp_iris`, including the prebuilt Workbench
   and excluding development logs, caches and host tests from component archives.
 - Load the minimal example's USB flash extension from managed installations and

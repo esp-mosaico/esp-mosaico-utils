@@ -4,6 +4,30 @@ This example combines application-owned Wi-Fi with ESP-Iris challenge-HMAC
 authentication. A per-device token is provisioned into NVS; each new link
 proves possession using a fresh challenge without transmitting the token.
 
+## Standalone setup
+
+Create this example from the Component Registry, then run the commands below
+from its directory:
+
+```bash
+idf.py create-project-from-example "espressif/esp_iris=0.2.0:tcp_pairing"
+cd tcp_pairing
+```
+
+With a source checkout, change to `ESP-Iris/components/esp_iris/examples/tcp_pairing`
+from the repository root instead. The checked default target is ESP32-S31 with the pinned IDF 6.2 revision.
+The application owns Wi-Fi credentials and network initialization.
+After the first build downloads the component, prepare its bundled Gateway:
+
+```bash
+python esp_iris.py setup
+python esp_iris.py doctor
+python esp_iris.py web
+```
+
+The launcher uses an isolated cached environment and does not change the IDF
+Python environment. Close the Gateway before flashing or monitoring its ports.
+
 ## Configure private values
 
 Create `sdkconfig.local.defaults` in this directory:
@@ -33,10 +57,10 @@ it must deliver the replacement out-of-band and wipe the caller-owned buffer.
 ## Build and flash
 
 ```bash
-idf.py -C components/esp_iris/examples/tcp_pairing \
+idf.py \
   -B build-tcp-pairing build
 
-idf.py -C components/esp_iris/examples/tcp_pairing \
+idf.py \
   -B build-tcp-pairing \
   -p /dev/serial/by-id/<programming-port> flash
 ```

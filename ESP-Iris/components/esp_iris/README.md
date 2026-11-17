@@ -69,7 +69,7 @@ and software/hardware reset with verified new Boot IDs. The installed C2 image
 uses 74880 baud; select it explicitly rather than the usual 115200. Task memory
 observation is disabled in both installed fixtures. Files and continuous media
 correctly reject the missing data link; OTA and coredump decoding were not tested.
-See [the hardware validation record](test_apps/multichip-validation.json) for
+See the hardware validation record (source-tree fixture evidence) for
 firmware identities and evidence hashes. Continuous HELLO probes now discover
 reboots on UART/Serial-JTAG even when the port does not re-enumerate; unchanged
 HELLO replies do not repeat authentication.
@@ -156,10 +156,10 @@ repeated `app-flash`, automatic console/RPC recovery, and raw logs from an
 application without Iris. USB Serial/JTAG also passed 100 consecutive RPCs and
 read-only operation reconciliation without another reset or write. Firmware,
 operation IDs, preservation checks and evidence hashes are recorded in the
-[native flash validation record](test_apps/native-flash-validation.json).
+native flash validation record (source-tree fixture evidence).
 After adding the extra reset, three runs on each H2 interface captured the ROM
 banner, bootloader output and application `heartbeat=0`, with RPC restored.
-See the [startup capture validation](test_apps/native-flash-startup-validation.json)
+See the startup capture validation (source-tree fixture evidence)
 for evidence of the second boot; the earlier record retains the original gap.
 
 ## What you get
@@ -306,11 +306,9 @@ From the application directory after `idf.py reconfigure`:
 
 ```bash
 ESP_IRIS_COMPONENT_DIR=managed_components/espressif__esp_iris
-python3 -m venv .venv
-. .venv/bin/activate
-python -m pip install -r "$ESP_IRIS_COMPONENT_DIR/tools/requirements.lock"
-
-python "$ESP_IRIS_COMPONENT_DIR/tools/esp_iris.py" web
+python "$ESP_IRIS_COMPONENT_DIR/esp_iris.py" setup
+python "$ESP_IRIS_COMPONENT_DIR/esp_iris.py" doctor
+python "$ESP_IRIS_COMPONENT_DIR/esp_iris.py" web
 ```
 
 For a source checkout, set `ESP_IRIS_COMPONENT_DIR=ESP-Iris/components/esp_iris`
@@ -318,6 +316,8 @@ from the `esp-mosaico-utils` repository root. Use `web --demo` to try the bundle
 Workbench without connecting hardware.
 
 The component includes the built Workbench, so Node.js is not needed to run it.
+The launcher selects a cached, isolated Python environment without activation.
+Downloaded examples provide the same commands through their local `esp_iris.py`.
 Rebuild the frontend only after changing its source; see [the Gateway guide](tools/README.md#install-the-gateway).
 
 The single lock file uses Python-version markers, so pip selects the validated
@@ -333,7 +333,7 @@ For a managed installation, set `ESP_IRIS_COMPONENT_DIR` to
 Use demo mode to evaluate the Gateway and Workbench without hardware:
 
 ```bash
-python "$ESP_IRIS_COMPONENT_DIR/tools/esp_iris.py" web --demo
+python "$ESP_IRIS_COMPONENT_DIR/esp_iris.py" web --demo
 ```
 
 See the [Gateway and Workbench guide](tools/README.md) for USB/TCP selection,
@@ -361,9 +361,10 @@ A slow host cannot create an unbounded device-side queue.
 Normal firmware using PSRAM XIP and external wire buffers can enable
 `CONFIG_ESP_IRIS_USB_FIFO_PSRAM` (default on when its prerequisites are enabled).
 Only CDC software FIFO bytes move to external BSS: capacities, USB endpoint DMA
-buffers, stream metadata and FreeRTOS mutex placement stay unchanged. A checked
-build copy adapts TinyUSB 0.21.0~2; managed sources are untouched, and an unknown
-CDC source revision fails configuration until reviewed or this option is disabled.
+buffers, stream metadata and FreeRTOS mutex placement stay unchanged. A generated
+build copy adapts the CDC FIFO declarations and uses; managed sources are untouched. Compatible layouts are accepted without a whole-file hash
+check. Unsupported layouts fail with an actionable error; disable this option
+until the adapter supports that layout. See [compatibility](docs/compatibility.md).
 With external BSS enabled, `CONFIG_ESP_IRIS_SERVICE_STATE_PSRAM` also moves the
 fixed file-volume registry. Writer firmware keeps its independent internal profile.
 
@@ -479,6 +480,7 @@ of the published component archive.
 
 ## Documentation map
 
+- [Compatibility and public integration](docs/compatibility.md)
 - [Public C API](include/esp_iris.h)
 - [System Inventory provider API](include/esp_iris_system_inventory.h)
 - [System Update backend API](include/esp_iris_system_update.h)

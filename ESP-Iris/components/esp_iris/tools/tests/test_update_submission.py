@@ -7,7 +7,6 @@ from unittest.mock import Mock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
-
 from iris_gateway.cli import _response_json
 from iris_gateway.gateway import GatewayService, create_app
 from iris_gateway.store import GatewayStore
@@ -40,12 +39,15 @@ def test_nine_uploads_wait_for_admission_and_submit_once(tmp_path):
         service = GatewayService(store, instance_id="admission")
         app = create_app(service)
         writes, rejections = Counter(), []
+        release = asyncio.Event()
 
-        async def update(request):
+        @web.middleware
+        async def update(request, handler):
+            # Replace only the device handler, after real routing and admission.
             operation_id = request.headers["X-Operation-ID"]
             assert await request.read() == b"frozen bundle"
             writes[operation_id] += 1
-            await asyncio.sleep(.01)
+            await release.wait()
             return web.json_response({"operation_id": operation_id})
 
         async def decode(response):
@@ -53,24 +55,27 @@ def test_nine_uploads_wait_for_admission_and_submit_once(tmp_path):
                 return await _response_json(response)
             except GatewayHTTPError as error:
                 rejections.append(error)
+                release.set()
                 error.retry_after = "0"
                 raise
 
-        app.router.add_post("/test/system-update", update)
+        app.middlewares.append(update)
         client = TestClient(TestServer(app))
         await client.start_server()
         try:
-            results = await asyncio.gather(*[
-                submit_system_update(client.session, str(client.make_url("/test/system-update")),
+            results = await asyncio.wait_for(asyncio.gather(*[
+                submit_system_update(client.session, str(client.make_url("/v2/devices/test/system-update")),
                                      b"frozen bundle", {"X-Operation-ID": str(index)},
                                      False, decode)
                 for index in range(9)
-            ])
+            ]), timeout=5)
             assert len(results) == 9 and rejections
             assert writes == Counter({str(index): 1 for index in range(9)})
             assert all(error.admission_rejected for error in rejections)
+            assert all(error.error["details"]["resource"] == "large_requests" for error in rejections)
             assert service.resource_usage["large_requests"] == 0
         finally:
+            release.set()
             await client.close()
             store.close()
     asyncio.run(scenario())

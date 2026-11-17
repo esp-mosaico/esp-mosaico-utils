@@ -12,23 +12,47 @@ Core Dump remains available in factory Recovery.
 The bootloader rollback feature is intentionally not used: a threshold greater
 than one must be allowed to restart the same application repeatedly.
 
+## Standalone setup
+
+Create this example from the Component Registry, then run the commands below
+from its directory:
+
+```bash
+idf.py create-project-from-example "espressif/esp_iris=0.2.0:crash_recovery"
+cd crash_recovery
+```
+
+With a source checkout, change to `ESP-Iris/components/esp_iris/examples/crash_recovery`
+from the repository root instead. These application USB examples require an SDK
+supporting ESP32-S31; the release matrix uses the pinned IDF 6.2 revision.
+After the first build downloads the component, prepare its bundled Gateway:
+
+```bash
+python esp_iris.py setup
+python esp_iris.py doctor
+python esp_iris.py web
+```
+
+The launcher uses an isolated cached environment and does not change the IDF
+Python environment. Close the Gateway before flashing or monitoring its ports.
+
 ## Build and install factory recovery
 
 Verify the physical flash size and target before the first full flash:
 
 ```bash
-idf.py -C components/esp_iris/examples/crash_recovery \
+idf.py \
   -B build-crash-recovery \
   -D SDKCONFIG="$PWD/build-crash-recovery/sdkconfig" \
   -D SDKCONFIG_DEFAULTS=sdkconfig.recovery.defaults build
-idf.py -C components/esp_iris/examples/crash_recovery \
+idf.py \
   -B build-crash-recovery -p /dev/serial/by-id/<programming-port> flash
 ```
 
 Build the crashing application:
 
 ```bash
-idf.py -C components/esp_iris/examples/crash_recovery \
+idf.py \
   -B build-crash-application \
   -D SDKCONFIG="$PWD/build-crash-application/sdkconfig" \
   -D SDKCONFIG_DEFAULTS=sdkconfig.application.defaults build
@@ -39,7 +63,7 @@ using application execution mode. After the application crashes, the same
 device ID reconnects in factory recovery.
 
 ```bash
-IRIS=components/esp_iris/tools/esp_iris.py
+IRIS=esp_iris.py
 python "$IRIS" ctl ota DEVICE_ID \
   build-crash-application/esp_iris_crash_recovery.bin \
   --elf build-crash-application/esp_iris_crash_recovery.elf \

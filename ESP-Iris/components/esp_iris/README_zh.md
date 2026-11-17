@@ -59,7 +59,7 @@ status/heap, binary RPC, control screenshots, logs, asynchronous jobs, 80 sustai
 same-device/new-Boot-ID verification after software and hardware resets. The installed C2 firmware requires explicit 74880 baud.
 Neither board's firmware enabled task-memory observation. File/continuous-media requests correctly rejected missing data links;
 OTA and coredump decoding were not hardware-validated. Firmware identities and evidence hashes are in
-[hardware validation records](test_apps/multichip-validation.json). This round also fixed missed restarts when serial ports did not reenumerate:
+hardware validation records retained in the source checkout. This round also fixed missed restarts when serial ports did not reenumerate:
 continuous HELLO probing detects them without repeating authentication for unchanged identities.
 
 
@@ -104,10 +104,10 @@ both CP2102N UART and native USB Serial/JTAG passed native `flash`, repeated `ap
 automatic log/RPC recovery and logging from ordinary non-Iris applications. USB Serial/JTAG
 also passed 100 consecutive RPCs and result verification without another reset/write.
 Firmware, operation IDs, data-preservation checks and evidence hashes are in
-[native flashing records](test_apps/native-flash-validation.json).
+native flashing records retained in the source checkout.
 After adding post-takeover reset, three rounds on each H2 link captured ROM headers, bootloader logs and
 application `heartbeat=0`, with RPC recovery. Second-boot evidence is in
-[startup-log records](test_apps/native-flash-startup-validation.json); original records retain earlier capture gaps.
+startup-log records retained in the source checkout; original records retain earlier capture gaps.
 
 ## Included components
 
@@ -251,6 +251,10 @@ Use `web --demo` to explore Workbench without hardware.
 
 The component package includes a built Workbench, requiring no Node.js at runtime.
 Rebuild only after frontend source changes; see the [Gateway guide](tools/README.md#install-the-gateway).
+The launcher caches an isolated environment by Python version and dependency lock;
+it requires no activation and does not modify ESP-IDF's Python dependencies.
+Use `--venv PATH` to select an environment. Downloaded examples also support
+`python esp_iris.py setup`. See the [compatibility guide](docs/compatibility.md).
 
 One lockfile uses Python-version markers; pip selects validated dependencies for the active interpreter automatically.
 Recreate the isolated environment when Python major/minor changes. Gateway runtime Python is independent of
@@ -290,8 +294,9 @@ Media channels use credit and latest-chunk policies so slow hosts cannot create 
 Ordinary firmware with PSRAM XIP and external protocol buffers may use
 `CONFIG_ESP_IRIS_USB_FIFO_PSRAM` (enabled by default when dependencies permit). Only CDC software-FIFO byte
 storage moves to external BSS; capacity, USB endpoint DMA buffers, stream state and FreeRTOS lock placement remain unchanged.
-Builds generate a source-hash-checked TinyUSB 0.21.0~2 adapter copy without modifying managed sources.
-Unknown CDC source versions fail configuration explicitly, requiring adapter review or disabling the option. With external BSS,
+Builds generate an adapter copy by checking CDC declarations and buffer references, without
+restricting source hashes or versions or modifying managed sources. Unsupported structures
+fail configuration explicitly, requiring an adapter update or disabling the option. With external BSS,
 `CONFIG_ESP_IRIS_SERVICE_STATE_PSRAM` also moves the fixed-size volume registry.
 Writing firmware retains a separate internal-memory configuration.
 

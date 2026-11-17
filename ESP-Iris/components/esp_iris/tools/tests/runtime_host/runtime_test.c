@@ -1372,7 +1372,52 @@ static void test_pending_console_logs(void)
 #endif
 }
 
+static void test_pairing_requires_ready_usb_data(void)
+{
+#if CONFIG_ESP_IRIS_TRANSPORT_USB
+    iris_service_state_t state = {.magic = IRIS_SERVICE_STATE_MAGIC, .auth_token_ready = true};
+    memset(state.auth_token, 0xab, sizeof(state.auth_token));
+    s_services = &state;
+    for (unsigned scenario = 0; scenario < 6; ++scenario) {
+        iris_runtime_t rt = {.data_link = scenario != 3, .hello_acked = scenario != 0,
+                             .session_id = 123};
+        rt.transport.active_ops = scenario == 2 ? &g_iris_tcp_transport_ops : &g_iris_usb_transport_ops;
+        assert(iris_runtime_wire_init(&rt) == ESP_OK);
+        uint8_t invalid = 1;
+        iris_decoded_frame_t request = {.header = {
+            .channel = ESP_IRIS_CHANNEL_CONTROL, .type = ESP_IRIS_CONTROL_PAIRING_REQUEST,
+            .session_id = scenario == 5 ? 999 : 123, .sequence = 1, .request_id = 7,
+            .payload_size = scenario == 4 ? 1 : 0}, .payload = &invalid};
+        handle_frame(&rt, &request, 0);
+        if (scenario == 0 || scenario == 5) {
+            assert(rt.tx_wire_length == 0);
+        } else if (scenario == 3) {
+            /* A printable control response may contain an error, never a key. */
+            iris_decoded_frame_t response;
+            assert(iris_console_frame_decode(rt.tx_wire + 2, rt.tx_wire_length - 2, false, &response) == ESP_OK);
+            assert(response.header.type == ESP_IRIS_CONTROL_ERROR);
+            assert(response.header.payload_size < 64);
+        } else {
+            iris_decoded_frame_t response;
+            assert(iris_frame_decode_in_place(rt.tx_wire, rt.tx_wire_length - 1, &response) == ESP_OK);
+            assert(response.header.request_id == 7);
+            if (scenario == 1) {
+                assert(response.header.type == ESP_IRIS_CONTROL_PAIRING_RESPONSE);
+                assert(response.header.payload_size == 64);
+                for (unsigned i = 0; i < 64; ++i) assert(response.payload[i] == (i % 2 ? 'b' : 'a'));
+            } else {
+                assert(response.header.type == ESP_IRIS_CONTROL_ERROR);
+                assert(response.header.payload_size < 64);
+            }
+        }
+        iris_runtime_wire_deinit(&rt);
+    }
+    s_services = NULL;
+#endif
+}
+
 int main(void) {
+    test_pairing_requires_ready_usb_data();
     test_runtime_start_stop_preserves_state();
     test_rpc_lengths(); test_coalesced_frames();
     test_full_buffered_frame_does_not_require_an_extra_worker_turn();

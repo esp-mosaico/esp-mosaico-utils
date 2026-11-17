@@ -1,0 +1,114 @@
+name: Iris package
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pack:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - run: python -m pip install idf-component-manager==3.1.0
+      - run: compote component pack --project-dir ESP-Iris/components/esp_iris --name esp_iris --dest-dir package
+      - run: mv package/esp_iris_*.tgz package/esp_iris.tgz
+      - uses: actions/upload-artifact@v7
+        with:
+          name: iris-package
+          path: package/esp_iris.tgz
+          retention-days: 90
+
+  host:
+    needs: pack
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15-intel, windows-2022]
+        python: ['3.8', '3.12']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Preserve component bytes
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v8
+        with:
+          name: iris-package
+          path: package
+      - run: python -m pip install ruamel.yaml pytest -r ESP-Iris/components/esp_iris/tools/requirements.lock
+      - run: python ESP-Iris/tools/check_component_package.py package/esp_iris.tgz --work-dir installed --report package-check.json
+      - run: python -m pytest -q ESP-Iris/components/esp_iris/tools/tests/test_component_launcher.py
+      - uses: actions/upload-artifact@v7
+        with:
+          name: iris-${{ matrix.os }}-py${{ matrix.python }}
+          path: package-check.json
+          retention-days: 90
+
+  browser:
+    needs: pack
+    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - uses: actions/download-artifact@v8
+        with:
+          name: iris-package
+          path: package
+      - run: python -m pip install ruamel.yaml -r ESP-Iris/components/esp_iris/tools/requirements.lock
+      - run: python ESP-Iris/tools/check_component_package.py package/esp_iris.tgz --work-dir installed
+      - run: npm ci
+        working-directory: ESP-Iris/components/esp_iris/tools/frontend
+      - run: npx playwright install --with-deps chromium
+        working-directory: ESP-Iris/components/esp_iris/tools/frontend
+      - name: Exercise the installed package UI
+        working-directory: ESP-Iris/components/esp_iris/tools/frontend
+        env:
+          ESP_IRIS_TEST_GATEWAY: ${{ github.workspace }}/installed/minimal/managed_components/espressif__esp_iris/tools/esp_iris.py
+          PYTHON: python
+        run: npm run test:e2e
+
+  attest:
+    needs: [pack, host, browser]
+    timeout-minutes: 10
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      statuses: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v8
+        with:
+          name: iris-package
+          path: package
+      - run: python -m pip install ruamel.yaml
+      - run: python ESP-Iris/tools/check_public_package.py package/esp_iris.tgz --record --repository "$GITHUB_REPOSITORY" --report public-package-check.json
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: iris-public-validation
+          path: public-package-check.json
+          retention-days: 90

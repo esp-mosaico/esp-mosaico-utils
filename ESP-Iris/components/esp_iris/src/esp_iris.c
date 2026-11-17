@@ -247,6 +247,29 @@ static void handle_control(iris_runtime_t *runtime,
             }
         }
         break;
+    case ESP_IRIS_CONTROL_PAIRING_REQUEST:
+        {
+            /* A secret must never enter the printable console/capture path,
+             * or any TCP link, even after successful TCP authentication. */
+            esp_err_t err = ESP_ERR_NOT_SUPPORTED;
+            if (header->payload_size != 0) {
+                err = ESP_ERR_INVALID_SIZE;
+            } else if (runtime->data_link &&
+                       iris_runtime_transport_kind(runtime) == ESP_IRIS_TRANSPORT_KIND_USB) {
+                char token[65] = {0};
+                err = esp_iris_pairing_token_get(token);
+                if (err == ESP_OK) {
+                    err = queue_frame(runtime, ESP_IRIS_CHANNEL_CONTROL,
+                        ESP_IRIS_CONTROL_PAIRING_RESPONSE, ESP_IRIS_FLAG_RESPONSE,
+                        header->request_id, 0, (const uint8_t *)token, 64);
+                }
+                volatile char *wipe = token;
+                for (size_t i = 0; i < sizeof(token); ++i) wipe[i] = 0;
+            }
+            if (err != ESP_OK)
+                (void)queue_error(runtime, header->request_id, err, header->channel, header->type);
+        }
+        break;
     case ESP_IRIS_CONTROL_CREDIT:
         if (header->payload_size == 8U &&
                 frame->payload[0] == ESP_IRIS_CHANNEL_LOG) {
@@ -372,6 +395,7 @@ static void handle_frame(iris_runtime_t *runtime,
          frame->header.type == ESP_IRIS_CONTROL_TIME_SYNC_REQUEST ||
          frame->header.type == ESP_IRIS_CONTROL_STATUS_REQUEST ||
          frame->header.type == ESP_IRIS_CONTROL_TASKS_REQUEST ||
+         frame->header.type == ESP_IRIS_CONTROL_PAIRING_REQUEST ||
          frame->header.type == ESP_IRIS_CONTROL_CREDIT)) {
         handle_control(runtime, frame, received_us);
     } else if (frame->header.channel == ESP_IRIS_CHANNEL_CRASH) {
