@@ -1,10 +1,11 @@
 """Decode read-only status and crash observations from a concrete device session."""
 from __future__ import annotations
 
+import struct
 from typing import Any
 
 from .device_info import DeviceInfo
-from .protocol import ProtocolError, TlvTag, tlv_u8, tlv_u32, tlv_u64
+from .protocol import JobState, ProtocolError, TlvTag, tlv_u8, tlv_u32, tlv_u64
 
 
 def decode_status(fields: dict[int, bytes], info: DeviceInfo) -> dict[str, Any]:
@@ -117,4 +118,25 @@ def decode_crash_report(
         "panic_reason": fields.get(int(TlvTag.PANIC_REASON), b"").decode(
             "utf-8", errors="replace"
         ),
+    }
+
+
+def decode_job(payload: bytes) -> dict[str, Any]:
+    if len(payload) != 16:
+        raise ProtocolError("invalid job status size")
+    job_id, kind, state, cancelled, progress, reserved, result = (
+        struct.unpack("<IHBBHHi", payload)
+    )
+    if reserved != 0:
+        raise ProtocolError("job status reserved field is nonzero")
+    return {
+        "job_id": job_id,
+        "job_kind": kind,
+        "job_state": JobState(state).name.lower()
+        if state in JobState._value2member_map_
+        else "unknown",
+        "job_state_code": state,
+        "cancel_requested": bool(cancelled),
+        "progress_permille": progress,
+        "result": result,
     }

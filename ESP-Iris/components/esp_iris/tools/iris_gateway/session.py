@@ -28,7 +28,6 @@ from .protocol import (
     EventType,
     Frame,
     FrameDecoder,
-    JobState,
     MediaType,
     ProtocolError,
     TlvTag,
@@ -40,7 +39,7 @@ from .protocol import (
     tlv_u32,
     tlv_u64,
 )
-from .session_observations import decode_crash_report, decode_status
+from .session_observations import decode_crash_report, decode_job, decode_status
 from .state_machine import SessionEvent, SessionState, session_transition
 from .system_update import SystemUpdateBundle
 
@@ -697,26 +696,7 @@ class DeviceSession:
             }
         )
 
-    @staticmethod
-    def _decode_job(payload: bytes) -> dict[str, Any]:
-        if len(payload) != 16:
-            raise ProtocolError("invalid job status size")
-        job_id, kind, state, cancelled, progress, reserved, result = (
-            struct.unpack("<IHBBHHi", payload)
-        )
-        if reserved != 0:
-            raise ProtocolError("job status reserved field is nonzero")
-        return {
-            "job_id": job_id,
-            "job_kind": kind,
-            "job_state": JobState(state).name.lower()
-            if state in JobState._value2member_map_
-            else "unknown",
-            "job_state_code": state,
-            "cancel_requested": bool(cancelled),
-            "progress_permille": progress,
-            "result": result,
-        }
+    _decode_job = staticmethod(decode_job)
 
     async def _grant_media_credit(self, channel: int, amount: int) -> None:
         if self._console:
