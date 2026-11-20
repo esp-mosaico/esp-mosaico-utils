@@ -334,7 +334,8 @@ def main() -> int:
     if args.psram and not args.build:
         parser.error("--psram requires --build to verify linker placement")
     files, version = validate_archive(args.archive, args.tag)
-    work = args.work_dir.resolve()
+    # Python 3.8 on Windows can leave nonexistent paths relative in resolve().
+    work = args.work_dir.absolute().resolve()
     work.mkdir(parents=True, exist_ok=True)
     if args.registry_url:
         project, component = prepare_registry_consumer(work, version, args.registry_url, args.example)

@@ -33,10 +33,11 @@ def archive(tmp_path_factory):
 
 
 def test_package_runs_without_the_checkout(archive, tmp_path):
-    files, version = checker.validate_archive(archive)
-    project, component = checker.prepare_consumer(files, tmp_path)
-    assert project.parent == tmp_path
-    checker.check_host(component, tmp_path, version)
+    # Match CI: start outside the checkout with a nonexistent relative work dir.
+    subprocess.run([
+        sys.executable, "-I", str(IRIS / "tools/check_component_package.py"),
+        str(archive.resolve()), "--work-dir", "installed",
+    ], check=True, cwd=tmp_path)
 
 
 @pytest.mark.parametrize("fault", ["missing_frontend", "missing_asset", "build_log", "wrong_namespace",
