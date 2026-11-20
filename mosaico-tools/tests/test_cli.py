@@ -120,7 +120,7 @@ def workspace_for(root: Path, *, default_project: Path | None = None) -> Workspa
 
 def create_source_project(directory: Path) -> Path:
     (directory / "main").mkdir(parents=True)
-    for filename in ("CMakeLists.txt", "sdkconfig.defaults", "sdkconfig.recovery.defaults", "main/idf_component.yml"):
+    for filename in ("CMakeLists.txt", "sdkconfig.defaults", "main/idf_component.yml"):
         (directory / filename).write_text("# source fixture\n")
     return directory
 
@@ -1630,10 +1630,7 @@ class RecoveryBundleTests(unittest.TestCase):
             project.mkdir()
             build.mkdir()
             (project / "sdkconfig.defaults").write_text(
-                "CONFIG_A=y\n", encoding="utf-8"
-            )
-            (project / "sdkconfig.recovery.defaults").write_text(
-                'CONFIG_APP_PROJECT_VER="1-recovery"\n', encoding="utf-8"
+                'CONFIG_A=y\nCONFIG_APP_PROJECT_VER="1-recovery"\n', encoding="utf-8"
             )
             (build / "sdkconfig").write_text("CONFIG_A=y\n", encoding="utf-8")
 
@@ -1644,8 +1641,8 @@ class RecoveryBundleTests(unittest.TestCase):
             record_recovery_build_defaults(build, fingerprint)
             self.assertTrue(recovery_build_defaults_are_current(build, fingerprint))
 
-            (project / "sdkconfig.recovery.defaults").write_text(
-                'CONFIG_APP_PROJECT_VER="2-recovery"\n', encoding="utf-8"
+            (project / "sdkconfig.defaults").write_text(
+                'CONFIG_A=y\nCONFIG_APP_PROJECT_VER="2-recovery"\n', encoding="utf-8"
             )
             self.assertFalse(
                 recovery_build_defaults_are_current(

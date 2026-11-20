@@ -13,13 +13,37 @@ The job advances for about ten seconds. Only one example job runs at a time;
 the standard Gateway job query and cancel paths exercise retained state and the
 cancellation callback.
 
+## Standalone setup
+
+Create this example from the Component Registry, then run the commands below
+from its directory:
+
+```bash
+idf.py create-project-from-example "espressif/esp_iris=0.2.0:rpc_jobs"
+cd rpc_jobs
+```
+
+With a source checkout, change to `ESP-Iris/components/esp_iris/examples/rpc_jobs`
+from the repository root instead. These application USB examples require an SDK
+supporting ESP32-S31; the release matrix uses the pinned IDF 6.2 revision.
+After the first build downloads the component, prepare its bundled Gateway:
+
+```bash
+python esp_iris.py setup
+python esp_iris.py doctor
+python esp_iris.py web
+```
+
+The launcher uses an isolated cached environment and does not change the IDF
+Python environment. Close the Gateway before flashing or monitoring its ports.
+
 ## Build and flash
 
 ```bash
-idf.py -C components/esp_iris/examples/rpc_jobs \
+idf.py \
   -B build-rpc-jobs build
 
-idf.py -C components/esp_iris/examples/rpc_jobs \
+idf.py \
   -B build-rpc-jobs \
   -p /dev/serial/by-id/<programming-port> flash
 ```
@@ -33,7 +57,7 @@ through the board's ROM download interface.
 Start the Gateway, then use the Workbench RPC tools or CLI:
 
 ```bash
-IRIS=components/esp_iris/tools/esp_iris.py
+IRIS=esp_iris.py
 python "$IRIS" ctl rpc DEVICE_ID system.echo --params '{"value":"hello"}'
 python "$IRIS" ctl rpc DEVICE_ID system.info --params '{}'
 python "$IRIS" ctl rpc-raw DEVICE_ID 4352 1 --payload '{}'

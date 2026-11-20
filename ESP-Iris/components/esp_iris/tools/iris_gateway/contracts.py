@@ -19,6 +19,10 @@ ProgressCallback = Callable[[Dict[str, Any]], Awaitable[None]]
 
 @runtime_checkable
 class GatewayHub(Protocol):
+    pairing_lookup: Callable[[str], str | None] | None
+
+    async def pairing_token_over_usb(self, device_id: str) -> str: ...
+
     def list_devices(self) -> list[dict[str, Any]]: ...
 
     def device_snapshot(self, device_id: str) -> dict[str, Any] | None: ...

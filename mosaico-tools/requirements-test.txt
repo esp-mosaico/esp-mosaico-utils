@@ -1,0 +1,5 @@
+# Host tests, including package/resource tests and YAML manifest validation.
+-r requirements-ideas.txt
+pytest>=8,<8.4 ; python_version < "3.9"
+pytest>=8,<9 ; python_version >= "3.9"
+PyYAML>=6.0.1,<7

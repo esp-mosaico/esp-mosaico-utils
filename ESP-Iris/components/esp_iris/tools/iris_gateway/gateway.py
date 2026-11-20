@@ -71,6 +71,8 @@ from .ota_validation import (
     _require_ota_validation_mode,
     _validate_ota_identity,
 )
+from .pairing import PairingStore
+from .pairing_routes import register_pairing_routes
 from .reconciliation import health_timeout, reconcile_operation, reconciliation_records
 from .recovery_transition import (
     enter_recovery,
@@ -143,6 +145,7 @@ class GatewayService:
             health_timeout({}, ota_health_timeout)
         self.ota_health_timeout = ota_health_timeout
         self.credentials = credentials_store if credentials_store is not None else store
+        self.pairings = PairingStore(self.credentials.root / "pairings")
         self.auth = AuthManager(self.credentials, max_sessions=self.limits.auth_sessions)
         self.hub: GatewayHub | None = None
         self.metrics = MetricsRegistry()
@@ -167,6 +170,7 @@ class GatewayService:
 
     def attach_hub(self, hub: GatewayHub) -> None:
         self.hub = hub
+        hub.pairing_lookup = self.pairings.get
 
     @property
     def device_hub(self) -> GatewayHub:
@@ -793,14 +797,21 @@ def create_app(service: GatewayService) -> web.Application:
     async def resources(request: web.Request, handler: Callable[[web.Request], Awaitable[web.StreamResponse]]) -> web.StreamResponse:
         if request.path in {"/v2/health", "/v2/metrics"} or request.headers.get("Upgrade", "").lower() == "websocket":
             return await handler(request)
-        large = (request.path == "/v2/firmware-artifacts" and request.method == "POST") or any(
-            request.path.endswith(suffix) for suffix in ("/system-update", "/audio", "/screenshot")) or "/files/" in request.path
+        resource = request.match_info.route.resource
+        route = resource.canonical if resource is not None else ""
+        upload = (request.method, route) in {
+            ("POST", "/v2/firmware-artifacts"),
+            ("POST", "/v2/devices/{device_id}/system-update"),
+            ("POST", "/v2/devices/{device_id}/audio"),
+            ("PUT", "/v2/devices/{device_id}/file"),
+        }
+        large = upload or route == "/v2/devices/{device_id}/screenshot" or "/files/" in route
         names = ["requests", *(["large_requests"] if large else [])]
         for name in names:
             maximum = getattr(service.limits, name)
             if service.resource_usage[name] >= maximum:
                 raise ResourceExhausted(name, maximum)
-        maximum_bytes = service.limits.upload_bytes if large else service.limits.json_bytes
+        maximum_bytes = service.limits.upload_bytes if upload else service.limits.json_bytes
         if request.content_length is not None and request.content_length > maximum_bytes:
             raise web.HTTPRequestEntityTooLarge(max_size=maximum_bytes, actual_size=request.content_length)
         for name in names:
@@ -1722,6 +1733,7 @@ def create_app(service: GatewayService) -> web.Application:
     app.router.add_get("/v2/devices", devices)
     app.router.add_get("/v2/endpoints", endpoints)
     register_host_routes(app, service)
+    register_pairing_routes(app, service)
     app.router.add_get("/v2/devices/{device_id}", status)
     app.router.add_get("/v2/devices/{device_id}/memory", memory_snapshot)
     app.router.add_delete("/v2/devices/{device_id}", remove_device)

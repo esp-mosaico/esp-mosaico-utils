@@ -20,6 +20,21 @@
   },
   "files": [
     {
+      "source": "AGENTS.md"
+    },
+    {
+      "source": "components/app_config/CMakeLists.txt"
+    },
+    {
+      "source": "components/app_config/README.md"
+    },
+    {
+      "source": "components/app_config/app_config.c"
+    },
+    {
+      "source": "components/app_config/include/app_config.h"
+    },
+    {
       "source": "CMakeLists.txt",
       "replacements": [
         {

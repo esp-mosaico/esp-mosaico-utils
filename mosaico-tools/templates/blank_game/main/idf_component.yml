@@ -1,5 +1,3 @@
 dependencies:
   idf: ">=6.2"
-  espressif2022/raylib-lite-engine:
-    version: "^0.1.0"
-    override_path: ../../../../../raylib-lite-engine
+  espressif2022/raylib-lite-engine: "==0.1.1"

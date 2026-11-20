@@ -9,7 +9,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 IRIS = ROOT / "ESP-Iris"
-RECOVERY = ROOT / "esp-mosaico-vibe-mode"
+RECOVERY = ROOT / "vibe-mode"
 
 
 def fail(message: str) -> None:
@@ -36,7 +36,7 @@ def main() -> int:
             errors += 1
 
     if RECOVERY.is_dir():
-        manifest = RECOVERY / "firmware" / "vibe-mode" / "main" / "idf_component.yml"
+        manifest = RECOVERY / "main" / "idf_component.yml"
         override = re.search(
             r"^\s*override_path:\s*(\S+)\s*$",
             manifest.read_text(encoding="utf-8"),

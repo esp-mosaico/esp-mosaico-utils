@@ -179,6 +179,18 @@ def build_application(context: RunContext, project: Path) -> None:
     if not runner.is_file():
         raise EnvironmentError(f"The configured build runner is unavailable: {runner}")
     idf_path = resolve_idf_path(context.workspace, project)
+    environment = configdep_environment(context.workspace.configdep)
+    cmake = project / "CMakeLists.txt"
+    if cmake.is_file() and "raylib_lite_iris_app.cmake" in cmake.read_text(encoding="utf-8"):
+        from .raylib_toolchain import ensure_toolchain
+        engine = ensure_toolchain(context.workspace)
+        environment["RAYLIB_LITE_ENGINE_ROOT"] = str(engine)
+        from .raylib_bmgr import prepare_board
+        source_marker = project / ".mosaico-game-source.json"
+        source = project
+        if source_marker.is_file():
+            source = Path(json.loads(source_marker.read_text(encoding="utf-8"))["source"])
+        prepare_board(context, project, source, engine)
     context.status(f"build: preparing {project}")
     result = context.run(
         [
@@ -195,7 +207,7 @@ def build_application(context: RunContext, project: Path) -> None:
         ],
         timeout=3600,
         cwd=context.workspace.root,
-        env=configdep_environment(context.workspace.configdep),
+        env=environment,
         output_status=_build_progress_parser(),
     )
     if result.returncode:

@@ -38,6 +38,11 @@
 #define LCD_DATA3_GPIO 9
 #define LCD_SPI_CLOCK_HZ 40000000U
 #define LCD_SPI_SOURCE_HZ 40000000U
+#ifdef CONFIG_BSP_LCD_QSPI_DRIVE_CAP
+#define LCD_QSPI_DRIVE_CAP ((gpio_drive_cap_t)CONFIG_BSP_LCD_QSPI_DRIVE_CAP)
+#else
+#define LCD_QSPI_DRIVE_CAP GPIO_DRIVE_CAP_DEFAULT
+#endif
 #define LCD_FIFO_BYTES 64U
 #define LCD_CMD_WRITE 0x02U
 #define LCD_COLOR_WRITE 0x32U
@@ -178,10 +183,15 @@ static void route_spi_output(int gpio, int signal) {
   gpio_ll_output_enable(&GPIO, gpio);
 }
 
+static void route_qspi_output(int gpio, int signal) {
+  route_spi_output(gpio, signal);
+  gpio_ll_set_drive_capability(&GPIO, gpio, LCD_QSPI_DRIVE_CAP);
+}
+
 static bool spi_wait(void) {
   uint32_t started_ms = 0;
   unsigned polls = 0;
-  while (!spi_ll_usr_is_done(&GPSPI2)) {
+  while (!spi_ll_usr_is_done(&GPSPI3)) {
     /* A normal 64-byte QSPI transfer completes in a few microseconds.  Avoid
      * reading the early boot clock for every one of the ~7200 chunks; sample
      * it only if a transfer is unexpectedly slow, while retaining a bounded
@@ -208,14 +218,14 @@ static bool spi_tx(const void *data, size_t size, uint8_t lines,
     /* This boot-only bus has one TX-only device, no DMA/RX, and no hardware
      * command/address/dummy phases. Configure only what changes per chunk;
      * the fixed settings are established once in spi_init(). */
-    spi_ll_clear_int_stat(&GPSPI2);
-    spi_ll_master_set_line_mode(&GPSPI2, (spi_line_mode_t){
+    spi_ll_clear_int_stat(&GPSPI3);
+    spi_ll_master_set_line_mode(&GPSPI3, (spi_line_mode_t){
         .cmd_lines = 1, .addr_lines = 1, .data_lines = lines});
-    spi_ll_set_mosi_bitlen(&GPSPI2, chunk * 8U);
-    spi_ll_master_keep_cs(&GPSPI2, keep_cs_active || chunk < size);
-    spi_ll_write_buffer(&GPSPI2, fifo, chunk * 8U);
-    spi_ll_apply_config(&GPSPI2);
-    spi_ll_user_start(&GPSPI2);
+    spi_ll_set_mosi_bitlen(&GPSPI3, chunk * 8U);
+    spi_ll_master_keep_cs(&GPSPI3, keep_cs_active || chunk < size);
+    spi_ll_write_buffer(&GPSPI3, fifo, chunk * 8U);
+    spi_ll_apply_config(&GPSPI3);
+    spi_ll_user_start(&GPSPI3);
     if (!spi_wait()) {
       return false;
     }
@@ -259,42 +269,42 @@ static bool lcd_set_window(uint16_t x, uint16_t y, uint16_t width,
 
 static void spi_init(void) {
   int __DECLARE_RCC_ATOMIC_ENV __attribute__((unused));
-  spi_ll_enable_bus_clock(SPI2_HOST, true);
-  spi_ll_reset_register(SPI2_HOST);
-  spi_ll_enable_clock(SPI2_HOST, true);
-  spi_ll_set_clk_source(&GPSPI2, SPI_CLK_SRC_XTAL);
-  spi_ll_clk_source_pre_div(&GPSPI2, 1, 1);
+  spi_ll_enable_bus_clock(SPI3_HOST, true);
+  spi_ll_reset_register(SPI3_HOST);
+  spi_ll_enable_clock(SPI3_HOST, true);
+  spi_ll_set_clk_source(&GPSPI3, SPI_CLK_SRC_XTAL);
+  spi_ll_clk_source_pre_div(&GPSPI3, 1, 1);
 
   const int lcd_clk_gpio = s_hw_version == MOSAICO_HW_VERSION(1, 0)
                                ? LCD_CLK_GPIO_V1_0
                                : LCD_CLK_GPIO_V1_2;
-  route_spi_output(lcd_clk_gpio, SPI2_CK_PAD_OUT_IDX);
-  route_spi_output(LCD_DATA0_GPIO, SPI2_D_PAD_OUT_IDX);
-  route_spi_output(LCD_DATA1_GPIO, SPI2_Q_PAD_OUT_IDX);
-  route_spi_output(LCD_DATA2_GPIO, SPI2_WP_PAD_OUT_IDX);
-  route_spi_output(LCD_DATA3_GPIO, SPI2_HOLD_PAD_OUT_IDX);
-  route_spi_output(LCD_CS_GPIO, SPI2_CS_PAD_OUT_IDX);
+  route_qspi_output(lcd_clk_gpio, SPI3_CK_PAD_OUT_IDX);
+  route_qspi_output(LCD_DATA0_GPIO, SPI3_D_PAD_OUT_IDX);
+  route_qspi_output(LCD_DATA1_GPIO, SPI3_QO_PAD_OUT_IDX);
+  route_qspi_output(LCD_DATA2_GPIO, SPI3_WP_PAD_OUT_IDX);
+  route_qspi_output(LCD_DATA3_GPIO, SPI3_HOLD_PAD_OUT_IDX);
+  route_spi_output(LCD_CS_GPIO, SPI3_CS_PAD_OUT_IDX);
 
-  spi_ll_master_init(&GPSPI2);
+  spi_ll_master_init(&GPSPI3);
   spi_ll_clock_val_t clock_reg;
   spi_ll_master_cal_clock(LCD_SPI_SOURCE_HZ, LCD_SPI_CLOCK_HZ, 128,
                           &clock_reg);
-  spi_ll_master_set_clock_by_reg(&GPSPI2, &clock_reg);
-  spi_ll_master_set_pos_cs(&GPSPI2, 0, false);
-  spi_ll_master_set_mode(&GPSPI2, 0);
-  spi_ll_set_tx_lsbfirst(&GPSPI2, false);
-  spi_ll_set_rx_lsbfirst(&GPSPI2, false);
-  spi_ll_set_half_duplex(&GPSPI2, true);
-  spi_ll_set_sio_mode(&GPSPI2, false);
-  spi_ll_master_set_cs_setup(&GPSPI2, 0);
-  spi_ll_master_set_cs_hold(&GPSPI2, 0);
-  spi_ll_master_select_cs(&GPSPI2, 0);
-  spi_ll_enable_ddr_mode(&GPSPI2, false);
-  spi_ll_set_command_bitlen(&GPSPI2, 0);
-  spi_ll_set_addr_bitlen(&GPSPI2, 0);
-  spi_ll_set_dummy(&GPSPI2, 0);
-  spi_ll_enable_mosi(&GPSPI2, true);
-  spi_ll_enable_miso(&GPSPI2, false);
+  spi_ll_master_set_clock_by_reg(&GPSPI3, &clock_reg);
+  spi_ll_master_set_pos_cs(&GPSPI3, 0, false);
+  spi_ll_master_set_mode(&GPSPI3, 0);
+  spi_ll_set_tx_lsbfirst(&GPSPI3, false);
+  spi_ll_set_rx_lsbfirst(&GPSPI3, false);
+  spi_ll_set_half_duplex(&GPSPI3, true);
+  spi_ll_set_sio_mode(&GPSPI3, false);
+  spi_ll_master_set_cs_setup(&GPSPI3, 0);
+  spi_ll_master_set_cs_hold(&GPSPI3, 0);
+  spi_ll_master_select_cs(&GPSPI3, 0);
+  spi_ll_enable_ddr_mode(&GPSPI3, false);
+  spi_ll_set_command_bitlen(&GPSPI3, 0);
+  spi_ll_set_addr_bitlen(&GPSPI3, 0);
+  spi_ll_set_dummy(&GPSPI3, 0);
+  spi_ll_enable_mosi(&GPSPI3, true);
+  spi_ll_enable_miso(&GPSPI3, false);
 }
 
 static bool panel_init(void) {

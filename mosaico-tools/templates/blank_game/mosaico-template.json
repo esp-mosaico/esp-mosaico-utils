@@ -35,8 +35,8 @@
           "replacement": "set(MOSAICO_BSP_ROOT \"${CMAKE_CURRENT_LIST_DIR}/{{bsp_root|cmake}}\")"
         },
         {
-          "pattern": "^set\\(RAYLIB_LITE_ENGINE_ROOT .*\\)$",
-          "replacement": "set(RAYLIB_LITE_ENGINE_ROOT \"${CMAKE_CURRENT_LIST_DIR}/{{engine_root|cmake}}\")"
+          "pattern": "^    set\\(RAYLIB_LITE_ENGINE_ROOT \"\"\\)$",
+          "replacement": "    set(RAYLIB_LITE_ENGINE_ROOT \"${CMAKE_CURRENT_LIST_DIR}/{{engine_root|cmake}}\")"
         },
         {
           "pattern": "^project\\(blank_game(?=[\\s)])",
@@ -74,13 +74,7 @@
       ]
     },
     {
-      "source": "main/idf_component.yml",
-      "replacements": [
-        {
-          "pattern": "^    override_path: .*$",
-          "replacement": "    override_path: {{engine_root|json}}"
-        }
-      ]
+      "source": "main/idf_component.yml"
     },
     {
       "source": "partitions.csv"

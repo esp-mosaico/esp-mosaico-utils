@@ -21,15 +21,24 @@ from .discovery import (
 )
 from .host_worker import active_workers
 from .http_support import error_response, request_is_loopback
-from .ownership import CAPABILITY, OwnershipConflict, OwnershipRegistry
+from .ownership import (
+    CAPABILITY,
+    OwnershipConflict,
+    OwnershipRegistry,
+    usb_instance_changed,
+)
+from .pairing import PairingStore, validate_token
+from .protocol import Capability
 from .takeover import CAPABILITY as TAKEOVER_CAPABILITY
 from .takeover import (
     IDLE_CAPABILITY,
+    USB_REFRESH_CAPABILITY,
     busy_error,
     drain_device,
     drain_timeout,
     handoff_idle_owner,
     public_record,
+    refresh_usb_binding,
 )
 from .takeover import register_routes as register_takeover_routes
 
@@ -44,6 +53,9 @@ class ProjectGateway:
         self.pairing_token = pairing_token
         self.shared = shared
         self.tokens: dict[str, str] = {}
+        # Projects on this host share pairings, never their diagnostic/export stores.
+        self.service.pairings = PairingStore(registry.root.parent / "pairings")
+        self.hub.pairing_lookup = self.pairing_for_device
         self.closing = False
         self.drain_requested = asyncio.Event()
         self.drain_timed_out = False
@@ -55,6 +67,9 @@ class ProjectGateway:
         self.clients = ClientLifecycle()
         self.control_requests = 0
         self.streams = 0
+
+    def pairing_for_device(self, device_id: str) -> str | None:
+        return self.service.pairings.get(device_id) or self.pairing_token
 
     def keepalive_reasons(self) -> dict[str, int]:
         workers = active_workers()
@@ -148,12 +163,28 @@ class ProjectGateway:
 
     def snapshot(self, *, endpoints: list[dict[str, Any]] | None = None) -> dict[str, Any]:
         claims = self.registry.claims()
+        paired = self.service.pairings.devices()
+        presented = []
+        for item in self.service.list_endpoints() if endpoints is None else endpoints:
+            item = dict(item)
+            device_id = (item.get("device_id") or (item.get("ownership") or {}).get("device_id")
+                         or item.get("advertised_device_id"))
+            item["pairing_saved"] = device_id in paired
+            item["pairing_required"] = bool(item.get("pairing") == "hmac" and not
+                (item["pairing_saved"] or self.pairing_token or self.tokens.get(item["endpoint"])))
+            live = self.hub._devices.get(device_id)
+            item["usb_pairing_available"] = bool(
+                live and live.info and live.info.capabilities & Capability.USB_PAIRING
+                and item.get("link_role") != "data" and item["endpoint"] == live.link.endpoint)
+            presented.append(item)
         return {"session": self.registry.session(self.registry.session_id),
-                "capability": CAPABILITY, "capabilities": [TAKEOVER_CAPABILITY, IDLE_CAPABILITY], "closing": self.closing,
+                "capability": CAPABILITY,
+                "capabilities": [TAKEOVER_CAPABILITY, IDLE_CAPABILITY, USB_REFRESH_CAPABILITY], "closing": self.closing,
                 "lifecycle": self.clients.snapshot(self.keepalive_reasons()) if self.shared else None,
-                "pairing_configured": bool(self.pairing_token or self.tokens),
+                "pairing_configured": bool(self.pairing_token or self.tokens or paired),
+                "paired_devices": paired,
                 "busy": self.busy(), "sessions": self.registry.sessions(),
-                "claims": claims, "endpoints": self.service.list_endpoints() if endpoints is None else endpoints,
+                "claims": claims, "endpoints": presented,
                 "takeovers": [public_record(self.registry.transfer(key)) for key in sorted({
                     item["transfer_id"] for item in claims if item["transfer_id"]
                 })]}
@@ -161,6 +192,10 @@ class ProjectGateway:
     async def wait_device(self, device_id: str | None, endpoint: str, timeout: float) -> dict[str, Any]:
         deadline = time.monotonic() + min(30.0, max(0.1, timeout))
         while time.monotonic() < deadline:
+            if endpoint:
+                state = self.hub._endpoint_states.get(endpoint, {})
+                if state.get("identity_error"):
+                    raise OwnershipConflict(str(state["identity_error"]))
             for item in self.hub.list_devices():
                 if (device_id and item["device_id"] == device_id) or (
                     not device_id and item.get("endpoint") == endpoint
@@ -191,7 +226,7 @@ class ProjectGateway:
         return {"device_id": claims[0]["device_id"]} if claims[0]["device_id"] else {"endpoint": key}
 
     async def automatic_target(self) -> tuple[dict[str, str] | None, dict[str, Any] | None]:
-        """Prefer this session's live/owned device, otherwise one live free USB endpoint.
+        """Prefer owned devices, then one free USB device, then one paired mDNS device.
 
         Enumerate descriptors at request time: cached endpoints and mDNS adverts
         are not evidence of a uniquely attached USB device. This runs under the
@@ -245,6 +280,19 @@ class ProjectGateway:
             return {"endpoint": endpoint}, metadata
         if blocked:
             raise OwnershipConflict("USB devices are reserved: " + ", ".join(blocked))
+        # First network admission is opt-in through pairing. Advertisements are
+        # selection hints only; admit_candidates still verifies live identity.
+        network = {item["advertised_device_id"]: item for item in self.hub.list_endpoints()
+                   if item.get("present") and item.get("discovery") == "mdns"
+                   and item.get("link_role") != "data" and item.get("advertised_device_id")
+                   and self.service.pairings.get(item["advertised_device_id"])
+                   and not self.registry.claim(item["endpoint"])}
+        if len(network) > 1:
+            self.selection_error("Multiple paired network devices; specify --device-id or --endpoint.",
+                                 sorted(item["endpoint"] for item in network.values()))
+        if network:
+            device_id, metadata = next(iter(network.items()))
+            return {"device_id": device_id, "endpoint": metadata["endpoint"]}, metadata
         return None, None
 
     async def acquire(self, body: dict[str, Any]) -> dict[str, Any] | None:
@@ -261,16 +309,30 @@ class ProjectGateway:
         ):
             raise ValueError("baudrate requires an explicit serial endpoint and an integer from 9600 to 3000000")
         token = body.get("pairing_token")
-        if token is not None and (not isinstance(token, str) or len(bytes.fromhex(token)) != 32):
-            raise ValueError("pairing token must contain 32 bytes")
+        if token is not None:
+            token = validate_token(token)
         automatic = bool(body.get("auto")) and not device_id and not endpoint
         automatic_metadata = None
+        if endpoint and not str(endpoint).startswith("tcp:"):
+            metadata = await to_thread(resolve_usb_port, str(endpoint))
+            endpoint = usb_endpoint(metadata)
+            serial_jtag = metadata.get("vid") == 0x303A and metadata.get("pid") == 0x1001
+            if not iris_usb_allowed(metadata, explicit=True, allow_serial_jtag=serial_jtag):
+                raise ValueError("endpoint is reserved for the ROM recovery workflow")
+            previous_claim = self.registry.claim(endpoint)
+            previous_device = (previous_claim or {}).get("device_id") or self.registry.known_device(endpoint)
+            changed = await refresh_usb_binding(self, endpoint, metadata)
+            if changed and device_id and device_id == previous_device:
+                raise OwnershipConflict("USB device changed; select the replacement endpoint without the old Device ID")
+            previous = {} if changed else self.hub._endpoint_states.get(endpoint, {})
+            automatic_metadata = {**{key: previous[key] for key in ("baudrate",) if key in previous},
+                                  "endpoint": endpoint, **metadata}
         if automatic:
             target, automatic_metadata = await self.automatic_target()
             if target is None:
                 if body.get("allow_none"):
                     return None
-                raise LookupError("No available ESP-Iris USB device was found.")
+                raise LookupError("No available ESP-Iris USB or paired network device was found.")
             device_id, endpoint = target.get("device_id"), target.get("endpoint")
         elif not device_id and not endpoint:
             raise ValueError("select --device-id or --endpoint, or request automatic selection")
@@ -295,8 +357,10 @@ class ProjectGateway:
                             canonical = usb_endpoint(await to_thread(resolve_usb_port, str(endpoint)))
                         if canonical != connected.get("endpoint"):
                             connected = None
-                    if connected is not None:
+                    if connected is not None and token is None:
                         return connected
+                    if connected is not None and endpoint is None:
+                        endpoint = connected["endpoint"]
                 if automatic:
                     # Its existing supervisors own reconnect. Never substitute
                     # a different board while this identity is temporarily absent.
@@ -344,8 +408,9 @@ class ProjectGateway:
             for owned in self.hub.list_devices():
                 known = self.registry.known_endpoints(owned["device_id"])
                 claim = self.registry.claim(selected)
-                if (owned["endpoint"] != selected and candidates[0].get("link_role") != "data"
+                if ((owned["endpoint"] != selected or token is not None) and candidates[0].get("link_role") != "data"
                         and (device_id == owned["device_id"]
+                             or candidates[0].get("advertised_device_id") == owned["device_id"]
                              or claim and claim.get("device_id") == owned["device_id"]
                              or any(item["endpoint"] == selected for item in known))):
                     switch_device = owned["device_id"]
@@ -406,6 +471,15 @@ class ProjectGateway:
             if preferred is None and active is not None:
                 endpoint = self.registry._require(active.link.endpoint)
                 preferred = {"resource": endpoint["resource"], "metadata": endpoint["metadata"]}
+            if preferred and preferred["resource"].startswith("usb:"):
+                current = await to_thread(resolve_usb_port, preferred["resource"])
+                claim = self.registry.claim(preferred["resource"])
+                if claim and usb_instance_changed(claim["metadata"], current):
+                    await self.hub.refresh_owned_usb(preferred["resource"])
+                    raise OwnershipConflict("USB device changed before handoff; acquire the replacement endpoint")
+                if usb_instance_changed(preferred["metadata"], current):
+                    raise OwnershipConflict("USB device changed before handoff; refresh selection")
+                preferred = {"resource": preferred["resource"], "metadata": {**preferred["metadata"], **current}}
             self.registry.prepare(device_id, target, transfer_id,
                                   preferred_endpoint=preferred)
             control = self.hub._links.get(device_id, {}).get("control")
@@ -426,18 +500,33 @@ class ProjectGateway:
         if self.closing:
             raise OwnershipConflict("project session is draining")
         proposed = self.registry.transfer(transfer_id)
+        if proposed["state"] == "completed":
+            return self.registry.accept(transfer_id)
         preferred = proposed["metadata"].get("preferred_endpoint") or proposed["metadata"]["endpoints"][0]
-        token = self.tokens.get(preferred["resource"], self.pairing_token)
+        if preferred["resource"].startswith("usb:"):
+            current = await to_thread(resolve_usb_port, preferred["resource"])
+            if usb_instance_changed(preferred["metadata"], current):
+                raise OwnershipConflict(
+                    f"USB device changed during takeover {transfer_id}; reservation retained. "
+                    "Restore the original device and resume, or end the receiver session and abort.")
+            preferred = {"resource": preferred["resource"], "metadata": {**preferred["metadata"], **current}}
+        token = self.tokens.get(preferred["resource"]) or self.pairing_for_device(proposed["device_id"])
         if any(item["metadata"].get("pairing") == "hmac" for item in proposed["metadata"]["endpoints"]) and not token:
             raise OwnershipConflict("target requires its own pairing token before acceptance")
         result = self.registry.accept(transfer_id)
         if result["state"] == "completed":
             return result
-        endpoints = result["metadata"]["endpoints"]
         # A single verified transport is sufficient. Credentials stay local.
-        endpoint = result["metadata"].get("preferred_endpoint") or endpoints[0]
+        endpoint = preferred
         await self.hub.connect_owned(endpoint["resource"], endpoint["metadata"], pairing_token=token)
-        admitted = await self.wait_device(None, endpoint["resource"], 15)
+        try:
+            admitted = await self.wait_device(None, endpoint["resource"], 15)
+        except OwnershipConflict as error:
+            await self.hub.disconnect_owned_endpoint(endpoint["resource"])
+            self.hub._retired_endpoints.add(endpoint["resource"])
+            raise OwnershipConflict(
+                f"Takeover {transfer_id}: {error}; reservation retained. "
+                "Restore the original device and resume, or end the receiver session and abort.") from error
         if admitted["device_id"] != result["device_id"]:
             raise OwnershipConflict("handoff endpoint returned a different Device ID")
         self.service.store.remember_device(admitted)

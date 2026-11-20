@@ -58,10 +58,32 @@ command and the workbench cannot wake an exited Gateway.
 `iris list` and `iris status` do not open unclaimed devices. Device operations can
 omit their target: prefer the sole connected device, then the sole existing
 ownership (wait for that identity if offline), then the sole available USB
-device from live enumeration. Multiple candidates report a selection error.
-Unconnected TCP/mDNS endpoints, cached history, ROM and Serial/JTAG interfaces
-are not automatic USB candidates. Explicit targets never fall back to another
+device from live enumeration, then a sole live mDNS device with a saved pairing.
+Multiple candidates report a selection error.
+Unpaired TCP/mDNS endpoints, cached history, ROM and Serial/JTAG interfaces
+are not automatic candidates. Explicit targets never fall back to another
 device, and reservations held by other sessions are never automatically reclaimed.
+
+Pair a current Vibe device once over application USB, then connect by its
+discovered network endpoint without copying a 64-character token:
+
+```sh
+python mosaico.py iris pair --endpoint usb:location=<location>
+python mosaico.py iris claim --device-id <device-id> --endpoint tcp:<address>:19772
+python mosaico.py iris forget-pairing --device-id <device-id>
+```
+
+The Workbench offers the same USB pairing and forget actions. Credentials are
+stored privately on this PC by verified Device ID, survive Gateway restarts,
+and are shared across projects. Older firmware can still use
+`--pairing-token-file`; only successful connections save that token.
+Forgetting affects future credential lookup, not existing connections or an
+explicit token file/environment configuration.
+
+Current Vibe firmware permits network-status RPC `0x1202/2` and `iris run-app`
+over an authenticated TCP control session. Wi-Fi provisioning and the
+Bridge/self-update test controls retain their USB restriction. TCP firmware
+transfer also requires the separate data link (19773 by default).
 
 `iris run` attempts automatic connection once on creation, but stays running
 without a device or when selection fails. Later device operations or `iris claim`

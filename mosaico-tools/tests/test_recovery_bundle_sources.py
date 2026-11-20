@@ -10,13 +10,13 @@ import pytest
 
 @pytest.mark.parametrize("changed", [
     "components/app_ideas/src/factory_ideas.c",
-    "../../../mosaico-tools/components/esp_mosaico_boot/mosaico_boot.c",
-    "../../../mosaico-tools/include/mosaico_recovery_contract.h",
-    "../../../mosaico-tools/product_contract.json",
-    "../../../mosaico-tools/cmake/mosaico_idf_project.cmake",
-    "../../../ESP-Iris/components/esp_iris/src/esp_iris.c",
-    "../../../shared/ideas/presentation.py",
-    "../../../shared/ideas/font.py",
+    "../mosaico-tools/components/esp_mosaico_boot/mosaico_boot.c",
+    "../mosaico-tools/include/mosaico_recovery_contract.h",
+    "../mosaico-tools/product_contract.json",
+    "../mosaico-tools/cmake/mosaico_idf_project.cmake",
+    "../ESP-Iris/components/esp_iris/src/esp_iris.c",
+    "../shared/ideas/presentation.py",
+    "../shared/ideas/font.py",
 ])
 def test_candidate_source_state_includes_shared_components(tmp_path, monkeypatch, changed):
     tool = Path(__file__).resolve().parents[1] / "tools/prepare_recovery.py"
@@ -24,7 +24,7 @@ def test_candidate_source_state_includes_shared_components(tmp_path, monkeypatch
     spec = importlib.util.spec_from_file_location("candidate_sources", tool)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    source = tmp_path / "esp-mosaico-vibe-mode/firmware/vibe-mode"
+    source = tmp_path / "vibe-mode"
     source.mkdir(parents=True)
     component = (source / changed).resolve()
     component.parent.mkdir(parents=True, exist_ok=True)

@@ -254,7 +254,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--project", help="ESP-IDF application path; selected automatically by default"
     )
     install_parser.add_argument(
-        "--device-id", help="Target Device ID; omit for the sole connected/owned device or available USB device"
+        "--device-id", help="Target Device ID; omit for the sole connected/owned device or sole available USB/paired network device"
     )
     install_parser.add_argument(
         "--gateway-profile", help="External ESP-Iris profile; use this project's local Gateway by default"
@@ -298,7 +298,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     system_update_parser.add_argument(
         "--device-id",
-        help="Target Device ID; omit for the sole connected/owned device or available USB device",
+        help="Target Device ID; omit for the sole connected/owned device or sole available USB/paired network device",
     )
     system_update_parser.add_argument(
         "--gateway-profile", help="External ESP-Iris profile; use this project's local Gateway by default"
@@ -335,7 +335,7 @@ def build_parser() -> argparse.ArgumentParser:
         flash_parser.add_argument("--reconnect-timeout", type=monitor_timeout,
                                   help="Seconds to observe Iris reconnection (default: 0 with --monitor, otherwise 10); independent of flash result")
 
-    run_parser = command("run-app", help="Retry the installed application from Vibe Mode over USB or UART")
+    run_parser = command("run-app", help="Retry the installed application from Vibe Mode over a local or paired TCP link")
     run_selection = run_parser.add_mutually_exclusive_group()
     run_selection.add_argument("--device-id")
     run_selection.add_argument("--endpoint", help="Local Iris control port, for example /dev/ttyUSB0")
@@ -385,7 +385,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     enter_recovery_parser.add_argument(
-        "--device-id", help="Target Device ID; omit for the sole connected/owned device or available USB device"
+        "--device-id", help="Target Device ID; omit for the sole connected/owned device or sole available USB/paired network device"
     )
     enter_recovery_parser.add_argument(
         "--gateway-profile", help="ESP-Iris profile; use the local Gateway by default"
@@ -404,7 +404,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--ssid", required=True, help="Wi-Fi SSID; password is read without echo"
     )
     recovery_wifi_parser.add_argument(
-        "--device-id", help="Target Device ID; omit for the sole connected/owned device or available USB device"
+        "--device-id", help="Target Device ID; omit for the sole connected/owned device or sole available USB/paired network device"
     )
     recovery_wifi_parser.add_argument(
         "--gateway-profile", help="ESP-Iris profile; use the local Gateway by default"
@@ -420,7 +420,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     monitor_parser.add_argument(
-        "--device-id", help="Target Device ID; omit for the sole connected/owned device or available USB device"
+        "--device-id", help="Target Device ID; omit for the sole connected/owned device or sole available USB/paired network device"
     )
     monitor_parser.add_argument(
         "--gateway-profile", help="External ESP-Iris profile; use this project's local Gateway by default"
@@ -486,7 +486,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     memory_parser.add_argument(
-        "--device-id", help="Target Device ID; omit for the sole connected/owned device or available USB device"
+        "--device-id", help="Target Device ID; omit for the sole connected/owned device or sole available USB/paired network device"
     )
     memory_parser.add_argument(
         "--gateway-profile", help="ESP-Iris profile; use the local Gateway by default"
@@ -507,7 +507,7 @@ def build_parser() -> argparse.ArgumentParser:
     rpc_parser.add_argument("service_id", help="Numeric RPC service ID")
     rpc_parser.add_argument("method_id", help="Numeric RPC method ID")
     rpc_parser.add_argument(
-        "--device-id", help="Target Device ID; omit for the sole connected/owned device or available USB device"
+        "--device-id", help="Target Device ID; omit for the sole connected/owned device or sole available USB/paired network device"
     )
     rpc_parser.add_argument(
         "--gateway-profile", help="ESP-Iris profile; use the local Gateway by default"
@@ -525,7 +525,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     crash_parser.add_argument(
-        "--device-id", help="Target Device ID; omit for the sole connected/owned device or available USB device"
+        "--device-id", help="Target Device ID; omit for the sole connected/owned device or sole available USB/paired network device"
     )
     crash_parser.add_argument(
         "--gateway-profile", help="ESP-Iris profile; use the local Gateway by default"
@@ -547,6 +547,8 @@ def build_parser() -> argparse.ArgumentParser:
     device_parsers = []
     actions = {
         "claim": "Claim the selected or sole available device for this project's Gateway",
+        "pair": "Remember a device's TCP pairing credential through its verified USB data interface",
+        "forget-pairing": "Remove this host's saved pairing credential without changing the device",
         "release": "Release an idle device or endpoint; defaults to the sole owned device",
         "reconcile": "Clear ordinary ownership left by a stopped session",
         "takeover-start": "Request a device from its current Gateway into this project",
@@ -562,9 +564,11 @@ def build_parser() -> argparse.ArgumentParser:
         action_parser = (takeover_actions if is_takeover else iris_commands).add_parser(verb, help=help_text)
         action_parser.set_defaults(command="device", device_action=action, public_command=" ".join(path))
         device_parsers.append(action_parser)
-        if action == "claim":
+        if action in {"claim", "pair"}:
             action_parser.add_argument("--device-id")
             action_parser.add_argument("--endpoint")
+        elif action == "forget-pairing":
+            action_parser.add_argument("--device-id", required=True)
         elif action in {"takeover-start", "release", "reconcile"}:
             selection = action_parser.add_mutually_exclusive_group(required=action != "release")
             selection.add_argument("--device-id")
@@ -963,7 +967,12 @@ def _project_command(arguments: Any, context: RunContext) -> int:
                 pass
         return 0
     action = arguments.device_action
-    if action == "claim":
+    if action == "pair":
+        device = acquire_device(url, arguments, context)
+        result = request(url, f"/v2/devices/{device['device_id']}/pairing", {})
+    elif action == "forget-pairing":
+        result = request(url, f"/v2/pairings/{arguments.device_id}", method="DELETE")
+    elif action == "claim":
         pairing = read_pairing_token(arguments.pairing_token_file) if arguments.pairing_token_file else None
         result = request(url, "/v2/project/acquire", {
             "device_id": arguments.device_id, "endpoint": arguments.endpoint,

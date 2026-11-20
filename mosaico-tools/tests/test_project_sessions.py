@@ -297,6 +297,8 @@ def test_status_without_gateway_does_not_bootstrap_or_spawn(tmp_path, monkeypatc
 
 @pytest.mark.parametrize("action", [
     ["claim", "--endpoint", "usb:location=1-2"],
+    ["pair", "--endpoint", "usb:location=1-2"],
+    ["forget-pairing", "--device-id", "00112233445566778899aabbccddeeff"],
     ["takeover", "start", "--endpoint", "usb:location=1-2", "--force"],
     ["release", "--device-id", "board"],
     ["reconcile", "--device-id", "board"],

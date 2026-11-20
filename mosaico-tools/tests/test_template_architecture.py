@@ -2,11 +2,11 @@
 
 import json
 import os
-from pathlib import Path
 import re
 import shlex
 import shutil
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -24,7 +24,7 @@ def test_builtin_component_boundaries_and_dependency_graph(template):
         assert name == "main" or name.startswith("app_")
         assert (directory / "README.md").is_file()
         text = (directory / "CMakeLists.txt").read_text()
-        args = shlex.split(re.search(r"idf_component_register\((.*?)\)", text, re.S)[1])
+        args = shlex.split(re.search(r"idf_component_register\((.*?)\)", text, re.DOTALL)[1])
         group = None
         graph[name] = []
         for value in args:
@@ -71,7 +71,7 @@ def test_public_component_behavior(tmp_path, template, component, fixture, stub_
     if stub_gsp:
         command.extend(["-I", str(FIXTURES)])
     command.extend([str(directory / (component + ".c")), str(FIXTURES / fixture), "-o", str(executable)])
-    result = subprocess.run(command, capture_output=True, text=True)
+    result = subprocess.run(command, capture_output=True, text=True, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     subprocess.run([str(executable)], check=True, timeout=10)
 
@@ -98,7 +98,38 @@ def test_device_display_returns_co5300_alignment(tmp_path, te_enabled):
          f"-DCONFIG_BSP_CO5300_ENABLE_TE={te_enabled}",
          "-I", str(tmp_path), "-I", str(directory), "-I", str(directory / "include"),
          str(FIXTURES / "display_contract.c"), "-o", str(executable)],
-        capture_output=True, text=True,
+        capture_output=True, text=True, check=False,
     )
+    assert result.returncode == 0, result.stdout + result.stderr
+    subprocess.run([str(executable)], check=True, timeout=10)
+
+
+def test_shared_configuration_and_device_startup(tmp_path):
+    """Read actual shared values without truncation, disclosure or blocking the UI."""
+    compiler = next((shutil.which(name) for name in ("cc", "gcc", "clang") if shutil.which(name)), None)
+    if not compiler:
+        if os.environ.get("IRIS_REQUIRE_HOST_CC") == "1":
+            pytest.fail("A native C compiler is required")
+        pytest.skip("No native C compiler")
+    for name in ("esp_err.h", "nvs.h", "nvs_flash.h", "mbedtls/platform_util.h",
+                 "esp_gsp_esp_lcd.h", "esp_iris.h", "esp_log.h", "iris_ota_support.h",
+                 "iris_screen_mirror.h", "ui_bundle.h"):
+        header = tmp_path / name
+        header.parent.mkdir(parents=True, exist_ok=True)
+        header.write_text('#include "config_sdk.h"\n')
+    root = TEMPLATES / "hello_world"
+    recovery = TOOLS / "components/esp_mosaico_app_recovery"
+    executable = tmp_path / ("config.exe" if os.name == "nt" else "config")
+    command = [compiler, "-std=c11", "-Wall", "-Wextra", "-Werror"]
+    for include in (tmp_path, FIXTURES, recovery / "include",
+                    *(root / "components" / name / "include"
+                      for name in ("app_config", "app_display", "app_hello"))):
+        command.extend(["-I", str(include)])
+    command.extend([
+        str(root / "components/app_config/app_config.c"),
+        str(root / "main/main.c"), str(recovery / "mosaico_shared.c"),
+        str(FIXTURES / "config_contract.c"), "-o", str(executable),
+    ])
+    result = subprocess.run(command, capture_output=True, text=True, timeout=30, check=False)
     assert result.returncode == 0, result.stdout + result.stderr
     subprocess.run([str(executable)], check=True, timeout=10)

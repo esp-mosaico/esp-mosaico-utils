@@ -187,6 +187,11 @@ class DemoHub:
     async def hardware_reset(self, endpoint: str, mode: str = "run") -> dict[str, Any]:
         raise RuntimeError("hardware reset is disabled in demo mode")
 
+    pairing_lookup: Callable[[str], str | None] | None = None
+
+    async def pairing_token_over_usb(self, device_id: str) -> str:
+        raise ValueError("USB pairing requires a physical device")
+
     def get(self, device_id: str) -> dict[str, Any]:
         try:
             device = self._devices[device_id]

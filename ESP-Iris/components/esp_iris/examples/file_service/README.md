@@ -8,12 +8,36 @@ because the example does not assume that property from the FAT VFS.
 The custom layout requires a 2 MB or larger flash device. A full flash may
 format the `storage` partition; verify the target before flashing.
 
+## Standalone setup
+
+Create this example from the Component Registry, then run the commands below
+from its directory:
+
+```bash
+idf.py create-project-from-example "espressif/esp_iris=0.2.0:file_service"
+cd file_service
+```
+
+With a source checkout, change to `ESP-Iris/components/esp_iris/examples/file_service`
+from the repository root instead. These application USB examples require an SDK
+supporting ESP32-S31; the release matrix uses the pinned IDF 6.2 revision.
+After the first build downloads the component, prepare its bundled Gateway:
+
+```bash
+python esp_iris.py setup
+python esp_iris.py doctor
+python esp_iris.py web
+```
+
+The launcher uses an isolated cached environment and does not change the IDF
+Python environment. Close the Gateway before flashing or monitoring its ports.
+
 ## Build and flash
 
 ```bash
-idf.py -C components/esp_iris/examples/file_service \
+idf.py \
   -B build-file-service build
-idf.py -C components/esp_iris/examples/file_service \
+idf.py \
   -B build-file-service -p /dev/serial/by-id/<programming-port> flash
 ```
 

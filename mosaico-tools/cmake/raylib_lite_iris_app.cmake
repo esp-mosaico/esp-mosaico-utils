@@ -22,8 +22,8 @@ if(NOT RAYLIB_LITE_ENGINE_ROOT AND DEFINED ENV{RAYLIB_LITE_ENGINE_ROOT})
 endif()
 if(NOT EXISTS "${RAYLIB_LITE_ENGINE_ROOT}/include/raylib_lite/raylib_lite_native_services.h")
     message(FATAL_ERROR
-        "RAYLIB_LITE_ENGINE_ROOT must name a Raylib Lite Engine checkout with "
-        "native application services: '${RAYLIB_LITE_ENGINE_ROOT}'")
+        "RAYLIB_LITE_ENGINE_ROOT must name a Raylib Lite toolchain/source directory with "
+        "native application services (run mosaico.py game prepare): '${RAYLIB_LITE_ENGINE_ROOT}'")
 endif()
 get_filename_component(RAYLIB_LITE_ENGINE_ROOT "${RAYLIB_LITE_ENGINE_ROOT}" ABSOLUTE)
 
@@ -71,10 +71,23 @@ list(APPEND EXTRA_COMPONENT_DIRS
 if(NOT RAYLIB_LITE_BSP_DIR AND DEFINED ENV{MOSAICO_BSP_ROOT})
     set(RAYLIB_LITE_BSP_DIR "$ENV{MOSAICO_BSP_ROOT}")
 endif()
-include("${RAYLIB_LITE_ENGINE_ROOT}/examples/common_components/examples_common/project.cmake")
+if(EXISTS "${_raylib_iris_game}/shared/common_components/examples_common/project.cmake")
+    include("${_raylib_iris_game}/shared/common_components/examples_common/project.cmake")
+else()
+    include("${RAYLIB_LITE_ENGINE_ROOT}/examples/common_components/examples_common/project.cmake")
+endif()
 list(APPEND EXTRA_COMPONENT_DIRS "${_raylib_iris_game}/main")
 if(EXISTS "${_raylib_iris_game}/components")
-    list(APPEND EXTRA_COMPONENT_DIRS "${_raylib_iris_game}/components")
+    # The wrapper owns its selected Board configuration. Never import the
+    # original game's gen_bmgr_codes (which may select another Board).
+    file(GLOB _raylib_iris_components LIST_DIRECTORIES true "${_raylib_iris_game}/components/*")
+    foreach(_component IN LISTS _raylib_iris_components)
+        get_filename_component(_name "${_component}" NAME)
+        if(IS_DIRECTORY "${_component}" AND NOT _name STREQUAL "gen_bmgr_codes"
+                AND EXISTS "${_component}/CMakeLists.txt")
+            list(APPEND EXTRA_COMPONENT_DIRS "${_component}")
+        endif()
+    endforeach()
 endif()
 set(MOSAICO_ESP_IRIS_ROOT "${_raylib_iris_utils}/ESP-Iris")
 set(MOSAICO_SYSTEM_UPDATE_CMAKE "${_raylib_iris_tools}/cmake/system_update.cmake")
@@ -83,6 +96,12 @@ include("${_raylib_iris_utils}/mosaico-tools/cmake/mosaico_idf_project.cmake")
 # An external Game main component does not receive IDF's local-main implicit
 # dependencies. Preserve the explicit selected-Board link for its audio calls.
 function(raylib_lite_iris_link_game_board)
+    # Games update only the application through retained Vibe Mode. Keep the
+    # immutable base bootloader out of the default application build; explicit
+    # bootloader/flash targets retain IDF's normal dependency and size checks.
+    if(TARGET bootloader)
+        set_property(TARGET bootloader PROPERTY EXCLUDE_FROM_ALL TRUE)
+    endif()
     idf_component_get_property(_game_lib main COMPONENT_LIB)
     idf_component_get_property(_board_lib "${RAYLIB_LITE_BOARD}" COMPONENT_LIB)
     target_link_libraries(${_game_lib} PUBLIC ${_board_lib})

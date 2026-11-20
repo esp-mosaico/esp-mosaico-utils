@@ -1,4 +1,4 @@
-import { EndpointConnection, ManualConnection, connectionRequest, type Endpoint } from "./ConnectionControls";
+import { EndpointConnection, ManualConnection, connectionProblem, connectionRequest, type Endpoint } from "./ConnectionControls";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, formatTime } from "./api";
 
@@ -6,7 +6,7 @@ type Session = { session_id: string; project_path: string; alive: boolean };
 type Lifecycle = { state: string; idle_remaining_seconds: number | null; idle_timeout_seconds: number;
   clients: { client_id: string; kind: string; command: string; pid: number | null; connected_ns: number; last_seen_ns: number }[];
   keepalive: Record<string, number> };
-type Snapshot = { session: Session; sessions: Session[]; endpoints: Endpoint[]; closing: boolean; lifecycle?: Lifecycle; takeovers: { takeover_id: string; target: string; state: string }[] };
+type Snapshot = { session: Session; sessions: Session[]; endpoints: Endpoint[]; paired_devices?: string[]; closing: boolean; lifecycle?: Lifecycle; takeovers: { takeover_id: string; target: string; state: string }[] };
 
 export default function ProjectSession({ compact = false, onChanged }: { compact?: boolean; onChanged?: () => Promise<void> }) {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -31,8 +31,10 @@ export default function ProjectSession({ compact = false, onChanged }: { compact
     setMessage("");
     try {
       await connectionRequest(action, body);
-      setMessage(action === "acquire" ? "已连接，设备身份已验证" : action === "release" ? "已断开连接，端口已释放" : "操作完成");
-    } catch (error) { setMessage(String(error)); }
+      setMessage(action === "pair" ? "配对已保存，今后可通过网络连接，无需输入令牌。" :
+        action === "forget-pairing" ? "已移除本机配对记录；已建立的连接不受影响。" :
+        action === "acquire" ? "已连接，设备身份已验证" : action === "release" ? "已断开连接，端口已释放" : "操作完成");
+    } catch (error) { setMessage(connectionProblem(String(error))); }
     finally { await refresh().catch((error) => setPollError(String(error))); await onChanged?.(); setPending(false); }
   }
   if (!snapshot) return <p role="status">{pollError || "正在发现设备…"}</p>;
@@ -79,5 +81,11 @@ export default function ProjectSession({ compact = false, onChanged }: { compact
     })}
     {!snapshot.endpoints.length && <p>尚未发现设备。</p>}
     <ManualConnection pending={pending || snapshot.closing} act={act} />
+    {!!snapshot.paired_devices?.length && <details><summary>本机已配对设备</summary>
+      {snapshot.paired_devices.map((deviceId) => <div className="project-endpoint" key={deviceId}>
+        <span>{deviceId}</span>
+        <button disabled={pending} onClick={() => void act("forget-pairing", { device_id: deviceId })}>忘记配对</button>
+      </div>)}
+    </details>}
   </section>;
 }

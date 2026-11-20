@@ -15,7 +15,7 @@ import unittest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
 from mosaico_cli.cli import build_parser
-from mosaico_cli.app_commands import _engine_games, _iris_project
+from mosaico_cli.app_commands import _iris_project
 from mosaico_cli.errors import SelectionError
 
 
@@ -28,17 +28,10 @@ class GameCommandTests(unittest.TestCase):
         self.assertEqual(arguments.project_path, "sky_hop")
         self.assertEqual(arguments.target, "iris")
 
-    def test_native_selection_uses_board_matrix_and_excludes_local_experiments(self) -> None:
-        result = SimpleNamespace(returncode=0, stdout=json.dumps({"games": [
-            {"name": "native_game", "path": "/games/native_game", "host": True, "boards": ["esp-mosaico"]},
-            {"name": "host_game", "path": "/games/host_game", "host": True, "boards": []},
-            {"name": "box3_game", "path": "/games/box3_game", "host": True, "boards": ["esp32-s3-box-3"]},
-            {"name": "unfinished_dev", "path": "/games/unfinished_dev", "host": True, "boards": ["esp-mosaico"]},
-        ]}), stderr="")
-        with patch("mosaico_cli.app_commands.subprocess.run", return_value=result) as run:
-            games = _engine_games(Path("/engine"), "native")
-        self.assertEqual(set(games), {"native_game"})
-        self.assertNotIn("--target", run.call_args.args[0])
+    def test_unreleased_examples_are_rejected_before_downloading(self) -> None:
+        from mosaico_cli.registry_examples import ensure_example
+        with self.assertRaises(SelectionError):
+            ensure_example(SimpleNamespace(), "unfinished_dev")
 
     def test_iris_generation_preserves_legacy_project_configuration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -53,8 +46,7 @@ class GameCommandTests(unittest.TestCase):
             legacy.mkdir(parents=True)
             (legacy / "sdkconfig").write_text("legacy config\n")
             workspace = SimpleNamespace(tool_root=root / "tools", run_dir=root / "runs")
-            with patch("mosaico_cli.app_commands._engine", return_value=root / "engine"), patch(
-                    "mosaico_cli.app_commands._engine_games", return_value={"native_game": root / "engine/examples/native_game"}):
+            with patch("mosaico_cli.registry_examples.ensure_example", return_value=source):
                 project = _iris_project(workspace, "native_game")
             self.assertNotEqual(project, legacy / "project")
             self.assertEqual((legacy / "sdkconfig").read_text(), "legacy config\n")
@@ -74,8 +66,7 @@ class GameCommandTests(unittest.TestCase):
                 source = engine / "examples/native_game"
                 (source / "main").mkdir(parents=True)
                 (source / "main/CMakeLists.txt").write_text("idf_component_register()")
-                with patch("mosaico_cli.app_commands._engine", return_value=engine), patch(
-                        "mosaico_cli.app_commands._engine_games", return_value={"native_game": source}):
+                with patch("mosaico_cli.registry_examples.ensure_example", return_value=source):
                     projects.append(_iris_project(workspace, "native_game"))
             self.assertNotEqual(*projects)
 
@@ -96,7 +87,7 @@ class GameCommandTests(unittest.TestCase):
                 (source / "version.txt").write_text("0.2.3\n")
                 before = {p.relative_to(source): p.read_bytes() for p in source.rglob("*") if p.is_file()}
                 with patch("mosaico_cli.app_commands._engine", return_value=root / "engine"), patch(
-                        "mosaico_cli.app_commands._engine_games", side_effect=AssertionError("must not query examples")):
+                        "mosaico_cli.registry_examples.ensure_example", side_effect=AssertionError("must not query examples")):
                     project = _iris_project(workspace, str(source))
                     self.assertEqual(_iris_project(workspace, str(source)), project)
                 cmake = (project / "CMakeLists.txt").read_text()
@@ -115,7 +106,7 @@ class GameCommandTests(unittest.TestCase):
             root = Path(directory)
             workspace = SimpleNamespace(root=root, recovery_project=root / "recovery")
             with patch("mosaico_cli.app_commands._engine", return_value=root / "engine"), patch(
-                    "mosaico_cli.app_commands._engine_games", side_effect=AssertionError("must not query examples")):
+                    "mosaico_cli.registry_examples.ensure_example", side_effect=AssertionError("must not query examples")):
                 with self.assertRaises(SelectionError):
                     _iris_project(workspace, str(root / "missing/sky_hop"))
 

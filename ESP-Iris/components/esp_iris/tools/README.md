@@ -124,10 +124,12 @@ host should connect only to explicit endpoints:
 python "$ESP_IRIS_COMPONENT_DIR/tools/esp_iris.py" web --no-discover-mdns
 ```
 
-Discovered services must advertise protocol version 1, a 32-character device
+Discovered services must advertise protocol version 2, a 32-character device
 ID, TCP port, firmware mode, and `none` or `hmac` pairing metadata. The HELLO
 identity must match the advertised device ID. Pairing tokens are never read
-from mDNS; supply the existing `--pairing-token` option when required. mDNS
+from mDNS; the Gateway resolves saved credentials by the live HELLO Device ID,
+including after an IP address changes. An explicit token remains available for
+older firmware. mDNS
 does not cross routed subnets unless the network provides an mDNS reflector.
 
 ### Automatic application USB discovery
@@ -242,6 +244,33 @@ The former maintenance lease API, CLI commands and persisted lease table are
 removed. All participating host tools must use this implementation; mixed
 versions and resuming old lease workflows are not supported.
 
+### Native IDF flash
+
+UART and USB Serial/JTAG endpoints can run native IDF `flash` or `app-flash`
+through the local Gateway. Build the application first, then submit the prepared
+build directory:
+
+```bash
+python "$ESP_IRIS_COMPONENT_DIR/tools/esp_iris.py" ctl flash \
+  --build-dir /path/to/app/build --endpoint /dev/ttyUSB0 \
+  --idf-python /path/to/idf/python
+python "$ESP_IRIS_COMPONENT_DIR/tools/esp_iris.py" ctl operation-watch OPERATION_ID
+```
+
+Use `--device DEVICE_ID` for an owned board or `app-flash` for the native
+application-only target. The caller supplies the IDF environment; `--idf-path`
+overrides the checkout recorded in the build. Application USB and TCP endpoints
+are not accepted for native flashing.
+
+The worker exclusively owns the serial endpoint during the native tool run.
+After a successful write, Gateway reopens the console, starts capture, performs
+one run reset, and resumes Iris discovery. The result records
+`evidence.write_completed` separately from the connection state, so a successful
+write does not become a failed flash merely because the new application does not
+reconnect. A Gateway interruption leaves an unknown outcome and never replays a
+write. Use `ctl operation-reconcile OPERATION_ID` to append current connection
+evidence without another reset or write.
+
 Application CDC0 carries text logs and printable control records. CDC1 carries
 bulk data. Stock monitor needs no Iris extension; release Gateway's console
 ownership before attaching monitor. Flash/reset behavior follows the hardware
@@ -265,6 +294,32 @@ The device application must first create its network interface. Then select its
 TCP endpoint in the Gateway/Workbench. Start with the
 [`tcp_wifi`](../examples/tcp_wifi/README.md) or
 [`tcp_pairing`](../examples/tcp_pairing/README.md) example.
+
+For firmware advertising `usb_pairing`, connect its application USB control and
+data interfaces, then choose **通过 USB 配对** in the connection dialog, or run:
+
+```bash
+python "$ESP_IRIS_COMPONENT_DIR/tools/esp_iris.py" ctl pair <device-id>
+```
+
+Pairing reads the credential over the bound binary USB data interface. It is
+never returned in HTTP responses or copied to console logs, audit, or exports.
+The local Gateway saves a private per-device credential file (0700 directory,
+0600 file on POSIX), shared by project Gateways on this host. Future TCP
+connections use that credential; control and data links still authenticate
+independently. UART and USB Serial/JTAG cannot perform this USB pairing step.
+
+Older firmware supports manual tokens: enter one in the discovered TCP row or
+manual connection form. A successful project connection remembers it; a failed
+connection cannot replace a saved credential. Use **忘记配对** or
+`ctl forget-pairing <device-id>` to remove the host record. This does not revoke
+the device key or close an existing connection. Explicit command-line or
+environment tokens remain independent of the saved record.
+
+TCP requires working device networking and reachable control/data ports. It
+does not provide ROM recovery or hardware JTAG. Pairing authenticates the
+connection; raw TCP is not encrypted. Missing or rejected credentials and
+unreachable data ports are reported separately in the connection dialog.
 
 ### Select UART and reset explicitly
 
@@ -637,8 +692,8 @@ idf.py -C components/esp_iris/examples/minimal -B build-ci-tcp build
 idf.py -C components/esp_iris/examples/rpc_jobs -B build-ci build
 ```
 
-See the [component README](../README.md), [Chinese README](../README_zh.md), and
-[wire protocol](../protocol/spec.md) for the device-side integration contract.
+See the [component README](../README.md) and [wire protocol](../protocol/spec.md)
+for the device-side integration contract.
 
 
 ## Public host integration
@@ -646,7 +701,9 @@ See the [component README](../README.md), [Chinese README](../README_zh.md), and
 Use `iris_gateway.client` (API major 1) for local project coordination, passive
 registry snapshots and terminal operation evidence. Its standard-library-only
 API owns state layout and schema checks. Consumer products must not import
-`link`, `ownership` or `store` internals.
+`link`, `ownership` or `store` internals. See
+[component boundaries](../docs/compatibility.md#public-host-integration) for compatibility,
+source fingerprints, shared lifecycle and product Recovery preconditions.
 
 ### Receiver-initiated device handoff
 

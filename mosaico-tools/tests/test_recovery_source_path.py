@@ -53,6 +53,6 @@ def test_explicit_private_source_cannot_be_selected_as_an_application(tmp_path):
     from test_cli import workspace_for
     project = create_source_project(tmp_path / "candidate")
     (project / "CMakeLists.txt").write_text("project(vibe-mode)\n")
-    (project / "sdkconfig.recovery.defaults").write_text("CONFIG_FACTORY_RECOVERY_FIRMWARE=y\n")
+    (project / "sdkconfig.defaults").write_text("CONFIG_FACTORY_RECOVERY_FIRMWARE=y\n")
     with pytest.raises(SelectionError, match="cannot be installed"):
         resolve_project(workspace_for(tmp_path), str(project), tmp_path)

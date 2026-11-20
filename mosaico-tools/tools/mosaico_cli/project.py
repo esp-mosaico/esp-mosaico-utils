@@ -43,7 +43,7 @@ def is_recovery_project(workspace: WorkspaceConfig, path: Path) -> bool:
         return True
     # Recognize explicitly supplied firmware trees without assuming where private
     # sources are checked out. They must never be selected as normal applications.
-    defaults = path / "sdkconfig.recovery.defaults"
+    defaults = path / "sdkconfig.defaults"
     try:
         return "CONFIG_FACTORY_RECOVERY_FIRMWARE=y" in defaults.read_text(encoding="utf-8", errors="replace").splitlines()
     except OSError:

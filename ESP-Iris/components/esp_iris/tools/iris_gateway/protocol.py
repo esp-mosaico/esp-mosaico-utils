@@ -60,6 +60,7 @@ class Capability(enum.IntFlag):
     SESSION_REOPEN = 1 << 17
     CRASH_LOOP = 1 << 18
     TASK_MEMORY = 1 << 19
+    USB_PAIRING = 1 << 20
 
 
 class ControlType(enum.IntEnum):
@@ -81,6 +82,8 @@ class ControlType(enum.IntEnum):
     AUTH_RESULT = 0x16
     TASKS_REQUEST = 0x17
     TASKS_RESPONSE = 0x18
+    PAIRING_REQUEST = 0x19
+    PAIRING_RESPONSE = 0x1A
     ERROR = 0x7F
 
 
