@@ -12,13 +12,37 @@ Both producers check `esp_iris_media_is_streaming()` before generating data.
 They remain idle until the host starts the corresponding channel and return to
 idle after stop or disconnect.
 
+## Standalone setup
+
+Create this example from the Component Registry, then run the commands below
+from its directory:
+
+```bash
+idf.py create-project-from-example "espressif/esp_iris=0.2.0:media_streams"
+cd media_streams
+```
+
+With a source checkout, change to `ESP-Iris/components/esp_iris/examples/media_streams`
+from the repository root instead. These application USB examples require an SDK
+supporting ESP32-S31; the release matrix uses the pinned IDF 6.2 revision.
+After the first build downloads the component, prepare its bundled Gateway:
+
+```bash
+python esp_iris.py setup
+python esp_iris.py doctor
+python esp_iris.py web
+```
+
+The launcher uses an isolated cached environment and does not change the IDF
+Python environment. Close the Gateway before flashing or monitoring its ports.
+
 ## Build and flash
 
 ```bash
-idf.py -C components/esp_iris/examples/media_streams \
+idf.py \
   -B build-media-streams build
 
-idf.py -C components/esp_iris/examples/media_streams \
+idf.py \
   -B build-media-streams \
   -p /dev/serial/by-id/<programming-port> flash
 ```
@@ -27,7 +51,7 @@ Select another image format by adding an overlay defaults file while keeping
 the base transport configuration:
 
 ```bash
-idf.py -C components/esp_iris/examples/media_streams \
+idf.py \
   -B build-media-jpeg \
   -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.jpeg.defaults' build
 ```

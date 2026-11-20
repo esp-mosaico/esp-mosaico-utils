@@ -116,7 +116,7 @@ confirm effective settings with `menuconfig` and rebuild. Retain the project's b
 
 Iris stores state in existing `nvs` by default. To share pairing and crash state with Vibe Mode,
 set `CONFIG_ESP_IRIS_NVS_PARTITION_NAME="sysmeta"`. For TCP and other transports, see the
-[Iris quick start](../ESP-Iris/components/esp_iris/README_zh.md).
+[Iris transport guide](../ESP-Iris/components/esp_iris/README.md#select-transports).
 
 ### 3. Start Iris before application initialization
 

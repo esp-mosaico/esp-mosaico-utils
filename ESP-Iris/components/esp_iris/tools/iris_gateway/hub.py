@@ -19,7 +19,12 @@ from .discovery import (
 )
 from .link import EndpointLock, Link, SerialLink, TcpLink
 from .mdns_discovery import IrisMdnsDevice, IrisMdnsDiscovery
-from .ownership import OwnershipRegistry
+from .ownership import (
+    OwnershipConflict,
+    OwnershipRegistry,
+    UsbEndpointChanged,
+    usb_instance_changed,
+)
 from .protocol import ProtocolError, Transport
 from .resource_limits import (
     ByteBudgetQueue,
@@ -133,6 +138,7 @@ class IrisHub:
         self.limits = limits or GatewayLimits()
         self._owner_id = secrets.token_bytes(16)
         self.ownership = ownership
+        self.pairing_lookup: Callable[[str], str | None] | None = None
         self._candidates: dict[str, dict[str, Any]] = {}
         self.hello_timeout_seconds = hello_timeout_seconds
         self.reconnect_min_seconds = reconnect_min_seconds
@@ -304,6 +310,10 @@ class IrisHub:
         current = await to_thread(
             resolve_usb_port, str(state.get("lock_endpoint") or endpoint)
         )
+        if self.ownership is not None:
+            claim = self.ownership._require(endpoint)
+            if usb_instance_changed(claim["metadata"], current):
+                raise UsbEndpointChanged(endpoint, claim, current)
         allow_jtag = bool(state.get("allow_serial_jtag"))
         if not iris_usb_allowed(
             current, allow_serial_jtag=allow_jtag,
@@ -396,6 +406,7 @@ class IrisHub:
                 state.update(state="owned_elsewhere", error=str(exc))
                 raise
             self._locks[endpoint] = lock
+        state.pop("identity_error", None)
         state.update(
             state="waiting",
             attempt=0,
@@ -594,6 +605,26 @@ class IrisHub:
         if self.ownership is not None:
             self.ownership._require(endpoint)
         await self._remove_endpoint(endpoint)
+
+    async def refresh_owned_usb(self, endpoint: str) -> bool:
+        """Re-enumerate before retiring only a replaced interface's writer."""
+        assert self.ownership is not None
+        claim = self.ownership._require(endpoint, ("owned",))
+        current = await to_thread(resolve_usb_port, endpoint)
+        if not usb_instance_changed(claim["metadata"], current):
+            return False
+        if endpoint in self._host_endpoints:
+            raise OwnershipConflict("USB endpoint has an active host operation")
+        latest = self.ownership.claim(endpoint)
+        if latest is None:
+            return True  # Its supervisor already retired this same binding.
+        if (latest["owner"], latest["state"], latest["generation"]) != (
+            claim["owner"], "owned", claim["generation"],
+        ):
+            raise OwnershipConflict("USB ownership changed; refresh selection before retrying")
+        await self.disconnect_owned_endpoint(endpoint)
+        self.ownership.forget_replaced_usb(endpoint, current, generation=claim["generation"])
+        return True
 
     async def _remove_endpoint(
         self, endpoint: str, *, discovery: str | None = None
@@ -813,7 +844,8 @@ class IrisHub:
                         self._on_event,
                         on_media=self._on_media,
                         on_unready=self._on_unready,
-                        pairing_token=pairing_token,
+                        pairing_token=self._endpoint_configs.get(endpoint, (opener, pairing_token))[1],
+                        pairing_lookup=self.pairing_lookup,
                         owner_id=self._owner_id,
                     )
                     self._endpoint_sessions[endpoint] = active_session
@@ -838,6 +870,10 @@ class IrisHub:
                         done, _ = await asyncio.wait(
                             (run_task, ready_task), return_when=asyncio.FIRST_COMPLETED
                         )
+                        if run_task in done:
+                            # Surface the session error before a simultaneous
+                            # readiness timeout can obscure it.
+                            await run_task
                         if ready_task in done:
                             try:
                                 await ready_task
@@ -858,6 +894,20 @@ class IrisHub:
                     failure = "link closed"
                 except asyncio.CancelledError:
                     raise
+                except UsbEndpointChanged as exc:
+                    # No new link was opened. Retire this old interface without
+                    # touching the device's other transports or transfer records.
+                    self._endpoint_states[endpoint]["identity_error"] = str(exc)
+                    self._retired_endpoints.add(endpoint)
+                    self._set_endpoint_state(endpoint, "replaced", attempt=attempt, error=str(exc))
+                    if exc.claim["state"] == "owned":
+                        assert self.ownership is not None
+                        self.ownership.forget_replaced_usb(
+                            endpoint, exc.metadata, generation=exc.claim["generation"])
+                    lock = self._locks.pop(endpoint, None)
+                    if lock is not None:
+                        lock.close()
+                    return
                 except (ConnectionError, OSError, ProtocolError, RuntimeError, asyncio.TimeoutError) as exc:
                     failure = str(exc)
                     if isinstance(exc, UsbEndpointBusy):
@@ -992,8 +1042,12 @@ class IrisHub:
                 # Preserve the authenticated identity for admission to resolve
                 # an idle owner. A descriptor alone cannot authorize handoff.
                 endpoint_state["observed_device_id"] = info.device_id
+                claim = self.ownership.claim(session.link.endpoint)
+                if claim and claim.get("device_id") and claim["device_id"] != info.device_id:
+                    endpoint_state["identity_error"] = "HELLO identity differs from the owned device"
                 await session.close()
                 raise
+        endpoint_state.pop("identity_error", None)
         role = "control" if session._console else "data"
         links = self._links.get(info.device_id, {})
         for peer in list(links.values()):
@@ -1060,6 +1114,12 @@ class IrisHub:
 
         if session._console and session.data_available and session.data_tcp_port and session.link.endpoint.startswith("tcp:"):
             host = session.link.endpoint[4:].rsplit(":", 1)[0]
+            data_endpoint = f"tcp:{host}:{session.data_tcp_port}"
+            if data_endpoint in self._retired_endpoints:
+                # A verified control session authorizes restoring its data
+                # endpoint after a transport switch or a new boot.
+                await self._remove_endpoint(data_endpoint)
+                self._retired_endpoints.discard(data_endpoint)
             await self.add_tcp(host, session.data_tcp_port,
                 pairing_token=session._pairing_token.hex() if session._pairing_token is not None else None,
                 data_link=True,
@@ -1138,6 +1198,15 @@ class IrisHub:
                 item["ownership"] = self.ownership.claim(item["endpoint"])
                 item.setdefault("state", "discovered")
         return result
+
+    def use_saved_pairing(self, endpoint: str) -> None:
+        """Future connections resolve the saved key again, including after forget."""
+        if endpoint in self._endpoint_configs:
+            opener, _ = self._endpoint_configs[endpoint]
+            self._endpoint_configs[endpoint] = (opener, None)
+
+    async def pairing_token_over_usb(self, device_id: str) -> str:
+        return await self.get(device_id).pairing_token_over_usb()
 
     async def connect_owned(self, endpoint: str, metadata: dict[str, Any],
                             *, pairing_token: str | None = None) -> None:

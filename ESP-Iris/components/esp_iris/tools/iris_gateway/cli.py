@@ -240,7 +240,9 @@ async def _web_owned(args: argparse.Namespace, state_dir: pathlib.Path) -> None:
                     include_usb_serial_jtag=args.discover_usb_serial_jtag,
                 )
             if discover_mdns:
-                await hub.start_mdns_discovery(pairing_token=args.pairing_token)
+                if service.project is None:
+                    hub.pairing_lookup = lambda device_id: service.pairings.get(device_id) or args.pairing_token
+                await hub.start_mdns_discovery()
 
         context = None
         fingerprint = None
@@ -715,6 +717,12 @@ async def _ctl(args: argparse.Namespace) -> int:
                     json={"endpoint": args.endpoint, "mode": args.mode},
                     headers={"X-Operation-ID": str(uuid.uuid4())}, ssl=ssl_value) as response:
                     _output(await _response_json(response), args.json)
+            elif command == "pair":
+                async with session.post(base + f"/v2/devices/{args.device}/pairing", json={}, ssl=ssl_value) as response:
+                    _output(await _response_json(response), args.json)
+            elif command == "forget-pairing":
+                async with session.delete(base + f"/v2/pairings/{args.device}", ssl=ssl_value) as response:
+                    _output(await _response_json(response), args.json)
             elif command == "restart":
                 url = base + f"/v2/devices/{args.device}/restart"
                 async with session.post(url, json={"delay_ms": args.delay_ms}, headers={"X-Operation-ID": str(uuid.uuid4())}, ssl=ssl_value) as response:
@@ -1163,6 +1171,10 @@ def build_parser() -> argparse.ArgumentParser:
     restart = commands.add_parser("restart")
     restart.add_argument("device")
     restart.add_argument("--delay-ms", type=int, default=250)
+    pair = commands.add_parser("pair", help="Remember TCP credentials through the device's USB data interface")
+    pair.add_argument("device")
+    forget_pairing = commands.add_parser("forget-pairing", help="Forget this host's saved pairing")
+    forget_pairing.add_argument("device")
     factory = commands.add_parser("factory")
     factory.add_argument("device")
     factory.add_argument("--wait", action="store_true", help="Wait for the same device in Recovery with a new Boot ID")

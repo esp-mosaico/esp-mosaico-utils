@@ -14,13 +14,37 @@ little-endian payload is `<BBhhHI>`: phase, reserved byte, x, y, reserved word,
 and sequence. The example validates and echoes the message so delivery can be
 tested without a touch controller.
 
+## Standalone setup
+
+Create this example from the Component Registry, then run the commands below
+from its directory:
+
+```bash
+idf.py create-project-from-example "espressif/esp_iris=0.2.0:display_input"
+cd display_input
+```
+
+With a source checkout, change to `ESP-Iris/components/esp_iris/examples/display_input`
+from the repository root instead. These application USB examples require an SDK
+supporting ESP32-S31; the release matrix uses the pinned IDF 6.2 revision.
+After the first build downloads the component, prepare its bundled Gateway:
+
+```bash
+python esp_iris.py setup
+python esp_iris.py doctor
+python esp_iris.py web
+```
+
+The launcher uses an isolated cached environment and does not change the IDF
+Python environment. Close the Gateway before flashing or monitoring its ports.
+
 ## Build and flash
 
 ```bash
-idf.py -C components/esp_iris/examples/display_input \
+idf.py \
   -B build-display-input build
 
-idf.py -C components/esp_iris/examples/display_input \
+idf.py \
   -B build-display-input \
   -p /dev/serial/by-id/<programming-port> flash
 ```

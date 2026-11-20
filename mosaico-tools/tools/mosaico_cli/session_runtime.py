@@ -81,9 +81,9 @@ def read_pairing_token(path: Path) -> str:
 
 
 def request(url: str, path: str, body: dict[str, Any] | None = None,
-            *, timeout: float = 20) -> dict[str, Any]:
+            *, timeout: float = 20, method: str | None = None) -> dict[str, Any]:
     raw = json.dumps(body).encode() if body is not None else None
-    req = Request(url + path, data=raw, headers={"Content-Type": "application/json"})
+    req = Request(url + path, data=raw, headers={"Content-Type": "application/json"}, method=method)
     try:
         with urlopen(req, timeout=timeout) as response:
             return json.load(response)

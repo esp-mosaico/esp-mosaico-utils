@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
+#include "app_config.h"
 #include "app_display.h"
 #include "app_hello.h"
 #include "esp_iris.h"
 #include "esp_log.h"
 #include "iris_ota_support.h"
 #include "iris_screen_mirror.h"
+#include "mbedtls/platform_util.h"
+#include "nvs.h"
 #include "nvs_flash.h"
 #include "ui_bundle.h"
 
@@ -22,6 +25,21 @@ void app_main(void)
     ESP_ERROR_CHECK(nvs_flash_init());
     /* Recovery must remain reachable even when the UI bundle cannot be loaded. */
     iris_ota_support_start();
+
+    /* Provision shared credentials in Vibe Mode; consume them through app_config.
+     * This example reads saved configuration. Networking owns connection policy. */
+    app_config_wifi_t wifi;
+    const esp_err_t wifi_err = app_config_load_wifi(&wifi);
+    if (wifi_err == ESP_OK) {
+        ESP_LOGI(TAG, "Shared Wi-Fi configuration available");
+        /* A device networking component can consume wifi here before it is cleared. */
+    } else if (wifi_err == ESP_ERR_NVS_NOT_FOUND) {
+        ESP_LOGI(TAG, "Wi-Fi unconfigured; set it up in Vibe Mode");
+    } else {
+        ESP_LOGW(TAG, "Shared Wi-Fi configuration unavailable (%s); check Vibe Mode settings",
+                 esp_err_to_name(wifi_err));
+    }
+    mbedtls_platform_zeroize(&wifi, sizeof(wifi));
 
     esp_gsp_config_t config;
     const esp_err_t err = ui_bundle_open(&config);

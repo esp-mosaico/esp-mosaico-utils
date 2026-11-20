@@ -15,6 +15,7 @@ from iris_gateway.protocol import (
     Frame,
     ProtocolError,
     TlvTag,
+    encode_frame,
     encode_tlv,
 )
 from iris_gateway.session import DeviceSession
@@ -43,6 +44,37 @@ def test_console_binding_requires_positive_device_confirmation():
             session_id=11, payload=b"\x01"), 0)
         ready.assert_awaited_once()
         await session.close()
+    asyncio.run(scenario())
+
+
+def test_verified_control_reconnects_retired_tcp_data(monkeypatch):
+    from test_hub import SupervisorLink
+
+    async def scenario():
+        hub = IrisHub()
+        data_endpoint = "tcp:192.0.2.1:19773"
+        data = SupervisorLink(12, endpoint=data_endpoint)
+        data.incoming.get_nowait()
+        data.incoming.put_nowait(encode_frame(hello(role=1, session=12)))
+        monkeypatch.setattr("iris_gateway.hub.TcpLink.open", AsyncMock(return_value=data))
+        control = DeviceSession(SimpleNamespace(console=True, endpoint="tcp:192.0.2.1:19772",
+            write=AsyncMock(), close=AsyncMock()), AsyncMock(), AsyncMock(), owner_id=hub._owner_id)
+        try:
+            await control._handle_hello(hello())
+            control.data_available = True
+            control.data_tcp_port = 19773
+            hub._endpoint_states[control.link.endpoint] = {"attempt": 1}
+            hub._retired_endpoints.add(data_endpoint)
+            await hub._on_ready(control)
+            async def bound():
+                while control.data_session is None:
+                    await asyncio.sleep(0.01)
+            await asyncio.wait_for(bound(), 1)
+            assert control.data_session.info.boot_id == control.info.boot_id
+            assert control.data_session.link.endpoint == data_endpoint
+        finally:
+            await hub.close()
+            await control.close()
     asyncio.run(scenario())
 
 

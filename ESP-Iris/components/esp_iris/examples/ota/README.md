@@ -9,6 +9,30 @@ Do not flash or OTA these images onto an unrelated product until its flash
 size, partition table, rollback policy, USB transport, and recovery procedure
 have been reviewed.
 
+## Standalone setup
+
+Create this example from the Component Registry, then run the commands below
+from its directory:
+
+```bash
+idf.py create-project-from-example "espressif/esp_iris=0.2.0:ota"
+cd ota
+```
+
+With a source checkout, change to `ESP-Iris/components/esp_iris/examples/ota`
+from the repository root instead. These application USB examples require an SDK
+supporting ESP32-S31; the release matrix uses the pinned IDF 6.2 revision.
+After the first build downloads the component, prepare its bundled Gateway:
+
+```bash
+python esp_iris.py setup
+python esp_iris.py doctor
+python esp_iris.py web
+```
+
+The launcher uses an isolated cached environment and does not change the IDF
+Python environment. Close the Gateway before flashing or monitoring its ports.
+
 ## Diagnostic RPCs
 
 | RPC | ID | Behavior |
@@ -39,7 +63,7 @@ The fallback profile keeps both writers available, but never changes execution
 mode silently. Select its application writer explicitly:
 
 ```bash
-python "$IRIS" ctl ota DEVICE_ID IMAGE.bin --elf IMAGE.elf \
+python esp_iris.py ctl ota DEVICE_ID IMAGE.bin --elf IMAGE.elf \
   --execution-mode application --wait
 ```
 
@@ -54,12 +78,12 @@ The first full flash installs the custom partition table, factory image, and
 rollback-enabled bootloader:
 
 ```bash
-idf.py -C components/esp_iris/examples/ota \
+idf.py \
   -B build-ota-recovery \
   -D SDKCONFIG="$PWD/build-ota-recovery/sdkconfig" \
   -D SDKCONFIG_DEFAULTS=sdkconfig.recovery.defaults build
 
-idf.py -C components/esp_iris/examples/ota \
+idf.py \
   -B build-ota-recovery \
   -p /dev/serial/by-id/<programming-port> flash
 ```
@@ -69,11 +93,11 @@ Use a UART or USB Serial/JTAG programming interface for this full flash.
 ## Build normal A and B
 
 ```bash
-idf.py -C components/esp_iris/examples/ota \
+idf.py \
   -B build-ota-a \
   -D SDKCONFIG="$PWD/build-ota-a/sdkconfig" build
 
-idf.py -C components/esp_iris/examples/ota \
+idf.py \
   -B build-ota-b \
   -D SDKCONFIG="$PWD/build-ota-b/sdkconfig" \
   -D SDKCONFIG_DEFAULTS=sdkconfig.candidate.defaults build
@@ -83,7 +107,7 @@ With factory recovery running, transfer A directly into a normal slot. After A
 boots and is accepted, transfer B with the default recovery execution mode:
 
 ```bash
-IRIS=components/esp_iris/tools/esp_iris.py
+IRIS=esp_iris.py
 
 python "$IRIS" ctl ota DEVICE_ID \
   build-ota-a/esp_iris_ota.bin --wait
@@ -98,7 +122,7 @@ the reconnect and acceptance checks.
 ## Test direct application OTA
 
 ```bash
-idf.py -C components/esp_iris/examples/ota \
+idf.py \
   -B build-ota-application \
   -D SDKCONFIG="$PWD/build-ota-application/sdkconfig" \
   -D SDKCONFIG_DEFAULTS=sdkconfig.application.defaults build
@@ -114,7 +138,7 @@ partition table, bootloader, or factory recovery image.
 ## Test rollback
 
 ```bash
-idf.py -C components/esp_iris/examples/ota \
+idf.py \
   -B build-ota-rollback \
   -D SDKCONFIG="$PWD/build-ota-rollback/sdkconfig" \
   -D SDKCONFIG_DEFAULTS=sdkconfig.rollback.defaults build

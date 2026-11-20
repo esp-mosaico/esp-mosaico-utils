@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 from .compat import to_thread
 from .discovery import discover_iris_usb_devices, iris_usb_allowed, usb_endpoint
 from .ownership import OwnershipConflict
-from .takeover import handoff_idle_owner
+from .takeover import handoff_idle_owner, refresh_usb_binding
 
 if TYPE_CHECKING:
     from .project_gateway import ProjectGateway
@@ -49,11 +49,14 @@ async def admit_candidates(project: ProjectGateway, candidates: list[dict[str, A
     for index, candidate in enumerate(candidates):
         endpoint = str(candidate["endpoint"])
         metadata = {key: value for key, value in candidate.items() if key != "ownership"}
+        previous = registry.claim(endpoint)
+        previous_device = (previous or {}).get("device_id") or registry.known_device(endpoint)
+        if await refresh_usb_binding(project, endpoint, metadata) and device_id and device_id == previous_device:
+            failures.append({"endpoint": endpoint, "error": "USB device changed; the old Device ID is no longer a selection hint"})
+            continue
         prior = registry.claim(endpoint)
         hinted_device = device_id or (prior or {}).get("device_id") or registry.known_device(endpoint)
         owner = registry.claim("device:" + hinted_device) if hinted_device else prior
-        if token is not None:
-            project.tokens[endpoint] = token
         if owner and owner["owner"] != registry.session_id:
             await handoff_idle_owner(project, owner, metadata)
             return await project.wait_device(None, endpoint, timeout)
@@ -74,6 +77,7 @@ async def admit_candidates(project: ProjectGateway, candidates: list[dict[str, A
             remaining = max(0.001, deadline - time.monotonic())
             attempt_deadline = time.monotonic() + remaining / (len(candidates) - index)
             attempt_started_ns = time.monotonic_ns()
+            transient_error = None
             await asyncio.wait_for(
                 hub.connect_owned(endpoint, metadata, pairing_token=token or project.tokens.get(endpoint, project.pairing_token)),
                 max(0.001, attempt_deadline - time.monotonic()),
@@ -81,12 +85,22 @@ async def admit_candidates(project: ProjectGateway, candidates: list[dict[str, A
             while time.monotonic() < attempt_deadline:
                 for item in hub.list_devices():
                     if item.get("endpoint") == endpoint and (not device_id or item["device_id"] == device_id):
+                        if token is not None and endpoint.startswith("tcp:"):
+                            project.service.pairings.remember(item["device_id"], token)
+                            hub.use_saved_pairing(endpoint)
                         accepted = True
-                        if token is not None:
-                            project.tokens[endpoint] = token
                         return item
                 state: dict[str, Any] = next((item for item in hub.list_endpoints() if item["endpoint"] == endpoint), {})
                 if state.get("error") and state.get("updated_monotonic_ns", 0) >= attempt_started_ns:
+                    message = str(state["error"])
+                    if endpoint.startswith("tcp:") and any(reason in message.lower() for reason in
+                            ("connection reset", "connection aborted", "broken pipe", "link closed")):
+                        # Releasing a USB owner can briefly reset the new TCP
+                        # socket while firmware arbitration finishes. The
+                        # existing supervisor retries within this admission.
+                        transient_error = message
+                        await asyncio.sleep(0.05)
+                        continue
                     observed = state.get("observed_device_id")
                     if observed and (not device_id or observed == device_id):
                         foreign_owner = registry.claim("device:" + observed)
@@ -94,7 +108,7 @@ async def admit_candidates(project: ProjectGateway, candidates: list[dict[str, A
                             foreign_owner = None
                     raise ConnectionError(str(state["error"]))
                 await asyncio.sleep(0.05)
-            raise TimeoutError("HELLO did not validate the selected identity before the deadline")
+            raise TimeoutError(transient_error or "HELLO did not validate the selected identity before the deadline")
         except (RuntimeError, ValueError, OSError, LookupError, asyncio.TimeoutError) as error:
             if len(candidates) == 1 and isinstance(error, OwnershipConflict) and claim is None:
                 raise
@@ -110,5 +124,7 @@ async def admit_candidates(project: ProjectGateway, candidates: list[dict[str, A
             return await project.wait_device(None, endpoint, timeout)
         if time.monotonic() >= deadline:
             break
-    project.selection_error("No endpoint validated the selected Device ID; inspect candidate failures.",
+    message = ("Could not connect: " + failures[0]["error"] if len(failures) == 1 else
+               "No endpoint validated the selected Device ID; inspect candidate failures.")
+    project.selection_error(message,
                             failures)

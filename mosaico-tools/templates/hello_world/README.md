@@ -29,6 +29,7 @@ UART0 console pins at 115200 baud. Separate build directories keep each generate
 
 Application components:
 
+- `components/app_config`: device-side shared configuration reads from Vibe Mode.
 - `components/app_hello`: portable UI behavior and private controller state.
 - `components/app_display`: BSP-to-GSP display and optional touch policy.
 - `main`: device startup and dependency composition only.
@@ -41,10 +42,27 @@ older root `ui/main.json`). With multiple scenes, select one using `--scene PATH
 relative to the project. This previews only that scene; omit `--scene` to run the
 PC backend and its compiled application behavior.
 
-Dependency direction is `main -> app_hello -> ESP-GSP` and
-`main -> app_display -> BSP/ESP-GSP`. Neither application component depends on
+Dependency direction is `main -> app_hello -> ESP-GSP`,
+`main -> app_display -> BSP/ESP-GSP`, and
+`main -> app_config -> esp_mosaico_app_recovery`. No application component depends on
 `main` or on its sibling. Public headers live in `include/`; private state stays
 in implementation files. Each component README includes its contract and usage.
+
+Device startup reads the saved `wifi_ssid` and `wifi_password` through
+`app_config_load_wifi()` and the public `mosaico_shared_get()` API. Configure Wi-Fi
+in Vibe Mode; shared values live in `sysmeta/shared` and remain available when
+switching to an application. Startup logs availability only and clears the
+temporary credentials. Missing or invalid configuration leaves the UI running.
+Hello World does not start a Wi-Fi connection; use the loaded snapshot when
+adding a device networking component. An empty saved password means an open
+network; a missing password key means configuration is incomplete.
+
+For API keys, tokens and other shared strings, configure a custom key in
+Vibe Mode > Settings > Shared information and follow the example in
+[`app_config`](components/app_config/README.md). Default to this public read path
+for user-provisioned shared configuration. Keep secrets out of source and logs,
+and preserve NVS on errors. The PC backend does not access device configuration.
+[`AGENTS.md`](AGENTS.md) carries these conventions into generated projects.
 
 When adding behavior, keep `main` as a composition root. Add cohesive `app_*`
 components only for independent responsibilities, declare public/private CMake

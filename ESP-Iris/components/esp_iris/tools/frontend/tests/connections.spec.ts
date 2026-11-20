@@ -90,12 +90,63 @@ test("manual TCP connection sends the session token and prevents duplicate reque
   const dialog = page.getByRole("dialog");
   await dialog.getByText("手动输入连接地址", { exact: true }).click();
   await dialog.getByLabel("连接地址", { exact: true }).fill("tcp:192.0.2.1:29772");
-  await dialog.getByLabel("配对令牌（可选）").fill("ab".repeat(32));
+  await dialog.getByLabel("配对令牌（已配对可留空）").fill("ab".repeat(32));
   await dialog.getByRole("button", { name: "连接", exact: true }).click();
   await expect(dialog.getByRole("button", { name: "连接", exact: true })).toBeDisabled();
   await expect.poll(() => posts).toBe(1);
   finish!();
   await expect(dialog.getByRole("button", { name: "连接", exact: true })).toBeEnabled();
+});
+
+test("USB pairing enables remembered network connection and can be forgotten", async ({ page }) => {
+  let paired = false;
+  const actions: unknown[] = [];
+  const endpoint = "tcp:192.0.2.1:19772";
+  await page.route("**/v2/health", async (route) => route.fulfill({ json: { project_session: session } }));
+  await page.route(`**/v2/devices/${deviceId}/pairing`, async (route) => {
+    expect(route.request().postDataJSON()).toEqual({});
+    paired = true;
+    await route.fulfill({ json: { device_id: deviceId, paired } });
+  });
+  await page.route(`**/v2/pairings/${deviceId}`, async (route) => {
+    expect(route.request().method()).toBe("DELETE");
+    paired = false;
+    await route.fulfill({ json: { device_id: deviceId, paired } });
+  });
+  await page.route("**/v2/project**", async (route) => {
+    if (route.request().method() === "POST") {
+      actions.push(route.request().postDataJSON());
+      await route.fulfill({ json: {} });
+      return;
+    }
+    await route.fulfill({ json: { session, sessions: [session], closing: false, takeovers: [],
+      paired_devices: paired ? [deviceId] : [],
+      endpoints: [
+        { endpoint: "usb:location=board", state: "idle", present: true, usb_pairing_available: true,
+          pairing_saved: paired, ownership: { owner: session.session_id, owner_alive: true, state: "owned", device_id: deviceId } },
+        { endpoint, state: "discovered", present: true, pairing_required: !paired, pairing_saved: paired, ownership: null },
+      ] } });
+  });
+  await openWorkbench(page);
+  await page.getByRole("button", { name: "连接设备", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  const tcp = dialog.locator(`[data-endpoint="${endpoint}"]`);
+  await expect(tcp.getByRole("button", { name: "连接到本项目" })).toBeDisabled();
+  await tcp.getByLabel(`配对令牌 ${endpoint}`).fill("short");
+  await expect(tcp.getByRole("button", { name: "连接到本项目" })).toBeDisabled();
+  await tcp.getByLabel(`配对令牌 ${endpoint}`).fill("ab".repeat(32));
+  await tcp.getByRole("button", { name: "连接到本项目" }).click();
+  await expect.poll(() => actions.length).toBe(1);
+  expect(actions[0]).toEqual({ endpoint, pairing_token: "ab".repeat(32) });
+  await expect(tcp.getByLabel(`配对令牌 ${endpoint}`)).toHaveValue("");
+  await dialog.getByRole("button", { name: "通过 USB 配对", exact: true }).click();
+  await expect(tcp).toContainText("本机已记住此设备");
+  await tcp.getByRole("button", { name: "连接到本项目" }).click();
+  await expect.poll(() => actions.length).toBe(2);
+  expect(actions[1]).toEqual({ endpoint });
+  await dialog.getByText("本机已配对设备", { exact: true }).click();
+  await dialog.getByRole("button", { name: "忘记配对" }).click();
+  await expect(tcp.getByRole("button", { name: "连接到本项目" })).toBeDisabled();
 });
 
 test("late status responses cannot overwrite the selected device", async ({ page }) => {

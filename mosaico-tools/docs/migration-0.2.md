@@ -54,7 +54,7 @@ For blank devices, devices fully flashed by third-party tools, or devices with a
 mode and contract. See the Vibe Mode specification for migration erase/write scope and boot intent.
 
 The repository's reviewed base bundle has been updated to 0.2.0 and is the default for ordinary `recover` and `app-update` operations.
-Validate later source candidates with `recover --source current --source-path /path/to/firmware/vibe-mode`, then replace the reviewed bundle as a whole after acceptance.
-For candidate-firmware code-update acceptance, use `iris app-update --recovery-source current --recovery-source-path /path/to/firmware/vibe-mode` to explicitly
+Validate later source candidates with `recover --source current --source-path /path/to/vibe-mode`, then replace the reviewed bundle as a whole after acceptance.
+For candidate-firmware code-update acceptance, use `iris app-update --recovery-source current --recovery-source-path /path/to/vibe-mode` to explicitly
 validate version and compatibility against the candidate bundle generated above. This does not replace the reviewed directory or
 fall back to another base bundle when the candidate is missing. Ordinary `app-update` still validates the reviewed bundle by default.

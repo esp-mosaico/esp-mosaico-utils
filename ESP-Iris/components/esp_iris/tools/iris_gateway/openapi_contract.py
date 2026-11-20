@@ -75,6 +75,9 @@ def build_openapi(auth_required: bool) -> dict[str, Any]:
         "/v2/health": {"get": {"summary": "Gateway health"}},
         "/v2/auth/login": {"post": {"summary": "Developer password login"}},
         "/v2/devices": {"get": {"summary": "Connected and cached devices"}},
+        "/v2/pairings": {"get": {"summary": "List locally paired Device IDs, never credentials"}},
+        "/v2/pairings/{paired_device_id}": {"delete": {"summary": "Forget a host credential; existing sessions and device credentials are unchanged"}},
+        "/v2/devices/{device_id}/pairing": {"post": {"summary": "Pair locally using the verified USB data interface; returns no credential"}},
         "/v2/host-operations": {
             "post": {"summary": "Submit a local process-owned ROM operation",
                      "description": "Requires a private local request file ID; executable commands are never accepted over HTTP."}

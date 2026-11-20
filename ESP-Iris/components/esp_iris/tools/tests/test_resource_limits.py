@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 
 import pytest
-from aiohttp import web
+from aiohttp import FormData, web
 from aiohttp.test_utils import TestClient, TestServer
 
+from iris_gateway.demo import DemoHub
 from iris_gateway.gateway import GatewayService, create_app
 from iris_gateway.operations import OperationManager
 from iris_gateway.resource_limits import (
@@ -101,6 +102,80 @@ def test_http_capacity_chunked_body_and_subscriber_release(tmp_path):
             release.set()
             await client.close()
             store.close()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("suffix", ["screenshot", "rpc/audio", "rpc/system-update", "rpc/screenshot"])
+@pytest.mark.parametrize("chunked", [False, True])
+def test_json_routes_keep_json_budget_for_upload_like_names(tmp_path, suffix, chunked):
+    async def scenario():
+        store = GatewayStore(tmp_path)
+        service = GatewayService(store, instance_id="budget", demo=True,
+                                 limits=GatewayLimits(json_bytes=256, upload_bytes=4096))
+        service.rpc_catalog = {"methods": [{"name": suffix.split("/")[-1]}]}
+        client = TestClient(TestServer(create_app(service)))
+        await client.start_server()
+        try:
+            content = b'{"params":{}}' + b" " * 300
+
+            async def chunks():
+                yield content[:200]
+                yield content[200:]
+
+            response = await client.post(
+                f"/v2/devices/demo-a1b2c3d4/{suffix}",
+                data=chunks() if chunked else content,
+                headers={"Content-Type": "application/json"},
+            )
+            assert response.status == 413, await response.text()
+            assert service.resource_usage["requests"] == 0
+            assert service.resource_usage["large_requests"] == 0
+        finally:
+            await client.close()
+            store.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("endpoint", ["firmware-artifacts", "audio", "system-update"])
+@pytest.mark.parametrize("chunked", [False, True])
+def test_upload_routes_enforce_upload_budget(tmp_path, endpoint, chunked):
+    async def scenario():
+        store = GatewayStore(tmp_path)
+        service = GatewayService(store, instance_id="budget", demo=True,
+                                 limits=GatewayLimits(json_bytes=256, upload_bytes=1024))
+        hub = DemoHub(service.on_device_event)
+        service.attach_hub(hub)
+        await hub.start()
+        client = TestClient(TestServer(create_app(service)))
+        await client.start_server()
+        try:
+            content = b"x" * 2048
+
+            async def chunks():
+                yield content[:1024]
+                yield content[1024:]
+
+            data = chunks() if chunked else content
+            if endpoint == "firmware-artifacts":
+                form = FormData()
+                form.add_field("bin", data, filename="app.bin")
+                response = await client.post("/v2/firmware-artifacts", data=form)
+            else:
+                response = await client.post(
+                    f"/v2/devices/demo-a1b2c3d4/{endpoint}", data=data,
+                    headers={"Content-Type": "application/octet-stream"},
+                )
+            assert response.status == 413, await response.text()
+            assert service.resource_usage["requests"] == 0
+            assert service.resource_usage["large_requests"] == 0
+            assert not store.operations()
+            assert not store.firmware_artifacts()
+        finally:
+            await client.close()
+            await hub.close()
+            store.close()
+
     asyncio.run(scenario())
 
 

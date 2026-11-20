@@ -20,7 +20,7 @@ from .runtime import RunContext
 from .workspace import WorkspaceConfig
 
 REQUIRED_IMAGES = ("bootloader", "partition_table", "ota_data", "recovery")
-RECOVERY_DEFAULT_FILES = ("sdkconfig.defaults", "sdkconfig.recovery.defaults")
+RECOVERY_DEFAULT_FILES = ("sdkconfig.defaults",)
 RECOVERY_DEFAULTS_STAMP = ".mosaico-recovery-defaults.sha256"
 _VERIFICATION_READ_ATTEMPTS = 3
 _VERIFICATION_READ_RETRY_SECONDS = 0.05
@@ -38,7 +38,7 @@ def source_project(source: str, path: str | None, *, option: str = "--source-pat
     if not path or not path.strip():
         raise SelectionError(f"The current source requires {option} PATH to the Vibe Mode firmware project.")
     project = Path(path).expanduser().resolve()
-    required = ("CMakeLists.txt", "sdkconfig.defaults", "sdkconfig.recovery.defaults", "main/idf_component.yml")
+    required = ("CMakeLists.txt", "sdkconfig.defaults", "main/idf_component.yml")
     missing = [name for name in required if not (project / name).is_file()]
     if missing:
         raise SelectionError(

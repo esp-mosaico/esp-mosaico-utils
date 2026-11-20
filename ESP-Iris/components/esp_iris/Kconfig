@@ -227,7 +227,7 @@ config ESP_IRIS_USB_FIFO_PSRAM
         Keep FIFO capacities unchanged while moving only their byte storage
         to external BSS. Endpoint DMA buffers, stream state and FreeRTOS mutexes
         stay internal. Intended for normal, non-writer firmware with PSRAM XIP.
-        Uses a checked build-time adaptation of TinyUSB 0.21 CDC storage; managed
+        Uses a structure-checked build-time adaptation of TinyUSB CDC storage; managed
         component files are never modified. Unsupported source fails the build.
 
 config ESP_IRIS_USB_TASK_STACK_SIZE
@@ -600,8 +600,10 @@ config ESP_IRIS_TCP_PAIRING
     depends on ESP_IRIS_TRANSPORT_TCP
     default n
     help
-        Generates a random token in NVS. The token never crosses the device
-        link; each session proves possession using a fresh challenge.
+        Generates a random token in NVS. Each TCP session proves possession
+        using a fresh challenge. Explicit host pairing may retrieve the token
+        through an authenticated USB binary data link only; it is never sent
+        through TCP or a printable console.
 
 config ESP_IRIS_AUTH_FAILURE_DELAY_MS
     int "Minimum delay after a failed pairing proof"

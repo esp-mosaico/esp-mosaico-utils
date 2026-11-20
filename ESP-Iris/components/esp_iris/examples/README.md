@@ -26,13 +26,24 @@ integrating.
 
 ## Common build workflow
 
-From the repository root:
+From an empty directory using the Component Registry:
 
 ```bash
-idf.py -C components/esp_iris/examples/minimal -B build-minimal build
+idf.py create-project-from-example "espressif/esp_iris=0.2.0:minimal"
+cd minimal
+idf.py -D IDF_TARGET=esp32h2 -D SDKCONFIG_DEFAULTS=sdkconfig.usj.defaults build
+python esp_iris.py setup
+python esp_iris.py doctor
+python esp_iris.py web
 ```
 
-From a downloaded example directory:
+Select another example by replacing `minimal`. Service examples default to S31
+application USB; TCP examples include their own network setup. Follow each
+README's board and partition requirements. For source development, change to
+`ESP-Iris/components/esp_iris/examples/NAME` from the repository root and use the
+same project-local commands. The launcher discovers either dependency layout.
+
+From an already configured example directory:
 
 ```bash
 idf.py build
@@ -63,7 +74,6 @@ also contain credentials and must not be committed or published.
 
 ## Related documentation
 
-- [Component quick start](../README.md#quick-start)
-- [Additional quick start](../README_zh.md#quick-start)
+- [Component startup](../README.md#minimal-startup)
 - [Developer Gateway and Workbench](../tools/README.md)
 - [Wire protocol](../protocol/spec.md)
