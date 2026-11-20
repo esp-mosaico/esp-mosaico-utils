@@ -14,6 +14,9 @@ Recovery commands, protocol identifiers and ABI names remain stable.
 | `firmware/recovery/` | Pre-built Vibe Mode bundle for reviewed Recovery operations |
 | [`shared/`](shared/README.md) | GSP tool acquisition and Ideas display-resource generation |
 
+See [component boundaries](docs/component-boundaries.md) for ownership and
+public integration entry points.
+
 The Gateway serves the committed Web Workbench without Node.js. Frontend
 contributors regenerate and commit
 `ESP-Iris/components/esp_iris/tools/frontend/dist` with their source changes.

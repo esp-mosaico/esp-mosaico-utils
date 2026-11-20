@@ -14,8 +14,8 @@
 
 mosaico-tools provides workspace entry point `mosaico.py`, project/game templates, build integration, device selection, product updates and evidence workflows. It uses ESP-Iris public host APIs and the Recovery product contract, without maintaining another device protocol, Flash-write policy or reserved-firmware implementation.
 
-- The [ESP-Iris specification](../../ESP-Iris/docs/esp-iris-software-spec-zh.md) owns console, control/data links, Gateway, Workbench, generic RPC, media, files, diagnostics and host APIs.
-- The Vibe Mode specification owns Vibe Mode, partitions, boot, application-adapter ABI, product update backends and base bundles.
+- ESP-Iris owns console, control/data links, Gateway, Workbench, generic RPC, media, files, diagnostics and host APIs. See its [architecture guide](../../ESP-Iris/docs/esp-iris-architecture.md), [component guide](../../ESP-Iris/components/esp_iris/README.md) and [Gateway guide](../../ESP-Iris/components/esp_iris/tools/README.md).
+- Vibe Mode owns retained firmware, partition and boot policy, the application adapter and product update backends. Public contracts and Recovery workflows are documented in [application integration](application-integration.md) and the [Recovery migration guide](../../docs/recovery-iris-migration.md).
 - This specification owns project entry points, default workflows, native-tool interoperability, operation orchestration, user prompts and documented 0.1 → 0.2 migration.
 
 "Must" and "must not" denote acceptance requirements. Command help, README and public integration guides reflect 0.2 arguments, outputs, configuration and artifacts; specification prose does not replace hardware validation.
