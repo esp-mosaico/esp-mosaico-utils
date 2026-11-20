@@ -3,7 +3,7 @@
 From a workspace use `python mosaico.py project sim --project projects/my_app`.
 The project can also be selected from cwd, a configured default, or the sole app.
 There is no hard-coded Hello World fallback. Install the application's pinned
-ESP-GSP 1.5.1 component through an IDF build/reconfigure before native preview.
+ESP-GSP 1.10.4 component through an IDF build/reconfigure before native preview.
 
 The runner selects the scene owner's `components/<name>/host/CMakeLists.txt`
 backend, falling back to `pc/CMakeLists.txt` for older applications. It compiles
@@ -19,3 +19,12 @@ accepts --dump-ppm PATH; direct `run.py --project PATH` or an explicit scene fil
 is also supported. Tool downloads use user caches and do not rely on another app.
 For a direct backend invocation, `run.py --pc-project PATH` accepts either layout;
 dependency lookup and `build-sim/` remain rooted at the application directory.
+
+For an existing GSP 1.5.1 application, update its own `main/idf_component.yml`
+dependency to `==1.10.4`. Update or remove old `GSPC_EXECUTABLE` overrides and
+use a new firmware build directory, or explicitly select GSPC 0.11.3 again.
+Regenerate bundles and headers and rebuild the application and native backend
+together (configuration ABI 3 to 4). Rebuild the old `build-sim/` cache from a
+fresh directory; backend manifests now use version 2.
+The runner uses a shared library when the simulator supports it and otherwise
+selects the Socket backend.
