@@ -108,15 +108,17 @@ coordinate ownership without a global service.
 ```text
 mosaico.py
 ├── doctor
-├── project init
+├── project init / sim / package / validate / upload
 ├── iris
 │   ├── run / status
 │   ├── list / claim / release / reconcile
 │   ├── takeover start / status / resume / abort / reconcile
 │   ├── logs / memory / crash / rpc
-│   ├── device-status / screenshot / operation-status
+│   ├── device-status / screenshot / restart / operation-status
+│   ├── operation-reconcile
 │   ├── app-update
 │   ├── system-update
+│   ├── flash / app-flash / run-app
 │   └── test enter-recovery / recovery-wifi
 └── recover
 ```
@@ -170,7 +172,8 @@ is unreachable. `iris test` groups individual Vibe Mode test operations:
 > Bridge push-based downloads and `iris test bridge-code` have been removed.
 > Use the six-digit application ID on the device download page to pull Ideas.
 
-Only the public command paths above are accepted. Replace old script commands
+Use `python mosaico.py --help` and `python mosaico.py iris --help` for the complete
+command list. Replace old script commands
 using the [0.2 migration table](docs/migration-0.2.md); there are no compatibility
 aliases. `iris logs` follows by default (`--snapshot` prints retained logs only);
 `iris memory --follow` enables continuous memory sampling.

@@ -3,7 +3,7 @@
 From a workspace use `python mosaico.py project sim --project projects/my_app`.
 The project can also be selected from cwd, a configured default, or the sole app.
 There is no hard-coded Hello World fallback. Install the application's pinned
-ESP-GSP 1.5.1 component through an IDF build/reconfigure before native preview.
+ESP-GSP 1.10.4 component through an IDF build/reconfigure before native preview.
 
 The runner selects the scene owner's `components/<name>/host/CMakeLists.txt`
 backend, falling back to `pc/CMakeLists.txt` for older applications. It compiles
