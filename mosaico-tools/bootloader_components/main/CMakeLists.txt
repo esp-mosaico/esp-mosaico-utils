@@ -22,10 +22,15 @@ target_include_directories(${COMPONENT_LIB} PRIVATE "${nvs_source}/private_inclu
 
 # The retained bootloader has an immutable 24 KiB window.  Prefer minimum
 # code size for the custom partition selector and LCD splash paths.
-target_compile_options(${COMPONENT_LIB} PRIVATE -Oz)
+target_compile_options(${COMPONENT_LIB} PRIVATE -Oz -flto)
+target_link_options(${COMPONENT_LIB} INTERFACE -flto)
 foreach(size_component bootloader_support nvs_flash nvs_sec_provider)
     idf_component_get_property(size_lib ${size_component} COMPONENT_LIB)
     target_compile_options(${size_lib} PRIVATE -Oz)
+    # Loader placement rules match bootloader_support object names.
+    if(NOT size_component STREQUAL "bootloader_support")
+        target_compile_options(${size_lib} PRIVATE -flto)
+    endif()
 endforeach()
 
 # Keep the default ESP-IDF bootloader linker layout.
